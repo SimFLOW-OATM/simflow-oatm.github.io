@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SimFLOW Web</title>
+  <link rel="stylesheet" href="./styles.css?v=20260619-sidebar-today-tight">
+  <script>
+    if (window.location.protocol === "file:") {
+      window.location.replace("http://127.0.0.1:8765/");
+    }
+  </script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="sidebar-scroll">
+        <div class="brand">
+          <button class="brand-reset-button" id="brandResetButton" type="button" title="Réinitialiser l'affichage">
+            <img class="brand-logo" src="./assets/logo.png" alt="SimFLOW">
+          </button>
+        </div>
+
+        <section class="sidebar-section login-panel" id="loginPanel">
+          <p class="file-warning hidden" id="fileWarning">
+            Lance « Lancer SimFLOW Web.command » pour charger les consignes.
+          </p>
+          <button class="sidebar-login-button" id="openLoginButton" type="button">Code utilisateur</button>
+          <p class="hint" id="loginHint">Entre ton code utilisateur a 6 chiffres.</p>
+        </section>
+
+        <section class="sidebar-section calendar-panel">
+          <div class="calendar-title-row">
+            <input id="selectedDate" class="visually-hidden" type="date" aria-label="Date selectionnée">
+          </div>
+          <div class="calendar">
+            <div class="calendar-nav">
+              <button class="ghost icon-button" id="previousMonthButton" title="Mois précédent">‹</button>
+              <strong id="calendarMonth">Mois</strong>
+              <button class="ghost icon-button" id="nextMonthButton" title="Mois suivant">›</button>
+            </div>
+            <div class="calendar-weekdays" aria-hidden="true">
+              <span>L</span>
+              <span>M</span>
+              <span>M</span>
+              <span>J</span>
+              <span>V</span>
+              <span>S</span>
+              <span>D</span>
+            </div>
+            <div class="calendar-grid" id="calendarGrid"></div>
+          </div>
+          <button class="today-button full" id="todayButton">▦ Aujourd'hui</button>
+        </section>
+
+        <div class="sidebar-separator"></div>
+
+        <section class="sidebar-section">
+          <div class="team-presence-list" id="teamPresenceList"></div>
+        </section>
+
+        <div class="sidebar-separator"></div>
+
+        <section class="sidebar-section">
+          <label class="switch-row" for="showTaggedToggle">
+            <svg class="switch-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 21V5"></path>
+              <path d="M5 5h12l-2 4 2 4H5"></path>
+            </svg>
+            <span class="switch-label">Afficher tagguées</span>
+            <input id="showTaggedToggle" type="checkbox">
+            <span class="switch-track" aria-hidden="true"></span>
+          </label>
+          <label class="switch-row" for="showAcknowledgedToggle">
+            <svg class="switch-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M2.1 12s3.6-6 9.9-6 9.9 6 9.9 6-3.6 6-9.9 6-9.9-6-9.9-6Z"></path>
+              <circle cx="12" cy="12" r="3"></circle>
+            </svg>
+            <span class="switch-label">Afficher prises en compte</span>
+            <input id="showAcknowledgedToggle" type="checkbox">
+            <span class="switch-track" aria-hidden="true"></span>
+          </label>
+          <label class="switch-row hidden" for="showDeletedToggle" id="showDeletedRow">
+            <svg class="switch-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 6h18"></path>
+              <path d="M8 6V4h8v2"></path>
+              <path d="M19 6l-1 14H6L5 6"></path>
+            </svg>
+            <span class="switch-label">Afficher supprimées</span>
+            <input id="showDeletedToggle" type="checkbox">
+            <span class="switch-track" aria-hidden="true"></span>
+          </label>
+        </section>
+
+        <div class="sidebar-separator"></div>
+
+        <section class="sidebar-section">
+          <label for="searchInput">Recherche</label>
+          <div class="search-row">
+            <input id="searchInput" placeholder="Mot(s) de consigne">
+            <button id="clearSearchButton" class="danger icon-button" title="Effacer la recherche">×</button>
+          </div>
+          <div class="section-shortcut-separator"></div>
+          <h2 class="section-shortcut-title">Sections</h2>
+          <div class="simulator-shortcut-grid" id="simulatorShortcutGrid"></div>
+        </section>
+      </div>
+
+      <section class="user-panel hidden" id="userPanel">
+        <button class="user-summary" id="userSummaryButton" type="button">
+          <div class="user-identity">
+            <span class="user-icon" aria-hidden="true"></span>
+            <div class="user-name" id="userName">Utilisateur</div>
+          </div>
+          <div class="user-meta" id="userMeta">Consultation</div>
+        </button>
+        <div class="user-menu hidden" id="userMenu">
+          <button id="changeCodeButton" type="button">
+            <span class="menu-icon" aria-hidden="true">⌘</span>
+            Changer mon code
+          </button>
+          <button id="logoutButton" type="button">
+            <span class="menu-icon" aria-hidden="true">♧</span>
+            Changer d'utilisateur
+          </button>
+          <button class="hidden" id="adminSettingsButton" type="button">
+            <span class="menu-icon" aria-hidden="true">⚙</span>
+            Administration
+          </button>
+        </div>
+      </section>
+    </aside>
+
+    <div class="code-modal hidden" id="codeModal" role="dialog" aria-modal="true" aria-labelledby="codeModalTitle">
+      <div class="code-dialog">
+        <h2 id="codeModalTitle">Code utilisateur</h2>
+        <p id="codeModalMessage">Entrer votre code utilisateur a 6 chiffres.</p>
+        <input id="accessCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="Code">
+        <div class="code-dialog-actions">
+          <button class="secondary" id="cancelLoginButton" type="button">Annuler</button>
+          <button class="secondary" id="loginButton" type="button">Valider</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="change-code-overlay hidden" id="changeCodeOverlay" aria-hidden="true">
+      <section class="change-code-panel" role="dialog" aria-modal="true" aria-labelledby="changeCodeTitle">
+        <div class="change-code-header">
+          <button class="detail-top-button" id="cancelChangeCodeButton" type="button">Annuler</button>
+          <button class="detail-top-button primary-save" id="saveChangeCodeButton" type="button">Enregistrer</button>
+        </div>
+        <h2 id="changeCodeTitle">Code utilisateur</h2>
+        <label>Changer mon code</label>
+        <div class="change-code-form">
+          <input id="currentCodeInput" inputmode="numeric" maxlength="6" placeholder="Code actuel">
+          <input id="newCodeInput" inputmode="numeric" maxlength="6" placeholder="Nouveau code a 6 chiffres">
+          <input id="confirmCodeInput" inputmode="numeric" maxlength="6" placeholder="Confirmer le nouveau code">
+        </div>
+        <p class="change-code-error hidden" id="changeCodeError"></p>
+      </section>
+    </div>
+
+    <main class="content">
+      <header class="topbar">
+        <div>
+          <h1 id="pageTitle">Consignes</h1>
+          <p id="pageSubtitle">Connexion requise</p>
+        </div>
+      </header>
+      <div class="hidden" id="syncStatus" aria-hidden="true">Hors ligne</div>
+
+      <section class="notice hidden" id="emptyState">
+        Aucune consigne à afficher pour cette sélection.
+      </section>
+
+      <section class="note-groups" id="noteGroups"></section>
+    </main>
+  </div>
+
+  <div class="detail-overlay hidden" id="detailOverlay" aria-hidden="true">
+    <section class="detail-panel" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
+      <div class="detail-header">
+        <button class="detail-top-button" id="detailCloseButton">Annuler</button>
+        <h2 id="detailTitle">Détail</h2>
+        <button class="detail-top-button primary-save" data-detail-action="save-edit">Enregistrer</button>
+        <p class="detail-kicker hidden" id="detailContext">Consigne</p>
+      </div>
+      <div class="detail-body" id="detailBody"></div>
+    </section>
+  </div>
+
+  <div class="creation-text-overlay hidden" id="creationTextOverlay" aria-hidden="true">
+    <section class="creation-text-panel" role="dialog" aria-modal="true" aria-labelledby="creationTextTitle">
+      <button class="detail-top-button creation-text-close" id="creationTextCloseButton">Fermer</button>
+      <h2 id="creationTextTitle">Texte</h2>
+      <div class="creation-text-meta">
+        <span>Date</span>
+        <strong id="creationTextDate"></strong>
+      </div>
+      <div class="creation-text-content" id="creationTextContent"></div>
+    </section>
+  </div>
+
+  <div class="admin-overlay hidden" id="adminOverlay" aria-hidden="true">
+    <section class="admin-panel" role="dialog" aria-modal="true" aria-labelledby="adminTitle">
+      <div class="admin-header">
+        <div>
+          <p class="detail-kicker">Administration</p>
+          <h2 id="adminTitle">Paramétrage</h2>
+        </div>
+        <button class="danger icon-button" id="adminCloseButton" title="Fermer">×</button>
+      </div>
+      <div class="admin-body" id="adminBody"></div>
+    </section>
+  </div>
+
+  <script type="module" src="./app.js?v=20260620-period-event-date"></script>
+</body>
+</html>
