@@ -1902,10 +1902,18 @@ mark {
   line-height: 1;
 }
 
+.creation-text-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
 .creation-text-meta {
   display: grid;
+  flex: 1;
   gap: 4px;
-  margin-bottom: 14px;
+  min-width: 0;
 }
 
 .creation-text-meta span {
@@ -1918,6 +1926,43 @@ mark {
   color: rgba(17, 24, 39, 0.74);
   font-size: 13px;
   font-weight: 700;
+}
+
+.creation-text-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  width: 34px;
+  min-width: 34px;
+  min-height: 34px;
+}
+
+.creation-text-actions:empty {
+  visibility: hidden;
+}
+
+.revision-delete-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #ffffff;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.revision-delete-button svg {
+  width: 17px;
+  height: 17px;
+  fill: currentColor;
+}
+
+.revision-delete-button:hover {
+  background: #dc2626;
 }
 
 .creation-text-content {

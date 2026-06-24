@@ -122,6 +122,7 @@ const elements = {
   creationTextOverlay: document.querySelector("#creationTextOverlay"),
   creationTextCloseButton: document.querySelector("#creationTextCloseButton"),
   creationTextDate: document.querySelector("#creationTextDate"),
+  creationTextActions: document.querySelector("#creationTextActions"),
   creationTextContent: document.querySelector("#creationTextContent"),
   adminOverlay: document.querySelector("#adminOverlay"),
   adminCloseButton: document.querySelector("#adminCloseButton"),
@@ -377,6 +378,8 @@ elements.detailOverlay.addEventListener("click", (event) => {
     saveDetailEdit(note);
   } else if (action === "delete-note") {
     deleteNoteFromDetail(note);
+  } else if (action === "undo-latest-modification") {
+    undoLatestModificationFromDetail(note);
   } else if (action === "ocr-handwriting") {
     recognizeVisibleHandwriting(note);
   } else if (action === "clear-handwriting") {
@@ -387,6 +390,16 @@ elements.creationTextCloseButton.addEventListener("click", closeCreationTextModa
 elements.creationTextOverlay.addEventListener("click", (event) => {
   if (event.target === elements.creationTextOverlay) {
     closeCreationTextModal();
+  }
+
+  const undoButton = event.target.closest("[data-creation-text-action='undo-latest-modification']");
+  if (undoButton) {
+    const note = state.selectedDetail
+      ? state.notes.find((candidate) => candidate.id === state.selectedDetail.noteId)
+      : null;
+    if (note) {
+      undoLatestModificationFromDetail(note);
+    }
   }
 });
 elements.adminCloseButton.addEventListener("click", closeAdminSettings);
@@ -1290,18 +1303,52 @@ function closeDetail() {
 
 function openCreationTextModal(text, dateLabel) {
   elements.creationTextDate.textContent = dateLabel;
+  renderCreationTextActions("");
   elements.creationTextContent.textContent = text || "Aucun texte.";
   elements.creationTextContent.classList.remove("revision-diff");
   elements.creationTextOverlay.classList.remove("hidden");
   elements.creationTextOverlay.setAttribute("aria-hidden", "false");
 }
 
-function openRevisionTextModal({ dateLabel, html }) {
+function openRevisionTextModal({ dateLabel, html, canUndo = false }) {
   elements.creationTextDate.textContent = dateLabel;
+  renderCreationTextActions(canUndo
+    ? `<button
+        type="button"
+        class="revision-delete-button"
+        data-creation-text-action="undo-latest-modification"
+        title="Annuler la dernière modification"
+        aria-label="Annuler la dernière modification"
+        style="display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;min-width:34px;min-height:34px;padding:0;border:0;border-radius:999px;background:#ef4444;color:#fff;line-height:1;box-shadow:none;"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true" style="width:17px;height:17px;display:block;fill:currentColor;">
+          <path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-1 6h2v10h4V9h2v12H8V9Zm3 0h2v9h-2V9Z"></path>
+        </svg>
+      </button>`
+    : "");
   elements.creationTextContent.innerHTML = html || "Aucun texte.";
   elements.creationTextContent.classList.add("revision-diff");
   elements.creationTextOverlay.classList.remove("hidden");
   elements.creationTextOverlay.setAttribute("aria-hidden", "false");
+}
+
+function renderCreationTextActions(html) {
+  if (!elements.creationTextActions) {
+    const meta = elements.creationTextOverlay.querySelector(".creation-text-meta");
+    const metaRow = document.createElement("div");
+    metaRow.className = "creation-text-meta-row";
+    meta?.before(metaRow);
+    if (meta) {
+      metaRow.appendChild(meta);
+    }
+
+    elements.creationTextActions = document.createElement("div");
+    elements.creationTextActions.className = "creation-text-actions";
+    elements.creationTextActions.id = "creationTextActions";
+    metaRow.appendChild(elements.creationTextActions);
+  }
+
+  elements.creationTextActions.innerHTML = html;
 }
 
 function openSelectedCreationTextModal() {
@@ -1318,10 +1365,7 @@ function openSelectedCreationTextModal() {
 }
 
 function creationTextForNote(note) {
-  const sortedRevisions = [...note.revisions]
-    .filter((revision) => revision.date)
-    .sort((a, b) => a.date - b.date);
-  return sortedRevisions.find((revision) => stringValue(revision.text).trim())?.text
+  return note.revisions.find((revision) => stringValue(revision.text).trim())?.text
     || combinedNoteText(note.title, note.text);
 }
 
@@ -1329,6 +1373,7 @@ function closeCreationTextModal() {
   elements.creationTextOverlay.classList.add("hidden");
   elements.creationTextOverlay.setAttribute("aria-hidden", "true");
   elements.creationTextDate.textContent = "";
+  renderCreationTextActions("");
   elements.creationTextContent.textContent = "";
   elements.creationTextContent.classList.remove("revision-diff");
 }
@@ -2773,13 +2818,48 @@ function showCreateDateConfirmation(selectedDisplayDate) {
   elements.detailBody.appendChild(popover);
 }
 
-async function saveDetailEdit(note) {
+function showEditDateConfirmation(note, selectedModificationDate) {
+  elements.detailBody.querySelector(".date-confirm-popover")?.remove();
+  const popover = document.createElement("div");
+  popover.className = "date-confirm-popover";
+  popover.setAttribute("role", "dialog");
+  popover.setAttribute("aria-modal", "true");
+  popover.innerHTML = `
+    <strong>La consigne n'est pas modifiée<br>à la date du jour</strong>
+    <p>Voulez-vous memoriser cette modification a la date selectionnee ou a la date du jour ?</p>
+    <button type="button" class="date-confirm-choice" data-date-confirm="keep">
+      Conserver la date de modification du ${escapeHtml(formatLongDate(selectedModificationDate))}
+    </button>
+    <button type="button" class="date-confirm-choice primary" data-date-confirm="today">
+      Mettre a la date du jour
+    </button>
+  `;
+
+  popover.addEventListener("click", (event) => {
+    const choice = event.target.closest("[data-date-confirm]")?.dataset.dateConfirm;
+    if (!choice) {
+      return;
+    }
+
+    popover.remove();
+    saveDetailEdit(note, {
+      skipDateConfirmation: true,
+      modificationDate: choice === "today" ? new Date() : selectedModificationDate
+    });
+  });
+
+  elements.detailBody.appendChild(popover);
+}
+
+async function saveDetailEdit(note, options = {}) {
   if (!canCurrentUserWrite() || state.isSaving) {
     return;
   }
 
   const { title, text, richTextHTML } = collectConsigneDraft();
   const displayDate = startOfDay(parseDateInput(document.querySelector("#detailEditDate").value));
+  const selectedModificationDate = startOfDay(state.selectedDate);
+  const modificationDay = options.modificationDate ? startOfDay(options.modificationDate) : selectedModificationDate;
   const priority = document.querySelector("#detailEditPriority").value;
   const destination = collectDetailDestination(state.selectedDetail?.context || generalName);
   const context = state.selectedDetail?.context || generalName;
@@ -2790,6 +2870,7 @@ async function saveDetailEdit(note) {
   const initialAcknowledged = ackButton?.dataset.initialState === "true";
   const draftAcknowledged = ackButton?.dataset.draftState === "true";
   const now = new Date();
+  const modificationDate = dateWithTime(modificationDay, now);
   const revisions = [...note.revisions];
   const patch = { updatedAt: now };
   const textChanged = title !== note.title || text !== note.text;
@@ -2808,6 +2889,11 @@ async function saveDetailEdit(note) {
     return;
   }
 
+  if (!options.skipDateConfirmation && announcesContentModification && !sameDay(selectedModificationDate, new Date())) {
+    showEditDateConfirmation(note, selectedModificationDate);
+    return;
+  }
+
   if (announcesContentModification && (initialDone || draftDone)) {
     const shouldContinue = window.confirm("Cette modification sera signalée. La consigne perdra son statut Soldé.");
     if (!shouldContinue) {
@@ -2823,14 +2909,14 @@ async function saveDetailEdit(note) {
       id: crypto.randomUUID(),
       author: currentDisplayName(),
       authorIdentifier: state.currentUser.id,
-      date: now,
+      date: modificationDate,
       text: combinedNoteText(title, text),
       isVisibleToOthers: announcesContentModification,
       previousPriorityRawValue: priorityChanged ? note.priority || "" : undefined,
       newPriorityRawValue: priorityChanged ? priority || "" : undefined
     });
     if (announcesContentModification) {
-      patch.contentModifiedAt = now;
+      patch.contentModifiedAt = modificationDate;
       patch.acknowledgementHistoryData = deleteField();
     }
   }
@@ -2914,6 +3000,106 @@ async function saveDetailEdit(note) {
     state.isSaving = false;
     refreshDetail();
   }
+}
+
+async function undoLatestModificationFromDetail(note) {
+  if (!canUndoLatestModification(note) || state.isSaving) {
+    return;
+  }
+
+  const latestRevision = latestUndoableModification(note);
+  const revisionIndex = latestRevision
+    ? note.revisions.findIndex((revision) => revision.id === latestRevision.id)
+    : -1;
+  if (revisionIndex <= 0) {
+    return;
+  }
+
+  const shouldUndo = window.confirm("Annuler la dernière modification ? La consigne reviendra à son état avant cette modification.");
+  if (!shouldUndo) {
+    return;
+  }
+
+  const previousRevision = note.revisions[revisionIndex - 1];
+  const restoredText = splitRevisionText(previousRevision?.text || "");
+  const revisions = [...note.revisions];
+  revisions.splice(revisionIndex, 1);
+  const restoredNote = { ...note, revisions };
+  const latestModificationDate = latestContentModificationDate(restoredNote);
+
+  const patch = {
+    title: restoredText.title,
+    text: restoredText.text,
+    richTextHTML: restoredText.text ? plainTextToRichHTML(restoredText.text) : deleteField(),
+    richTextData: deleteField(),
+    revisionHistoryData: revisions.length ? encodeRecordArray(revisions) : deleteField(),
+    contentModifiedAt: latestModificationDate || deleteField(),
+    updatedAt: new Date()
+  };
+
+  if (latestRevision.previousDisplayDate || latestRevision.newDisplayDate) {
+    const restoredDisplayDate = startOfDay(latestRevision.previousDisplayDate || note.displayDate);
+    patch.displayDate = restoredDisplayDate;
+    patch.firstDisplayDate = restoredDisplayDate;
+    patch.reportDate = deleteField();
+  }
+
+  if (latestRevision.previousPriorityRawValue || latestRevision.newPriorityRawValue) {
+    patch.priorityRawValue = latestRevision.previousPriorityRawValue || deleteField();
+  }
+
+  state.isSaving = true;
+  refreshDetail();
+  try {
+    await updateNote(note.id, patch);
+    setStatus("Modification annulée");
+  } finally {
+    state.isSaving = false;
+    refreshDetail();
+  }
+}
+
+function latestUndoableModification(note) {
+  const latestRevision = note.revisions.at(-1);
+  if (!latestRevision || !isVisibleInStandardTimeline(latestRevision)) {
+    return null;
+  }
+
+  return latestRevision;
+}
+
+function canUndoLatestModification(note) {
+  const latestRevision = latestUndoableModification(note);
+  if (!latestRevision || !state.currentUser) {
+    return false;
+  }
+
+  return canViewTimelineAuthors()
+    || revisionMatchesCurrentUser(latestRevision);
+}
+
+function revisionMatchesCurrentUser(revision) {
+  const revisionAuthorKey = normalizeRevisionAuthor(revision);
+  const currentUserRecord = state.users.find((user) => {
+    return normalizeKey(user.id) === normalizeKey(state.currentUser?.id)
+      || normalizeKey(user.documentID) === normalizeKey(state.currentUser?.documentID);
+  });
+  const currentKeys = [
+    state.currentUser?.id,
+    state.currentUser?.documentID,
+    currentDisplayName(),
+    currentUserRecord ? currentDisplayNameForUser(currentUserRecord) : ""
+  ].map(normalizeKey).filter(Boolean);
+
+  return currentKeys.includes(revisionAuthorKey);
+}
+
+function splitRevisionText(revisionText) {
+  const lines = stringValue(revisionText).split("\n");
+  return {
+    title: stringValue(lines.shift()).trim(),
+    text: lines.join("\n").trim()
+  };
 }
 
 function collectDetailDestination(fallbackContext) {
@@ -3475,9 +3661,8 @@ function latestContentModificationDate(note) {
 
 function contentModificationDates(note) {
   return note.revisions
-    .filter((revision) => revision.date)
-    .sort((a, b) => a.date - b.date)
     .slice(1)
+    .filter((revision) => revision.date)
     .filter((revision) => {
       return isPublicContentRevision(revision)
         && !shouldHideSameDayAuthorModification(revision, note);
@@ -3644,10 +3829,10 @@ function timelineEvents(note, context) {
 }
 
 function timelineRevisionsForCurrentUser(note) {
-  const sortedRevisions = [...note.revisions]
+  const revisionsAfterCreation = note.revisions
+    .slice(1)
     .filter((revision) => revision.date)
     .sort((a, b) => a.date - b.date);
-  const revisionsAfterCreation = sortedRevisions.slice(1);
 
   return revisionsAfterCreation.filter((revision) => {
     if (!canViewTimelineAuthors() && !isVisibleInStandardTimeline(revision)) {
@@ -3740,10 +3925,23 @@ function openTimelineTextModal(index) {
     return;
   }
 
+  const note = state.selectedDetail
+    ? state.notes.find((candidate) => candidate.id === state.selectedDetail.noteId)
+    : null;
   openRevisionTextModal({
     dateLabel: timelineModalDateLabel(event),
-    html: revisionTimelineDetailHTML(event.revisions || [], event.previousText)
+    html: revisionTimelineDetailHTML(event.revisions || [], event.previousText),
+    canUndo: Boolean(note && canUndoTimelineEvent(note, event))
   });
+}
+
+function canUndoTimelineEvent(note, event) {
+  const latestRevision = latestUndoableModification(note);
+  return Boolean(
+    latestRevision
+    && canUndoLatestModification(note)
+    && (event.revisions || []).some((revision) => revision.id === latestRevision.id)
+  );
 }
 
 function timelineModalDateLabel(event) {
@@ -3920,11 +4118,11 @@ function revisionDetail(revision) {
 }
 
 function canViewTimelineAuthors() {
-  return state.currentUser?.role === "admin" || state.currentUser?.role === "teamLeader";
+  return isAdminSession() || state.currentUser?.role === "teamLeader";
 }
 
 function canCurrentUserViewDeletedNotes() {
-  return state.currentUser?.role === "admin" || state.currentUser?.role === "teamLeader";
+  return isAdminSession() || state.currentUser?.role === "teamLeader";
 }
 
 function canCurrentUserViewDeletedNote(note) {
