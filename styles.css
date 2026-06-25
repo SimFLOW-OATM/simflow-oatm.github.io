@@ -2710,9 +2710,12 @@ mark {
 }
 
 .diff-added {
-  border-radius: 4px;
-  padding: 0 2px;
-  background: rgba(52, 199, 89, 0.28);
+  border-radius: 5px;
+  padding: 1px 4px 2px;
+  background: #dcfce7;
+  color: #15803d;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
 }
 
 .diff-removed {

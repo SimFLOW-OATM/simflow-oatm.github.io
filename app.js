@@ -1178,8 +1178,9 @@ function renderCalendar() {
 
 function groupedNotes() {
   const matchingNotes = state.notes
+    .filter((note) => canCurrentUserSeeNote(note))
     .filter((note) => matchesSearch(note))
-    .sort(isPeriodResultsMode() ? comparePeriodNotes : compareNotes);
+    .sort(state.search ? compareSearchNotes : isPeriodResultsMode() ? comparePeriodNotes : compareNotes);
 
   const simulators = [{ name: generalName, colorHex: "#111827", sortOrder: -1 }, ...state.simulators];
   const groups = [];
@@ -1250,7 +1251,7 @@ function renderNote(note, context) {
   const priorityClass = note.priority ? `priority-${note.priority}` : "";
   const priorityStyle = note.priority ? ` style="--priority-color:${priorityColor(note.priority)};--priority-bg:${priorityBackground(note.priority)}"` : "";
   const title = highlight(note.title);
-  const text = highlight(note.text);
+  const dailyDiffHTML = highlightHTML(dailyModificationDiffHTML(note));
   const newBadge = isNew(note);
   const carryOver = carryOverDayCount(note);
   const modificationTitle = modificationBadgeTitle(note, context, newBadge, carryOver);
@@ -1272,8 +1273,13 @@ function renderNote(note, context) {
     : acknowledged
       ? renderStatusBadge("ack", "Pris en compte")
       : "";
-  const periodDate = isPeriodResultsMode()
-    ? `<div class="period-note-date">${escapeHtml(formatLongDate(noteSortingActivityDate(note)))}</div>`
+  const metadataDate = state.search
+    ? firstAssignmentDate(note)
+    : isPeriodResultsMode()
+      ? noteSortingActivityDate(note)
+      : null;
+  const periodDate = metadataDate
+    ? `<div class="period-note-date">${escapeHtml(formatLongDate(metadataDate))}</div>`
     : "";
 
   return `
@@ -1285,8 +1291,10 @@ function renderNote(note, context) {
     >
       <div class="badges">${badges}</div>
       ${ageBadge}
-      ${note.title ? `<h2 class="note-title">${title}</h2>` : ""}
-      ${note.text ? `<div class="note-text rich-text-preview">${richTextPreviewHTML(note)}</div>` : note.title ? "" : "<p class=\"note-text muted\">Note manuscrite</p>"}
+      ${dailyDiffHTML
+        ? `<div class="note-text revision-diff">${dailyDiffHTML}</div>`
+        : `${note.title ? `<h2 class="note-title">${title}</h2>` : ""}
+      ${note.text ? `<div class="note-text rich-text-preview">${richTextPreviewHTML(note)}</div>` : note.title ? "" : "<p class=\"note-text muted\">Note manuscrite</p>"}`}
       ${handwriting ? renderHandwritingCardPreview(handwriting) : ""}
       ${statusBadge}
       ${periodDate}
@@ -1754,9 +1762,8 @@ function applyEditorHighlight(color) {
   }
 
   const colors = {
-    yellow: { background: "#ffd51f", foreground: null },
+    yellow: { background: "#ffd51f", foreground: "#111111" },
     blue: { background: "#2f80ed", foreground: "#ffffff" },
-    green: { background: "#24c63b", foreground: "#ffffff" },
     red: { background: "#ef2f24", foreground: "#ffffff" }
   };
   const selected = colors[color];
@@ -1850,7 +1857,6 @@ function renderFormatToolbar() {
         <hr>
         <button type="button" data-highlight-color="yellow"><span class="highlight-swatch yellow"></span>Jaune</button>
         <button type="button" data-highlight-color="blue"><span class="highlight-swatch blue"></span>Bleu</button>
-        <button type="button" data-highlight-color="green"><span class="highlight-swatch green"></span>Vert</button>
         <button type="button" data-highlight-color="red"><span class="highlight-swatch red"></span>Rouge</button>
       </div>
     </div>
@@ -1877,7 +1883,8 @@ function plainTextToRichHTML(text) {
 }
 
 function richTextPreviewHTML(note) {
-  return note.richTextHTML ? note.richTextHTML.replace(/\n/g, "<br>") : plainTextToRichHTML(note.text);
+  const html = note.richTextHTML ? note.richTextHTML.replace(/\n/g, "<br>") : plainTextToRichHTML(note.text);
+  return highlightHTML(html);
 }
 
 function renderDateLine(inputID, date, editable) {
@@ -2672,9 +2679,7 @@ async function createAdminSimulator() {
 
 function visibleHandwritingFor(note) {
   if (!state.currentUser) {
-    return note.handwritingData || note.handwritingPreviewImageData
-      ? { source: "consigne", data: note.handwritingData, previewImageData: note.handwritingPreviewImageData }
-      : null;
+    return null;
   }
 
   const ownNote = state.handwritingNotes.find((entry) => {
@@ -2695,6 +2700,14 @@ function visibleHandwritingFor(note) {
   }
 
   return null;
+}
+
+function canCurrentUserSeeNote(note) {
+  if (note.title.trim() || note.text.trim()) {
+    return true;
+  }
+
+  return Boolean(visibleHandwritingFor(note));
 }
 
 function renderHandwritingNotice(handwriting) {
@@ -3523,7 +3536,7 @@ function sanitizeRichTextHTML(html) {
   const template = document.createElement("template");
   template.innerHTML = html;
   const allowedTags = new Set(["B", "STRONG", "I", "EM", "U", "UL", "OL", "LI", "BR", "DIV", "P", "SPAN"]);
-  const allowedColors = new Set(["#ffd51f", "#2f80ed", "#24c63b", "#ef2f24", "#ffffff"]);
+  const allowedColors = new Set(["#ffd51f", "#2f80ed", "#ef2f24", "#ffffff", "#111111"]);
 
   function cleanNode(node) {
     if (node.nodeType === Node.TEXT_NODE) {
@@ -3577,12 +3590,15 @@ function normalizeRichTextColor(value, isBackground) {
   if (isBackground) {
     if (r >= 235 && g >= 175 && b <= 90) return "#ffd51f";
     if (r <= 95 && g >= 95 && g <= 165 && b >= 190) return "#2f80ed";
-    if (r <= 95 && g >= 160 && b <= 120) return "#24c63b";
+    if (r <= 95 && g >= 160 && b <= 120) return "#2f80ed";
     if (r >= 210 && g <= 95 && b <= 90) return "#ef2f24";
   }
 
   if (r >= 245 && g >= 245 && b >= 245) {
     return "#ffffff";
+  }
+  if (r <= 40 && g <= 40 && b <= 40) {
+    return "#111111";
   }
 
   return "";
@@ -3813,17 +3829,14 @@ function isAcknowledgedHidden(note, context) {
 }
 
 function matchesSearch(note) {
-  const terms = state.search
-    .toLocaleLowerCase("fr")
-    .split(/\s+/)
-    .filter(Boolean);
+  const terms = searchTerms();
 
   if (terms.length === 0) {
     return true;
   }
 
-  const haystack = `${note.title} ${note.text}`.toLocaleLowerCase("fr");
-  return terms.some((term) => haystack.includes(term));
+  const haystack = normalizeSearchText(`${note.title} ${note.text}`);
+  return terms.some((term) => haystack.includes(normalizeSearchText(term)));
 }
 
 function compareNotes(a, b) {
@@ -3850,6 +3863,23 @@ function compareNotes(a, b) {
 }
 
 function comparePeriodNotes(a, b) {
+  const activityDateA = noteSortingActivityDate(a)?.getTime() || 0;
+  const activityDateB = noteSortingActivityDate(b)?.getTime() || 0;
+  if (activityDateA !== activityDateB) {
+    return activityDateB - activityDateA;
+  }
+
+  return (b.createdAt?.getTime() || 0) - (a.createdAt?.getTime() || 0)
+    || String(a.id || "").localeCompare(String(b.id || ""), "fr");
+}
+
+function compareSearchNotes(a, b) {
+  const assignmentDateA = firstAssignmentDate(a)?.getTime() || 0;
+  const assignmentDateB = firstAssignmentDate(b)?.getTime() || 0;
+  if (assignmentDateA !== assignmentDateB) {
+    return assignmentDateB - assignmentDateA;
+  }
+
   const activityDateA = noteSortingActivityDate(a)?.getTime() || 0;
   const activityDateB = noteSortingActivityDate(b)?.getTime() || 0;
   if (activityDateA !== activityDateB) {
@@ -4048,8 +4078,75 @@ function contentModificationDates(note) {
     .sort((a, b) => a - b);
 }
 
+function dailyModificationDiffHTML(note) {
+  if (isPeriodResultsMode()) {
+    return "";
+  }
+
+  const revisionPair = latestContentRevisionPairOnDay(note, state.selectedDate);
+  if (!revisionPair || revisionPair.previousText === revisionPair.revision.text) {
+    return "";
+  }
+
+  if (revisionPair.hasPublicRevision && !isEventActiveForCurrentView(revisionPair.latestPublicRevision.date)) {
+    return "";
+  }
+
+  return revisionPair.hasPublicRevision
+    ? renderCumulativeDailyTextDiff(revisionPair.revisions, note)
+    : escapeHtml(revisionPair.revision.text);
+}
+
+function latestContentRevisionPairOnDay(note, day) {
+  const foldedRevisionIds = foldedInitialAuthorRevisionIds(note);
+  const selectedDay = startOfDay(day);
+  const revisions = [];
+
+  for (let index = 1; index < note.revisions.length; index += 1) {
+    const revision = note.revisions[index];
+    if (!revision.date || !sameDay(revision.date, selectedDay)) {
+      continue;
+    }
+
+    if (!isContentRevision(revision) || foldedRevisionIds.has(revision.id)) {
+      continue;
+    }
+
+    const revisionPair = {
+      revision,
+      previousText: note.revisions[index - 1]?.text || ""
+    };
+
+    revisions.push(revisionPair);
+  }
+
+  const latestRevision = revisions.at(-1);
+  if (!latestRevision) {
+    return null;
+  }
+
+  return {
+    revision: latestRevision.revision,
+    previousText: revisions[0].previousText,
+    revisions,
+    hasPublicRevision: revisions.some((entry) => isPublicContentRevision(entry.revision)),
+    latestPublicRevision: revisions.filter((entry) => isPublicContentRevision(entry.revision)).at(-1)?.revision || null
+  };
+}
+
+function isContentRevision(revision) {
+  return !revision.previousDisplayDate
+    && !revision.newDisplayDate
+    && !revision.previousPriorityRawValue
+    && !revision.newPriorityRawValue;
+}
+
 function noteCreationNewEventDate(note) {
   return dateWithTime(note.firstDisplayDate || note.displayDate || note.createdAt, note.createdAt);
+}
+
+function firstAssignmentDate(note) {
+  return startOfDay(note.firstDisplayDate || note.displayDate || note.createdAt || new Date());
 }
 
 function dateWithTime(dayDate, timeDate) {
@@ -4386,12 +4483,195 @@ function renderTextDiff(oldText, newText) {
       if (operation.type === "added") {
         return `<span class="diff-added">${token}</span>`;
       }
-      if (operation.type === "removed") {
-        return `<span class="diff-removed">${token}</span>`;
-      }
-      return token;
+      return operation.type === "unchanged" ? token : "";
     })
     .join("");
+}
+
+function renderCumulativeDailyTextDiff(revisions, note) {
+  if (!revisions.length) {
+    return "";
+  }
+
+  let annotatedTokens = tokenizeForDiff(revisions[0].previousText)
+    .map((token) => ({ token, highlighted: false }));
+
+  for (const { revision } of revisions) {
+    annotatedTokens = applyRevisionToAnnotatedTokens(
+      annotatedTokens,
+      revision.text,
+      isPublicContentRevision(revision)
+    );
+  }
+
+  return renderAnnotatedDiffTokens(annotatedTokens, note);
+}
+
+function applyRevisionToAnnotatedTokens(annotatedTokens, newText, highlightsAdditions) {
+  const oldTokens = annotatedTokens.map((entry) => entry.token);
+  const newTokens = tokenizeForDiff(newText);
+  const operations = diffOperations(oldTokens, newTokens);
+  const nextTokens = [];
+  let oldIndex = 0;
+  let carriesHighlightedReplacement = false;
+
+  for (const operation of operations) {
+    if (operation.type === "unchanged") {
+      nextTokens.push(annotatedTokens[oldIndex] || { token: operation.token, highlighted: false });
+      oldIndex += 1;
+      carriesHighlightedReplacement = false;
+    } else if (operation.type === "removed") {
+      carriesHighlightedReplacement = carriesHighlightedReplacement || Boolean(annotatedTokens[oldIndex]?.highlighted);
+      oldIndex += 1;
+    } else {
+      const adjacentToHighlightedToken = Boolean(nextTokens.at(-1)?.highlighted || annotatedTokens[oldIndex]?.highlighted);
+      nextTokens.push({
+        token: operation.token,
+        highlighted: highlightsAdditions || carriesHighlightedReplacement || adjacentToHighlightedToken
+      });
+    }
+  }
+
+  return nextTokens;
+}
+
+function renderAnnotatedDiffTokens(tokens, note) {
+  const finalText = tokens.map((token) => token.token).join("");
+  const manualStyles = manualRichTextStylesByCharacter(note, finalText);
+  const output = [];
+  let currentText = "";
+  let currentHighlighted = false;
+  let currentManualStyle = null;
+  let characterIndex = 0;
+
+  const flush = () => {
+    if (!currentText) {
+      return;
+    }
+    const escaped = escapeHtml(currentText);
+    if (currentManualStyle) {
+      output.push(`<span style="${escapeAttribute(currentManualStyle)}">${escaped}</span>`);
+    } else if (currentHighlighted) {
+      output.push(`<span class="diff-added">${escaped}</span>`);
+    } else {
+      output.push(escaped);
+    }
+    currentText = "";
+  };
+
+  for (const token of tokens) {
+    for (const character of token.token) {
+      const manualStyle = manualStyles[characterIndex] || null;
+      const highlighted = character !== "\n" && token.highlighted;
+
+      if (currentText && (
+        character === "\n"
+        || highlighted !== currentHighlighted
+        || manualStyle !== currentManualStyle
+      )) {
+        flush();
+      }
+
+      if (character === "\n") {
+        output.push("\n");
+        characterIndex += 1;
+        currentHighlighted = false;
+        currentManualStyle = null;
+        continue;
+      }
+
+      currentHighlighted = highlighted;
+      currentManualStyle = manualStyle;
+      currentText += character;
+      characterIndex += 1;
+    }
+  }
+
+  flush();
+  return output.join("");
+}
+
+function manualRichTextStylesByCharacter(note, expectedText = "") {
+  if (!note?.richTextHTML) {
+    return [];
+  }
+
+  const template = document.createElement("template");
+  template.innerHTML = note.richTextHTML;
+  const text = [];
+  const styles = [];
+  const blockTags = new Set(["DIV", "P", "LI"]);
+
+  const appendCharacter = (character, style) => {
+    text.push(character === "\u00a0" ? " " : character);
+    styles.push(style || null);
+  };
+
+  const appendLineBreak = () => {
+    if (text.length && text.at(-1) !== "\n") {
+      appendCharacter("\n", null);
+    }
+  };
+
+  const walk = (node, inheritedStyle = "") => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      for (const character of node.textContent || "") {
+        appendCharacter(character, inheritedStyle);
+      }
+      return;
+    }
+
+    if (node.nodeName === "BR") {
+      appendLineBreak();
+      return;
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return;
+    }
+
+    if (blockTags.has(node.tagName)) {
+      appendLineBreak();
+    }
+
+    const backgroundColor = normalizeRichTextColor(node.style?.backgroundColor, true);
+    const color = normalizeRichTextColor(node.style?.color, false);
+    const styleParts = [];
+    if (backgroundColor) {
+      styleParts.push(`background-color: ${backgroundColor}`);
+    }
+    if (color) {
+      styleParts.push(`color: ${color}`);
+    }
+    const ownStyle = styleParts.join("; ");
+    const nextStyle = ownStyle || inheritedStyle;
+    node.childNodes.forEach((child) => walk(child, nextStyle));
+  };
+
+  template.content.childNodes.forEach((node) => walk(node));
+  while (text.length && /\s/u.test(text[0])) {
+    text.shift();
+    styles.shift();
+  }
+  while (text.length && /\s/u.test(text.at(-1))) {
+    text.pop();
+    styles.pop();
+  }
+
+  const richText = text.join("");
+  const normalizedExpectedText = String(expectedText || note.text || "")
+    .replace(/\u00a0/g, " ")
+    .trim();
+  if (richText === normalizedExpectedText) {
+    return styles;
+  }
+
+  const start = richText.indexOf(normalizedExpectedText);
+  if (start >= 0) {
+    return styles.slice(start, start + normalizedExpectedText.length);
+  }
+
+  return [];
 }
 
 function tokenizeForDiff(text) {
@@ -4702,10 +4982,14 @@ function visibleVacationSlotsForDay(day) {
   const slots = vacationSlotsForDay(selectedDay);
   const now = new Date();
   const today = startOfDay(now);
-  const morningSwitch = dateAt(selectedDay, 6, 0);
 
-  if (!sameDay(selectedDay, today) || now >= morningSwitch) {
+  if (!sameDay(selectedDay, today)) {
     return slots;
+  }
+
+  const currentSlots = slots.filter((slot) => now >= slot.start && now < slot.end);
+  if (currentSlots.length) {
+    return currentSlots;
   }
 
   const previousDay = addDays(selectedDay, -1);
@@ -4713,7 +4997,7 @@ function visibleVacationSlotsForDay(day) {
     return slot.shiftID === "night" && now >= slot.start && now < slot.end;
   });
 
-  return [...previousNightSlots, ...slots];
+  return previousNightSlots.length ? previousNightSlots : slots;
 }
 
 function vacationInterval(day, shiftID, weekend) {
@@ -4745,18 +5029,143 @@ function sameVacationSlot(a, b) {
 }
 
 function highlight(value) {
-  const escaped = escapeHtml(value);
-  const terms = state.search
-    .split(/\s+/)
-    .map((term) => term.trim())
-    .filter(Boolean)
-    .map(escapeRegExp);
+  return renderHighlightedText(value, searchTerms());
+}
 
-  if (terms.length === 0) {
-    return escaped;
+function highlightHTML(html) {
+  const terms = searchTerms();
+  if (!html || terms.length === 0 || typeof document === "undefined") {
+    return html || "";
   }
 
-  return escaped.replace(new RegExp(`(${terms.join("|")})`, "gi"), "<mark>$1</mark>");
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
+  const textNodes = [];
+
+  while (walker.nextNode()) {
+    textNodes.push(walker.currentNode);
+  }
+
+  for (const textNode of textNodes) {
+    const ranges = searchRangesInText(textNode.nodeValue || "", terms);
+    if (!ranges.length) {
+      continue;
+    }
+
+    const fragment = document.createDocumentFragment();
+    let cursor = 0;
+    for (const range of ranges) {
+      if (range.start > cursor) {
+        fragment.append(document.createTextNode(textNode.nodeValue.slice(cursor, range.start)));
+      }
+      const mark = document.createElement("mark");
+      mark.textContent = textNode.nodeValue.slice(range.start, range.end);
+      fragment.append(mark);
+      cursor = range.end;
+    }
+    if (cursor < textNode.nodeValue.length) {
+      fragment.append(document.createTextNode(textNode.nodeValue.slice(cursor)));
+    }
+    textNode.replaceWith(fragment);
+  }
+
+  return template.innerHTML;
+}
+
+function renderHighlightedText(value, terms) {
+  const textValue = stringValue(value);
+  const ranges = searchRangesInText(textValue, terms);
+
+  if (!ranges.length) {
+    return escapeHtml(textValue);
+  }
+
+  const output = [];
+  let cursor = 0;
+  for (const range of ranges) {
+    output.push(escapeHtml(textValue.slice(cursor, range.start)));
+    output.push(`<mark>${escapeHtml(textValue.slice(range.start, range.end))}</mark>`);
+    cursor = range.end;
+  }
+  output.push(escapeHtml(textValue.slice(cursor)));
+  return output.join("");
+}
+
+function searchTerms() {
+  return state.search
+    .split(/\s+/)
+    .map((term) => term.trim())
+    .filter(Boolean);
+}
+
+function searchRangesInText(text, terms) {
+  const normalized = normalizedTextWithMap(text);
+  if (!normalized.text || !terms.length) {
+    return [];
+  }
+
+  const ranges = [];
+  for (const term of terms) {
+    const normalizedTerm = normalizeSearchText(term);
+    if (!normalizedTerm) {
+      continue;
+    }
+
+    let position = normalized.text.indexOf(normalizedTerm);
+    while (position !== -1) {
+      const startMap = normalized.map[position];
+      const endMap = normalized.map[position + normalizedTerm.length - 1];
+      if (startMap && endMap) {
+        ranges.push({ start: startMap.start, end: endMap.end });
+      }
+      position = normalized.text.indexOf(normalizedTerm, position + normalizedTerm.length);
+    }
+  }
+
+  return mergeTextRanges(ranges);
+}
+
+function normalizedTextWithMap(value) {
+  const source = stringValue(value);
+  let text = "";
+  const map = [];
+  let index = 0;
+
+  for (const character of source) {
+    const start = index;
+    const end = start + character.length;
+    const normalized = normalizeSearchText(character);
+    for (const normalizedCharacter of normalized) {
+      text += normalizedCharacter;
+      map.push({ start, end });
+    }
+    index = end;
+  }
+
+  return { text, map };
+}
+
+function normalizeSearchText(value) {
+  return stringValue(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("fr");
+}
+
+function mergeTextRanges(ranges) {
+  return ranges
+    .filter((range) => range.end > range.start)
+    .sort((a, b) => a.start - b.start || b.end - a.end)
+    .reduce((merged, range) => {
+      const previous = merged.at(-1);
+      if (!previous || range.start > previous.end) {
+        merged.push({ ...range });
+      } else if (range.end > previous.end) {
+        previous.end = range.end;
+      }
+      return merged;
+    }, []);
 }
 
 function setStatus(message) {
@@ -5085,8 +5494,4 @@ function escapeHtml(value) {
 
 function escapeAttribute(value) {
   return escapeHtml(value);
-}
-
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
