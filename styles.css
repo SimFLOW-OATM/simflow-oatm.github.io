@@ -1468,6 +1468,11 @@ mark {
   box-shadow: 0 10px 25px rgba(15, 23, 42, 0.06);
 }
 
+.admin-card.is-current {
+  background: rgba(47, 128, 237, 0.1);
+  outline: 1px solid rgba(47, 128, 237, 0.28);
+}
+
 .admin-card-title {
   display: flex;
   align-items: baseline;
@@ -1480,10 +1485,68 @@ mark {
   font-size: 18px;
 }
 
+.admin-card-title .admin-current-pill {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: var(--blue);
+  background: rgba(47, 128, 237, 0.14);
+  font-size: 11px;
+  font-weight: 800;
+  vertical-align: middle;
+}
+
 .admin-card-title span {
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
+}
+
+.admin-card-title .admin-connection-total {
+  color: var(--ink);
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.admin-connection-sessions {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-connection-session {
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(17, 24, 39, 0.04);
+}
+
+.admin-connection-session.is-current {
+  background: rgba(47, 128, 237, 0.12);
+  outline: 1px solid rgba(47, 128, 237, 0.28);
+}
+
+.admin-connection-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  color: var(--muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-connection-metrics strong {
+  margin-left: auto;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.admin-connection-identifier {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .admin-form-grid {

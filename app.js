@@ -7,6 +7,7 @@ import {
   doc,
   getFirestore,
   getDocs,
+  increment,
   onSnapshot,
   query,
   setDoc,
@@ -28,7 +29,11 @@ const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
 const deletedLegacySimulatorNames = new Set(["Simu 1", "Simu 2", "Simu 3", "Simu 4"]);
 const sessionStorageKey = "simflow.web.currentUser";
+const webDeviceStorageKey = "simflow.web.deviceIdentifier";
 const sessionDurationMs = 30 * 24 * 60 * 60 * 1000;
+const activeLoginSessionWindowMs = 25 * 1000;
+const loginPresenceHeartbeatMs = 10 * 1000;
+const loginPresenceRefreshMs = 2 * 1000;
 
 const state = {
   authReady: false,
@@ -47,17 +52,20 @@ const state = {
   pendingHandwritingClear: null,
   detailTimelineEvents: [],
   activeAdminTab: "home",
+  adminLoginDate: startOfDay(new Date()),
   codeModalMode: "login",
   isSaving: false,
   notes: [],
   handwritingNotes: [],
   dailyTags: [],
+  loginEvents: [],
   users: [],
   allSimulators: [],
   simulators: [],
   unsubscribeNotes: null,
   unsubscribeHandwritingNotes: null,
   unsubscribeDailyTags: null,
+  unsubscribeLoginEvents: null,
   unsubscribeUsers: null,
   unsubscribeSimulators: null,
   lastLoginEventAt: 0
@@ -185,6 +193,8 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 window.addEventListener("focus", recordLoginAppearance);
+window.setInterval(() => recordLoginAppearance({ heartbeat: true }), loginPresenceHeartbeatMs);
+window.setInterval(refreshAdminConnectionsPresence, loginPresenceRefreshMs);
 elements.userSummaryButton.addEventListener("click", () => {
   elements.userMenu.classList.toggle("hidden");
 });
@@ -426,6 +436,9 @@ elements.adminOverlay.addEventListener("click", (event) => {
   } else if (action === "open-admin-simulators") {
     state.activeAdminTab = "simulators";
     renderAdminSettings();
+  } else if (action === "open-admin-connections") {
+    state.activeAdminTab = "connections";
+    renderAdminSettings();
   } else if (action === "create-user") {
     createAdminUser();
   } else if (action === "save-user") {
@@ -438,6 +451,12 @@ elements.adminOverlay.addEventListener("click", (event) => {
     saveAdminSimulator(actionButton.closest(".admin-card")?.dataset.simulatorId);
   } else if (action === "new-simulator") {
     createAdminSimulator();
+  }
+});
+elements.adminOverlay.addEventListener("change", (event) => {
+  if (event.target.matches("[data-admin-login-date]")) {
+    state.adminLoginDate = startOfDay(parseDateInput(event.target.value));
+    renderAdminSettings();
   }
 });
 document.addEventListener("keydown", (event) => {
@@ -652,7 +671,26 @@ function clearSavedSession() {
   localStorage.removeItem(sessionStorageKey);
 }
 
-async function recordLoginAppearance() {
+function getWebDeviceIdentifier() {
+  const existingIdentifier = localStorage.getItem(webDeviceStorageKey);
+  if (existingIdentifier) {
+    return existingIdentifier;
+  }
+
+  const identifier = globalThis.crypto?.randomUUID
+    ? globalThis.crypto.randomUUID()
+    : `web-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  localStorage.setItem(webDeviceStorageKey, identifier);
+  return identifier;
+}
+
+function webDeviceName() {
+  const platform = navigator.userAgentData?.platform || navigator.platform || "Navigateur web";
+  return `${platform} - ${navigator.userAgentData?.brands?.[0]?.brand || navigator.userAgent.split(" ")[0] || "Web"}`;
+}
+
+async function recordLoginAppearance(options = {}) {
+  const heartbeat = Boolean(options.heartbeat);
   if (!state.authReady || state.currentUser?.role === "admin" || document.visibilityState === "hidden") {
     return;
   }
@@ -663,19 +701,31 @@ async function recordLoginAppearance() {
   }
 
   state.lastLoginEventAt = now;
-  const id = globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `${now}-${Math.random().toString(36).slice(2)}`;
   const createdAt = new Date(now);
   const userIdentifier = state.currentUser?.id || "WEB_ANONYMOUS";
   const userDisplayName = state.currentUser ? currentDisplayName() : "Web non connecté";
-
-  await setDoc(doc(db, "loginEvents", id), {
+  const deviceIdentifier = getWebDeviceIdentifier();
+  const deviceName = webDeviceName();
+  const dayIdentifier = isoDate(createdAt);
+  const id = firestoreDocumentID([dayIdentifier, userIdentifier, "web", deviceIdentifier].join("_"));
+  const payload = {
     id,
     userIdentifier,
     userDisplayName,
     source: "web",
-    dayIdentifier: isoDate(createdAt),
-    createdAt
-  }).catch((error) => {
+    deviceIdentifier,
+    deviceName,
+    iCloudIdentifier: userIdentifier,
+    dayIdentifier,
+    createdAt,
+    lastSeenAt: createdAt
+  };
+
+  if (!heartbeat) {
+    payload.appearanceCount = increment(1);
+  }
+
+  await setDoc(doc(db, "loginEvents", id), payload, { merge: true }).catch((error) => {
     setStatus(error.message);
   });
 }
@@ -704,6 +754,15 @@ function attachFirebaseListeners() {
       state.users = deduplicatedUsers(snapshot.docs
         .map((document) => userFromSnapshot(document.id, document.data())))
         .sort((a, b) => currentDisplayNameForUser(a).localeCompare(currentDisplayNameForUser(b), "fr"));
+      renderAdminSettings();
+    }, (error) => setStatus(error.message));
+  }
+
+  if (!state.unsubscribeLoginEvents) {
+    state.unsubscribeLoginEvents = onSnapshot(collection(db, "loginEvents"), (snapshot) => {
+      state.loginEvents = snapshot.docs
+        .map((document) => loginEventFromSnapshot(document.id, document.data()))
+        .filter(Boolean);
       renderAdminSettings();
     }, (error) => setStatus(error.message));
   }
@@ -1361,12 +1420,47 @@ function openSelectedCreationTextModal() {
     return;
   }
 
-  openCreationTextModal(creationTextForNote(note), formatTimelineDate(note.createdAt || note.firstDisplayDate || note.displayDate));
+  const creationRevision = effectiveCreationRevision(note);
+  openCreationTextModal(creationTextForNote(note), formatTimelineDate(creationRevision.date || note.createdAt || note.firstDisplayDate || note.displayDate));
 }
 
 function creationTextForNote(note) {
-  return note.revisions.find((revision) => stringValue(revision.text).trim())?.text
+  return stringValue(effectiveCreationRevision(note).text).trim()
     || combinedNoteText(note.title, note.text);
+}
+
+function effectiveCreationRevision(note) {
+  const fallback = note.revisions[0] || {
+    date: note.createdAt || note.firstDisplayDate || note.displayDate,
+    text: combinedNoteText(note.title, note.text),
+    author: note.author,
+    authorIdentifier: note.authorIdentifier || note.author
+  };
+  let creationRevision = fallback;
+
+  for (const revision of note.revisions.slice(1)) {
+    if (!shouldHideSameDayAuthorModification(revision, note)) {
+      break;
+    }
+
+    creationRevision = revision;
+  }
+
+  return creationRevision;
+}
+
+function foldedInitialAuthorRevisionIds(note) {
+  const revisionIds = new Set();
+
+  for (const revision of note.revisions.slice(1)) {
+    if (!shouldHideSameDayAuthorModification(revision, note)) {
+      break;
+    }
+
+    revisionIds.add(revision.id);
+  }
+
+  return revisionIds;
 }
 
 function closeCreationTextModal() {
@@ -1880,6 +1974,23 @@ function userFromSnapshot(documentID, data) {
   };
 }
 
+function loginEventFromSnapshot(documentID, data) {
+  const createdAt = dateValue(data.createdAt);
+  return {
+    id: stringValue(data.id, documentID),
+    userIdentifier: stringValue(data.userIdentifier),
+    userDisplayName: stringValue(data.userDisplayName),
+    source: stringValue(data.source),
+    deviceIdentifier: stringValue(data.deviceIdentifier),
+    deviceName: stringValue(data.deviceName),
+    iCloudIdentifier: stringValue(data.iCloudIdentifier, data.userIdentifier),
+    dayIdentifier: stringValue(data.dayIdentifier, createdAt ? isoDate(createdAt) : ""),
+    createdAt,
+    lastSeenAt: dateValue(data.lastSeenAt) || createdAt,
+    appearanceCount: Math.max(1, Number(data.appearanceCount) || 1)
+  };
+}
+
 function deduplicatedUsers(users) {
   const sorted = [...users].sort((first, second) => {
     const firstIsCanonical = first.documentID === firestoreDocumentID(first.id);
@@ -1935,20 +2046,38 @@ function renderAdminSettings() {
     return;
   }
 
+  const previousTab = state.activeAdminTab;
+  const previousScrollTop = elements.adminBody.scrollTop;
   const title = state.activeAdminTab === "users"
     ? "Droits"
     : state.activeAdminTab === "simulators"
       ? "Simulateurs"
-      : "Administration";
+      : state.activeAdminTab === "connections"
+        ? "Connexions"
+        : "Administration";
   elements.adminOverlay.querySelector("#adminTitle").textContent = title;
 
   if (state.activeAdminTab === "users") {
     elements.adminBody.innerHTML = renderAdminUsers();
   } else if (state.activeAdminTab === "simulators") {
     elements.adminBody.innerHTML = renderAdminSimulators();
+  } else if (state.activeAdminTab === "connections") {
+    elements.adminBody.innerHTML = renderAdminConnections();
   } else {
     elements.adminBody.innerHTML = renderAdminHome();
   }
+
+  if (state.activeAdminTab === previousTab) {
+    elements.adminBody.scrollTop = previousScrollTop;
+  }
+}
+
+function refreshAdminConnectionsPresence() {
+  if (state.activeAdminTab !== "connections" || elements.adminOverlay.classList.contains("hidden")) {
+    return;
+  }
+
+  renderAdminSettings();
 }
 
 function renderAdminHome() {
@@ -1966,6 +2095,13 @@ function renderAdminHome() {
         <span>
           <strong>Simulateurs</strong>
           <small>Noms, ordre, couleurs et visibilité</small>
+        </span>
+      </button>
+      <button class="admin-menu-row" type="button" data-admin-action="open-admin-connections">
+        <span class="admin-menu-icon">▥</span>
+        <span>
+          <strong>Connexions</strong>
+          <small>Ouvertures par jour, iOS et Web</small>
         </span>
       </button>
     </div>
@@ -2062,6 +2198,64 @@ function renderAdminSimulators() {
   `;
 }
 
+function renderAdminConnections() {
+  const rows = loginStatsRows();
+  const groups = loginStatsGroups(rows);
+  const totalCount = rows.reduce((sum, row) => sum + row.totalCount, 0);
+  return `
+    ${renderAdminBackButton()}
+    <div class="admin-section-heading">
+      <h3>Jour</h3>
+      <p>Connexions enregistrées par utilisateur.</p>
+    </div>
+    <div class="admin-card">
+      <div class="admin-form-grid">
+        <label>Date<input type="date" data-admin-login-date value="${escapeAttribute(isoDate(state.adminLoginDate))}"></label>
+        <label>Total<input value="${totalCount} connexion${totalCount > 1 ? "s" : ""}" readonly></label>
+      </div>
+    </div>
+    <div class="admin-section-heading">
+      <h3>Utilisateurs</h3>
+    </div>
+    <div class="admin-list">
+      ${groups.map(renderAdminConnectionGroup).join("") || "<p class=\"muted\">Aucun utilisateur.</p>"}
+    </div>
+  `;
+}
+
+function renderAdminConnectionGroup(group) {
+  return `
+    <article class="admin-card admin-connection-card">
+      <div class="admin-card-title">
+        <strong>
+          ${escapeHtml(group.displayName)}
+          ${group.hasCurrentSession ? `<span class="admin-current-pill">En cours</span>` : ""}
+        </strong>
+        <span class="admin-connection-total">${group.totalCount}</span>
+      </div>
+      <div class="admin-connection-sessions">
+        ${group.rows.map(renderAdminConnectionSession).join("")}
+      </div>
+    </article>
+  `;
+}
+
+function renderAdminConnectionSession(row) {
+  return `
+    <div class="admin-connection-session ${row.isCurrent ? "is-current" : ""}">
+      <div class="admin-connection-metrics">
+        <span>▯ ${row.ipadCount} iOS</span>
+        <span>◎ ${row.webCount} Web</span>
+        <span>□ ${row.createdCount} créées</span>
+        <span>⌁ ${row.modifiedCount} modifiées</span>
+        <strong>${row.totalCount}</strong>
+      </div>
+      ${row.iCloudIdentifiers.length ? `<p class="admin-connection-identifier">Identifiant iCloud : ${escapeHtml(row.iCloudIdentifiers.join(", "))}</p>` : ""}
+      ${row.deviceDescriptions.length ? `<p class="admin-connection-identifier">Device : ${escapeHtml(row.deviceDescriptions.join(", "))}</p>` : ""}
+    </div>
+  `;
+}
+
 function renderAdminSimulatorCard(simulator) {
   return `
     <article class="admin-card" data-simulator-id="${escapeAttribute(simulator.documentID)}">
@@ -2085,6 +2279,188 @@ function renderAdminSimulatorCard(simulator) {
       </div>
     </article>
   `;
+}
+
+function loginStatsRows() {
+  const dayIdentifier = isoDate(state.adminLoginDate);
+  const eventsForDay = state.loginEvents.filter((event) => event.dayIdentifier === dayIdentifier);
+  const eventsByIdentity = groupBy(eventsForDay, (event) => {
+    return [
+      normalizeKey(event.iCloudIdentifier || event.userIdentifier),
+      normalizeKey(event.deviceIdentifier || event.source)
+    ].join("|");
+  });
+  const createdCounts = createdNoteCountsByUser(dayIdentifier);
+  const modifiedCounts = modifiedNoteCountsByUser(dayIdentifier);
+  const usersByIdentifier = new Map(state.users
+    .filter((user) => !isAdminIdentifier(user.id))
+    .map((user) => [normalizeKey(user.id), user]));
+  const activeSessionCutoff = Date.now() - activeLoginSessionWindowMs;
+
+  return [...eventsByIdentity.values()].map((events) => {
+    const latestEvent = [...events].sort((first, second) => {
+      return (second.lastSeenAt?.getTime() || second.createdAt?.getTime() || 0)
+        - (first.lastSeenAt?.getTime() || first.createdAt?.getTime() || 0);
+    })[0];
+    const userIdentifier = stringValue(latestEvent?.iCloudIdentifier || latestEvent?.userIdentifier);
+    const userKey = normalizeKey(userIdentifier);
+    const fallbackName = stringValue(latestEvent?.userDisplayName).trim();
+    const isCurrent = events.some((event) => {
+      const lastSeenAt = event.lastSeenAt || event.createdAt;
+      return lastSeenAt && lastSeenAt.getTime() >= activeSessionCutoff;
+    });
+    const matchedUser = usersByIdentifier.get(userKey);
+
+    return {
+      userIdentifier,
+      displayName: matchedUser ? currentDisplayNameForUser(matchedUser) : fallbackName || userIdentifier,
+      events,
+      totalCount: events.reduce((sum, event) => sum + (event.appearanceCount || 1), 0),
+      ipadCount: events.reduce((sum, event) => sum + (event.source === "ipad" ? event.appearanceCount || 1 : 0), 0),
+      webCount: events.reduce((sum, event) => sum + (event.source === "web" ? event.appearanceCount || 1 : 0), 0),
+      createdCount: createdCounts.get(userKey) || 0,
+      modifiedCount: modifiedCounts.get(userKey) || 0,
+      iCloudIdentifiers: uniqueValues(events.map((event) => event.iCloudIdentifier || event.userIdentifier)),
+      deviceDescriptions: deviceDescriptionsForEvents(events),
+      isCurrent
+    };
+  })
+    .filter((row) => row.totalCount > 0)
+    .sort((first, second) => {
+      if (first.isCurrent !== second.isCurrent) {
+        return first.isCurrent ? -1 : 1;
+      }
+
+      if (first.totalCount !== second.totalCount) {
+        return second.totalCount - first.totalCount;
+      }
+
+      return first.displayName.localeCompare(second.displayName, "fr", { sensitivity: "base" });
+    });
+}
+
+function loginStatsGroups(rows) {
+  const rowsByUser = groupBy(rows, (row) => normalizeKey(row.userIdentifier));
+
+  return [...rowsByUser.values()].map((groupRows) => {
+    const sortedRows = [...groupRows].sort((first, second) => {
+      if (first.isCurrent !== second.isCurrent) {
+        return first.isCurrent ? -1 : 1;
+      }
+
+      if (first.totalCount !== second.totalCount) {
+        return second.totalCount - first.totalCount;
+      }
+
+      const firstDevice = first.deviceDescriptions[0] || "";
+      const secondDevice = second.deviceDescriptions[0] || "";
+      return firstDevice.localeCompare(secondDevice, "fr", { sensitivity: "base" });
+    });
+
+    return {
+      userIdentifier: sortedRows[0]?.userIdentifier || "",
+      displayName: sortedRows[0]?.displayName || "Utilisateur",
+      rows: sortedRows,
+      totalCount: sortedRows.reduce((sum, row) => sum + row.totalCount, 0),
+      hasCurrentSession: sortedRows.some((row) => row.isCurrent)
+    };
+  })
+    .sort((first, second) => {
+      if (first.hasCurrentSession !== second.hasCurrentSession) {
+        return first.hasCurrentSession ? -1 : 1;
+      }
+
+      if (first.totalCount !== second.totalCount) {
+        return second.totalCount - first.totalCount;
+      }
+
+      return first.displayName.localeCompare(second.displayName, "fr", { sensitivity: "base" });
+    });
+}
+
+function createdNoteCountsByUser(dayIdentifier) {
+  const counts = new Map();
+  for (const note of state.notes) {
+    if (!note.createdAt || isoDate(note.createdAt) !== dayIdentifier) {
+      continue;
+    }
+
+    const identifier = normalizeKey(note.authorIdentifier || note.author);
+    if (!identifier || isAdminIdentifier(identifier)) {
+      continue;
+    }
+
+    counts.set(identifier, (counts.get(identifier) || 0) + 1);
+  }
+  return counts;
+}
+
+function modifiedNoteCountsByUser(dayIdentifier) {
+  const counts = new Map();
+  for (const note of state.notes) {
+    const revisions = [...note.revisions]
+      .filter((revision) => revision.date)
+      .sort((first, second) => first.date - second.date)
+      .slice(1);
+    for (const revision of revisions) {
+      if (isoDate(revision.date) !== dayIdentifier) {
+        continue;
+      }
+
+      const identifier = normalizeKey(revision.authorIdentifier || revision.author);
+      if (!identifier || isAdminIdentifier(identifier)) {
+        continue;
+      }
+
+      counts.set(identifier, (counts.get(identifier) || 0) + 1);
+    }
+  }
+  return counts;
+}
+
+function groupBy(items, keyForItem) {
+  const groups = new Map();
+  for (const item of items) {
+    const key = keyForItem(item);
+    if (!groups.has(key)) {
+      groups.set(key, []);
+    }
+    groups.get(key).push(item);
+  }
+  return groups;
+}
+
+function deviceDescriptionsForEvents(events) {
+  return uniqueValues(events
+    .filter((event) => event.deviceIdentifier)
+    .map((event) => {
+      const name = stringValue(event.deviceName).trim();
+      return name ? `${name} (${event.deviceIdentifier})` : event.deviceIdentifier;
+    }));
+}
+
+function uniqueValues(values) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values) {
+    const trimmed = stringValue(value).trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    const key = normalizeKey(trimmed);
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    result.push(trimmed);
+  }
+  return result;
+}
+
+function isAdminIdentifier(identifier) {
+  return normalizeKey(identifier) === normalizeKey("ADMIN");
 }
 
 async function createAdminUser() {
@@ -3660,12 +4036,13 @@ function latestContentModificationDate(note) {
 }
 
 function contentModificationDates(note) {
+  const foldedRevisionIds = foldedInitialAuthorRevisionIds(note);
   return note.revisions
     .slice(1)
     .filter((revision) => revision.date)
     .filter((revision) => {
       return isPublicContentRevision(revision)
-        && !shouldHideSameDayAuthorModification(revision, note);
+        && !foldedRevisionIds.has(revision.id);
     })
     .map((revision) => revision.date)
     .sort((a, b) => a - b);
@@ -3757,17 +4134,18 @@ function renderNewAgeBadge(noteID, isTagged) {
 
 function timelineEvents(note, context) {
   const sortedRevisions = timelineRevisionsForCurrentUser(note);
+  const creationRevision = effectiveCreationRevision(note);
   const events = [{
-    date: note.createdAt || note.firstDisplayDate || note.displayDate,
+    date: creationRevision.date || note.createdAt || note.firstDisplayDate || note.displayDate,
     title: "Creation",
-    author: note.author,
-    authorIdentifier: note.authorIdentifier || note.author,
+    author: creationRevision.author || note.author,
+    authorIdentifier: creationRevision.authorIdentifier || creationRevision.author || note.authorIdentifier || note.author,
     detail: creationAssignmentDetail(note),
     kind: "creation",
     hasDisclosure: true
   }];
 
-  let previousRevisionText = creationTextForNote(note);
+  let previousRevisionText = stringValue(creationRevision.text).trim() || creationTextForNote(note);
 
   for (const revision of sortedRevisions) {
     if (!revision.date) {
@@ -3829,9 +4207,11 @@ function timelineEvents(note, context) {
 }
 
 function timelineRevisionsForCurrentUser(note) {
+  const foldedRevisionIds = foldedInitialAuthorRevisionIds(note);
   const revisionsAfterCreation = note.revisions
     .slice(1)
     .filter((revision) => revision.date)
+    .filter((revision) => !foldedRevisionIds.has(revision.id))
     .sort((a, b) => a.date - b.date);
 
   return revisionsAfterCreation.filter((revision) => {
@@ -3839,7 +4219,7 @@ function timelineRevisionsForCurrentUser(note) {
       return false;
     }
 
-    return !shouldHideSameDayAuthorModification(revision, note);
+    return true;
   });
 }
 
