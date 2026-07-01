@@ -1059,8 +1059,8 @@ h1:empty + p {
 }
 
 .note-card.priority-soon {
-  border-color: var(--priority-color, var(--soon));
-  background: var(--priority-bg, rgba(255, 138, 36, 0.16));
+  border-color: var(--priority-color, var(--urgent));
+  background: var(--priority-bg, rgba(255, 75, 85, 0.12));
 }
 
 .note-card.priority-whenever {
@@ -1111,7 +1111,7 @@ h1:empty + p {
 }
 
 .note-card.priority-soon::before {
-  color: var(--soon);
+  color: var(--urgent);
 }
 
 .note-card.priority-whenever::before {
@@ -1944,12 +1944,16 @@ mark {
 
 .creation-text-panel {
   position: relative;
+  display: flex;
+  flex-direction: column;
   width: min(560px, calc(100vw - 56px));
   min-height: min(560px, calc(100vh - 56px));
+  max-height: calc(100vh - 56px);
   border-radius: 28px;
   padding: 54px 28px 32px;
   background: rgba(255, 255, 255, 0.96);
   box-shadow: 0 26px 70px rgba(15, 23, 42, 0.22);
+  overflow: hidden;
 }
 
 .creation-text-close {
@@ -2029,10 +2033,14 @@ mark {
 }
 
 .creation-text-content {
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 8px;
   white-space: pre-wrap;
   color: #111827;
   font-size: 16px;
   line-height: 1.42;
+  overscroll-behavior: contain;
 }
 
 .creation-text-content.revision-diff {
@@ -2181,7 +2189,7 @@ mark {
 }
 
 .priority-option.priority-soon {
-  border-color: var(--soon);
+  border-color: var(--urgent);
 }
 
 .priority-option.priority-whenever {
@@ -2195,7 +2203,7 @@ mark {
 
 .priority-option.priority-soon.selected {
   color: white;
-  background: var(--soon);
+  background: var(--urgent);
 }
 
 .priority-option.priority-whenever.selected {

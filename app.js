@@ -473,7 +473,7 @@ function openCodeModal(mode = "login") {
   state.codeModalMode = mode;
   elements.accessCode.value = "";
   elements.loginHint.textContent = "Entre ton code utilisateur a 6 chiffres.";
-  elements.codeModalTitle.textContent = "Code utilisateur";
+  elements.codeModalTitle.textContent = "Se connecter";
   elements.codeModalMessage.textContent = "Entrer votre code utilisateur a 6 chiffres.";
 
   elements.codeModal.classList.remove("hidden");
@@ -1511,12 +1511,10 @@ function renderCreate(context) {
       <div class="priority-picker" role="radiogroup" aria-label="Priorité">
         ${renderPriorityOption("", "Info", true, canWrite)}
         ${renderPriorityOption("urgent", "Urgent", false, canWrite)}
-        ${renderPriorityOption("soon", "A traiter rapidement", false, canWrite)}
         ${renderPriorityOption("whenever", "ASAP", false, canWrite)}
         <select id="detailEditPriority" ${canWrite ? "" : "disabled"} aria-hidden="true" tabindex="-1">
           <option value="" selected>Info</option>
           <option value="urgent">Urgent</option>
-          <option value="soon">A traiter rapidement</option>
           <option value="whenever">ASAP</option>
         </select>
       </div>
@@ -1594,12 +1592,10 @@ function renderDetail(note, context) {
       <div class="priority-picker" role="radiogroup" aria-label="Priorité">
         ${renderPriorityOption("", "Info", !note.priority, canWrite)}
         ${renderPriorityOption("urgent", "Urgent", note.priority === "urgent", canWrite)}
-        ${renderPriorityOption("soon", "A traiter rapidement", note.priority === "soon", canWrite)}
         ${renderPriorityOption("whenever", "ASAP", note.priority === "whenever", canWrite)}
         <select id="detailEditPriority" ${canWrite ? "" : "disabled"} aria-hidden="true" tabindex="-1">
           <option value="" ${!note.priority ? "selected" : ""}>Info</option>
           <option value="urgent" ${note.priority === "urgent" ? "selected" : ""}>Urgent</option>
-          <option value="soon" ${note.priority === "soon" ? "selected" : ""}>A traiter rapidement</option>
           <option value="whenever" ${note.priority === "whenever" ? "selected" : ""}>ASAP</option>
         </select>
       </div>
@@ -3410,7 +3406,7 @@ async function undoLatestModificationFromDetail(note) {
   }
 
   const previousRevision = note.revisions[revisionIndex - 1];
-  const restoredText = splitRevisionText(previousRevision?.text || "");
+  const restoredText = restoredRevisionText(previousRevision?.text || "", note);
   const revisions = [...note.revisions];
   revisions.splice(revisionIndex, 1);
   const restoredNote = { ...note, revisions };
@@ -3489,6 +3485,16 @@ function splitRevisionText(revisionText) {
     title: stringValue(lines.shift()).trim(),
     text: lines.join("\n").trim()
   };
+}
+
+function restoredRevisionText(revisionText, currentNote) {
+  const currentTitle = stringValue(currentNote?.title).trim();
+  const fullText = stringValue(revisionText).trim();
+  if (!currentTitle) {
+    return { title: "", text: fullText };
+  }
+
+  return splitRevisionText(fullText);
 }
 
 function collectDetailDestination(fallbackContext) {
@@ -4298,9 +4304,16 @@ function timelineEvents(note, context) {
     });
   }
 
-  return mergeConsecutiveTimelineRevisions(events
-    .filter((event) => event.date)
-    .sort((a, b) => a.date - b.date));
+  const datedEvents = events.filter((event) => event.date);
+  const creationEvents = datedEvents.filter((event) => event.kind === "creation");
+  const timelineEventsAfterCreation = datedEvents
+    .filter((event) => event.kind !== "creation")
+    .sort((a, b) => a.date - b.date);
+
+  return [
+    ...creationEvents,
+    ...mergeConsecutiveTimelineRevisions(timelineEventsAfterCreation)
+  ];
 }
 
 function timelineRevisionsForCurrentUser(note) {
@@ -4738,6 +4751,7 @@ function mergeConsecutiveTimelineRevisions(events) {
       && previous.kind === "revision"
       && event.kind === "revision"
       && normalizeEventAuthor(previous) === normalizeEventAuthor(event)
+      && sameDay(previous.date, event.date)
       && previous.title === event.title) {
       previous.date = event.date;
       previous.revisions = [...(previous.revisions || []), ...(event.revisions || [])];
@@ -4857,28 +4871,28 @@ function canCurrentUserEditDate() {
 
 function priorityRank(priority) {
   if (priority === "urgent") return 0;
-  if (priority === "soon") return 1;
+  if (priority === "soon") return 0;
   if (priority === "whenever") return 2;
   return 3;
 }
 
 function priorityLabel(priority) {
   if (priority === "urgent") return "Urgent";
-  if (priority === "soon") return "A traiter rapidement";
+  if (priority === "soon") return "Urgent";
   if (priority === "whenever") return "ASAP";
   return "";
 }
 
 function priorityColor(priority) {
   if (priority === "urgent") return "#ff4b55";
-  if (priority === "soon") return "#ff8a24";
+  if (priority === "soon") return "#ff4b55";
   if (priority === "whenever") return "#35c759";
   return "#94a3b8";
 }
 
 function priorityBackground(priority) {
   if (priority === "urgent") return "rgba(255, 75, 85, 0.12)";
-  if (priority === "soon") return "rgba(255, 138, 36, 0.16)";
+  if (priority === "soon") return "rgba(255, 75, 85, 0.12)";
   if (priority === "whenever") return "rgba(53, 199, 89, 0.13)";
   return "rgba(148, 163, 184, 0.18)";
 }
