@@ -144,6 +144,28 @@ label,
   scrollbar-width: thin;
 }
 
+body.requires-login .sidebar-scroll > :not(.login-panel),
+body.requires-login .content {
+  filter: blur(8px);
+  pointer-events: none;
+  user-select: none;
+}
+
+body.requires-login .content {
+  opacity: 0.82;
+}
+
+body.requires-login .login-panel {
+  position: relative;
+  z-index: 5;
+  filter: none;
+  pointer-events: auto;
+}
+
+body.requires-login .login-panel > :not(.sidebar-login-button) {
+  pointer-events: none;
+}
+
 .brand {
   display: grid;
   place-items: center;
@@ -1563,6 +1585,17 @@ mark {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.admin-form-grid.admin-login-date-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.admin-login-date-control {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 8px;
+  align-items: end;
+}
+
 .admin-create-user-card {
   margin-bottom: 24px;
 }
@@ -2079,7 +2112,8 @@ mark {
 
 .detail-action-row .action-done,
 .detail-action-row .action-ack,
-.detail-action-row .action-delete {
+.detail-action-row .action-delete,
+.detail-action-row .action-permanent-delete {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -2101,7 +2135,8 @@ mark {
   color: #2487ff;
 }
 
-.detail-action-row .action-delete {
+.detail-action-row .action-delete,
+.detail-action-row .action-permanent-delete {
   --action-color: #ef4444;
   color: #ef4444;
 }
@@ -2843,7 +2878,8 @@ mark {
   }
 
   .admin-form-grid,
-  .admin-form-grid.simulator-grid {
+  .admin-form-grid.simulator-grid,
+  .admin-form-grid.admin-login-date-grid {
     grid-template-columns: 1fr;
   }
 

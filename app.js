@@ -24,7 +24,6 @@ const firebaseConfig = {
   appId: "1:679924137342:ios:a9f38cd74eab4120f9472f"
 };
 
-const adminCode = "254789";
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
 const deletedLegacySimulatorNames = new Set(["Simu 1", "Simu 2", "Simu 3", "Simu 4"]);
@@ -62,6 +61,7 @@ const state = {
   users: [],
   allSimulators: [],
   simulators: [],
+  adminLoginDateInteracting: false,
   unsubscribeNotes: null,
   unsubscribeHandwritingNotes: null,
   unsubscribeDailyTags: null,
@@ -76,6 +76,8 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 
 const elements = {
+  sidebarScroll: document.querySelector(".sidebar-scroll"),
+  content: document.querySelector(".content"),
   loginPanel: document.querySelector("#loginPanel"),
   brandResetButton: document.querySelector("#brandResetButton"),
   userPanel: document.querySelector("#userPanel"),
@@ -204,9 +206,7 @@ document.addEventListener("click", (event) => {
   }
 });
 elements.logoutButton.addEventListener("click", () => {
-  elements.accessCode.value = "";
-  elements.userMenu.classList.add("hidden");
-  openCodeModal("login");
+  logout();
 });
 elements.changeCodeButton.addEventListener("click", () => {
   elements.userMenu.classList.add("hidden");
@@ -388,6 +388,8 @@ elements.detailOverlay.addEventListener("click", (event) => {
     saveDetailEdit(note);
   } else if (action === "delete-note") {
     deleteNoteFromDetail(note);
+  } else if (action === "permanent-delete-note") {
+    confirmPermanentDeleteFromDetail(note);
   } else if (action === "undo-latest-modification") {
     undoLatestModificationFromDetail(note);
   } else if (action === "ocr-handwriting") {
@@ -439,6 +441,9 @@ elements.adminOverlay.addEventListener("click", (event) => {
   } else if (action === "open-admin-connections") {
     state.activeAdminTab = "connections";
     renderAdminSettings();
+  } else if (action === "admin-login-previous-day") {
+    state.adminLoginDate = addDays(state.adminLoginDate, -1);
+    renderAdminSettings({ force: true });
   } else if (action === "create-user") {
     createAdminUser();
   } else if (action === "save-user") {
@@ -456,7 +461,25 @@ elements.adminOverlay.addEventListener("click", (event) => {
 elements.adminOverlay.addEventListener("change", (event) => {
   if (event.target.matches("[data-admin-login-date]")) {
     state.adminLoginDate = startOfDay(parseDateInput(event.target.value));
-    renderAdminSettings();
+    state.adminLoginDateInteracting = false;
+    renderAdminSettings({ force: true });
+  }
+});
+elements.adminOverlay.addEventListener("focusin", (event) => {
+  if (event.target.matches("[data-admin-login-date]")) {
+    state.adminLoginDateInteracting = true;
+  }
+});
+elements.adminOverlay.addEventListener("pointerdown", (event) => {
+  if (event.target.matches("[data-admin-login-date]")) {
+    state.adminLoginDateInteracting = true;
+  }
+});
+elements.adminOverlay.addEventListener("focusout", (event) => {
+  if (event.target.matches("[data-admin-login-date]")) {
+    window.setTimeout(() => {
+      state.adminLoginDateInteracting = false;
+    }, 250);
   }
 });
 document.addEventListener("keydown", (event) => {
@@ -524,7 +547,7 @@ async function changeCurrentUserCode() {
     return;
   }
 
-  if (currentCode.length !== 6 || newCode.length !== 6 || confirmCode.length !== 6 || newCode !== confirmCode || newCode === adminCode) {
+  if (currentCode.length !== 6 || newCode.length !== 6 || confirmCode.length !== 6 || newCode !== confirmCode) {
     showChangeCodeError("Code non valide.");
     return;
   }
@@ -566,26 +589,6 @@ async function login() {
     return;
   }
 
-  if (code === adminCode) {
-    state.currentUser = {
-      id: "ADMIN",
-      documentID: "ADMIN",
-      firstName: "ADMIN",
-      lastName: "",
-      role: "admin",
-      team: ""
-    };
-    saveSession(state.currentUser);
-    state.lastLoginEventAt = 0;
-    restartDailyTagsListener();
-    recordLoginAppearance();
-    elements.loginHint.textContent = "";
-    closeCodeModal();
-    renderSession();
-    render();
-    return;
-  }
-
   if (code.length !== 6) {
     elements.codeModalMessage.textContent = "Code non valide.";
     return;
@@ -603,7 +606,7 @@ async function login() {
   });
 
   if (!snapshot || snapshot.empty) {
-    elements.codeModalMessage.textContent = "Code non valide.";
+    elements.codeModalMessage.textContent = "Code non valide. L'ancien code admin fixe n'est plus utilisable : connecte-toi avec le code d'un compte Admin.";
     return;
   }
 
@@ -669,6 +672,19 @@ function readSavedSession() {
 
 function clearSavedSession() {
   localStorage.removeItem(sessionStorageKey);
+}
+
+function logout() {
+  state.currentUser = null;
+  state.lastLoginEventAt = 0;
+  elements.accessCode.value = "";
+  elements.userMenu.classList.add("hidden");
+  closeAdminSettings();
+  closeChangeCodePanel();
+  closeCodeModal();
+  clearSavedSession();
+  restartDailyTagsListener();
+  render();
 }
 
 function getWebDeviceIdentifier() {
@@ -804,6 +820,7 @@ function restartDailyTagsListener() {
 
 function renderSession() {
   const isLoggedIn = Boolean(state.currentUser);
+  updateLoginLockState(!isLoggedIn);
   elements.loginPanel.classList.toggle("hidden", isLoggedIn);
   elements.userPanel.classList.toggle("hidden", !isLoggedIn);
   const canViewDeleted = canCurrentUserViewDeletedNotes();
@@ -826,6 +843,21 @@ function renderSession() {
   elements.changeCodeButton.classList.toggle("hidden", state.currentUser.role === "admin");
   elements.adminSettingsButton.classList.toggle("hidden", state.currentUser.role !== "admin");
   elements.pageSubtitle.textContent = `${formatLongDate(state.selectedDate)} · ${displayName || state.currentUser.id}`;
+}
+
+function updateLoginLockState(requiresLogin) {
+  document.body.classList.toggle("requires-login", requiresLogin);
+
+  if (elements.content) {
+    elements.content.inert = requiresLogin;
+    elements.content.setAttribute("aria-hidden", requiresLogin ? "true" : "false");
+  }
+
+  Array.from(elements.sidebarScroll?.children || []).forEach((child) => {
+    const isLoginPanel = child === elements.loginPanel;
+    child.inert = requiresLogin && !isLoginPanel;
+    child.setAttribute("aria-hidden", requiresLogin && !isLoginPanel ? "true" : "false");
+  });
 }
 
 function render() {
@@ -1276,7 +1308,7 @@ function renderNote(note, context) {
   const metadataDate = state.search
     ? firstAssignmentDate(note)
     : isPeriodResultsMode()
-      ? noteSortingActivityDate(note)
+      ? periodActivityDate(note, context)
       : null;
   const periodDate = metadataDate
     ? `<div class="period-note-date">${escapeHtml(formatLongDate(metadataDate))}</div>`
@@ -1558,6 +1590,7 @@ function renderDetail(note, context) {
   const canToggleDone = canWrite;
   const canToggleAcknowledgement = canWrite && !done && !note.priority && !isNew(note);
   const canDelete = canCurrentUserDeleteNote(note);
+  const canPermanentlyDelete = state.currentUser?.role === "admin" && Boolean(note.deletedAt);
   const handwriting = visibleHandwritingFor(note);
 
   elements.detailTitle.textContent = context;
@@ -1582,6 +1615,11 @@ function renderDetail(note, context) {
       ${canDelete ? `
         <button class="secondary danger action-delete" data-detail-action="delete-note">
           <span class="action-icon">⌫</span>${note.deletedAt ? "Restaurer" : "Supprimer"}
+        </button>
+      ` : ""}
+      ${canPermanentlyDelete ? `
+        <button class="secondary danger action-permanent-delete" data-detail-action="permanent-delete-note">
+          <span class="action-icon">⌫</span>Supprimer définitivement
         </button>
       ` : ""}
     </div>
@@ -2044,8 +2082,12 @@ function closeAdminSettings() {
   elements.adminOverlay.setAttribute("aria-hidden", "true");
 }
 
-function renderAdminSettings() {
+function renderAdminSettings(options = {}) {
   if (elements.adminOverlay.classList.contains("hidden")) {
+    return;
+  }
+
+  if (!options.force && isAdminLoginDateInteractionActive()) {
     return;
   }
 
@@ -2081,6 +2123,14 @@ function refreshAdminConnectionsPresence() {
   }
 
   renderAdminSettings();
+}
+
+function isAdminLoginDateInteractionActive() {
+  return state.activeAdminTab === "connections"
+    && (
+      state.adminLoginDateInteracting
+      || document.activeElement?.matches?.("[data-admin-login-date]")
+    );
 }
 
 function renderAdminHome() {
@@ -2147,6 +2197,7 @@ function renderAdminUsers() {
 
 function renderAdminUserCard(user) {
   const codeValue = shouldMaskAdminAccessCode(user) ? "••••••" : user.accessCode;
+  const codeInputType = shouldMaskAdminAccessCode(user) ? "password" : "text";
   return `
     <article class="admin-card" data-user-id="${escapeAttribute(user.documentID)}">
       <div class="admin-card-title">
@@ -2156,12 +2207,13 @@ function renderAdminUserCard(user) {
       <div class="admin-form-grid">
         <label>Prénom<input data-field="firstName" value="${escapeAttribute(user.firstName)}"></label>
         <label>Nom<input data-field="lastName" value="${escapeAttribute(user.lastName)}"></label>
-        <label>Code<input data-field="accessCode" value="${escapeAttribute(codeValue)}" maxlength="6" inputmode="numeric" autocomplete="off"></label>
+        <label>Code<input data-field="accessCode" type="${codeInputType}" value="${escapeAttribute(codeValue)}" maxlength="6" inputmode="numeric" autocomplete="off"></label>
         <label>Rôle
           <select data-field="role">
             <option value="" ${!user.role ? "selected" : ""}>Consultation</option>
             <option value="technician" ${user.role === "technician" ? "selected" : ""}>Technicien</option>
             <option value="teamLeader" ${user.role === "teamLeader" ? "selected" : ""}>Chef d'équipe</option>
+            <option value="admin" ${user.role === "admin" ? "selected" : ""}>Admin</option>
           </select>
         </label>
         <label>Équipe
@@ -2177,7 +2229,7 @@ function renderAdminUserCard(user) {
         </label>
       </div>
       <div class="admin-actions">
-        <button type="button" class="danger-text" data-admin-action="delete-user">Supprimer le compte</button>
+        <button type="button" class="danger-text" data-admin-action="delete-user" ${isLastAdminUser(user) ? "disabled" : ""}>Supprimer le compte</button>
         <button type="button" class="secondary" data-admin-action="reset-user-code">Réinitialiser code</button>
         <button type="button" data-admin-action="save-user">Enregistrer</button>
       </div>
@@ -2212,8 +2264,11 @@ function renderAdminConnections() {
       <p>Connexions enregistrées par utilisateur.</p>
     </div>
     <div class="admin-card">
-      <div class="admin-form-grid">
-        <label>Date<input type="date" data-admin-login-date value="${escapeAttribute(isoDate(state.adminLoginDate))}"></label>
+      <div class="admin-form-grid admin-login-date-grid">
+        <div class="admin-login-date-control">
+          <button class="secondary icon-button" type="button" data-admin-action="admin-login-previous-day" title="Jour précédent">‹</button>
+          <label>Date<input type="date" data-admin-login-date value="${escapeAttribute(isoDate(state.adminLoginDate))}"></label>
+        </div>
         <label>Total<input value="${totalCount} connexion${totalCount > 1 ? "s" : ""}" readonly></label>
       </div>
     </div>
@@ -2236,26 +2291,16 @@ function renderAdminConnectionGroup(group) {
         </strong>
         <span class="admin-connection-total">${group.totalCount}</span>
       </div>
-      <div class="admin-connection-sessions">
-        ${group.rows.map(renderAdminConnectionSession).join("")}
+      <div class="admin-connection-session ${group.hasCurrentSession ? "is-current" : ""}">
+      <div class="admin-connection-metrics">
+        <span>▯ ${group.ipadCount} iOS</span>
+        <span>◎ ${group.webCount} Web</span>
+        <span>□ ${group.createdCount} créées</span>
+        <span>⌁ ${group.modifiedCount} modifiées</span>
+        <strong>${group.totalCount}</strong>
+      </div>
       </div>
     </article>
-  `;
-}
-
-function renderAdminConnectionSession(row) {
-  return `
-    <div class="admin-connection-session ${row.isCurrent ? "is-current" : ""}">
-      <div class="admin-connection-metrics">
-        <span>▯ ${row.ipadCount} iOS</span>
-        <span>◎ ${row.webCount} Web</span>
-        <span>□ ${row.createdCount} créées</span>
-        <span>⌁ ${row.modifiedCount} modifiées</span>
-        <strong>${row.totalCount}</strong>
-      </div>
-      ${row.iCloudIdentifiers.length ? `<p class="admin-connection-identifier">Identifiant iCloud : ${escapeHtml(row.iCloudIdentifiers.join(", "))}</p>` : ""}
-      ${row.deviceDescriptions.length ? `<p class="admin-connection-identifier">Device : ${escapeHtml(row.deviceDescriptions.join(", "))}</p>` : ""}
-    </div>
   `;
 }
 
@@ -2286,7 +2331,9 @@ function renderAdminSimulatorCard(simulator) {
 
 function loginStatsRows() {
   const dayIdentifier = isoDate(state.adminLoginDate);
-  const eventsForDay = state.loginEvents.filter((event) => event.dayIdentifier === dayIdentifier);
+  const eventsForDay = state.loginEvents.filter((event) => {
+    return event.dayIdentifier === dayIdentifier && !isAnonymousWebLoginEvent(event);
+  });
   const eventsByIdentity = groupBy(eventsForDay, (event) => {
     return [
       normalizeKey(event.iCloudIdentifier || event.userIdentifier),
@@ -2365,6 +2412,10 @@ function loginStatsGroups(rows) {
       displayName: sortedRows[0]?.displayName || "Utilisateur",
       rows: sortedRows,
       totalCount: sortedRows.reduce((sum, row) => sum + row.totalCount, 0),
+      ipadCount: sortedRows.reduce((sum, row) => sum + row.ipadCount, 0),
+      webCount: sortedRows.reduce((sum, row) => sum + row.webCount, 0),
+      createdCount: sortedRows[0]?.createdCount || 0,
+      modifiedCount: sortedRows[0]?.modifiedCount || 0,
       hasCurrentSession: sortedRows.some((row) => row.isCurrent)
     };
   })
@@ -2379,6 +2430,15 @@ function loginStatsGroups(rows) {
 
       return first.displayName.localeCompare(second.displayName, "fr", { sensitivity: "base" });
     });
+}
+
+function isAnonymousWebLoginEvent(event) {
+  return normalizeKey(event.source) === "web"
+    && (
+      normalizeKey(event.userIdentifier) === "web_anonymous"
+      || normalizeKey(event.iCloudIdentifier) === "web_anonymous"
+      || normalizeKey(event.userDisplayName) === normalizeKey("Web non connecté")
+    );
 }
 
 function createdNoteCountsByUser(dayIdentifier) {
@@ -2482,7 +2542,7 @@ async function createAdminUser() {
     setStatus("Le code utilisateur doit contenir 6 chiffres");
     return;
   }
-  if (accessCode === adminCode || state.users.some((user) => user.accessCode === accessCode)) {
+  if (state.users.some((user) => user.accessCode === accessCode)) {
     setStatus("Ce code utilisateur est déjà utilisé");
     return;
   }
@@ -2525,10 +2585,16 @@ async function saveAdminUser(documentID) {
   }
 
   const accessCodeInput = card.querySelector('[data-field="accessCode"]').value.trim();
+  const nextRole = nullableString(card.querySelector('[data-field="role"]').value);
+  if (isLastAdminUser(user) && nextRole !== "admin") {
+    setStatus("Impossible de retirer le dernier compte admin");
+    return;
+  }
+
   const patch = {
     firstName: card.querySelector('[data-field="firstName"]').value.trim(),
     lastName: card.querySelector('[data-field="lastName"]').value.trim(),
-    roleRawValue: nullableString(card.querySelector('[data-field="role"]').value),
+    roleRawValue: nextRole,
     teamRawValue: nullableString(card.querySelector('[data-field="team"]').value),
     updatedAt: new Date()
   };
@@ -2578,8 +2644,8 @@ function requestDeleteAdminUser(documentID, anchorButton) {
     return;
   }
 
-  if (state.currentUser.documentID === "ADMIN" && documentID === "ADMIN") {
-    setStatus("Impossible de supprimer la session ADMIN");
+  if (isLastAdminUser(user)) {
+    setStatus("Impossible de supprimer le dernier compte admin");
     return;
   }
 
@@ -3008,6 +3074,16 @@ async function toggleAcknowledgement(note, context) {
   });
 }
 
+function confirmPermanentDeleteFromDetail(note) {
+  if (state.currentUser?.role !== "admin" || !note.deletedAt || state.isSaving) {
+    return;
+  }
+
+  if (window.confirm("Supprimer définitivement cette consigne ? Cette action est irréversible.")) {
+    performNoteDeletion(note, "permanent");
+  }
+}
+
 function deleteNoteFromDetail(note) {
   if (!canCurrentUserDeleteNote(note) || state.isSaving) {
     return;
@@ -3256,6 +3332,7 @@ async function saveDetailEdit(note, options = {}) {
   const draftAcknowledged = ackButton?.dataset.draftState === "true";
   const now = new Date();
   const modificationDate = dateWithTime(modificationDay, now);
+  const priorityRevisionDate = new Date(modificationDate.getTime() - 1);
   const revisions = [...note.revisions];
   const patch = { updatedAt: now };
   const textChanged = title !== note.title || text !== note.text;
@@ -3279,11 +3356,26 @@ async function saveDetailEdit(note, options = {}) {
     return;
   }
 
-  if (announcesContentModification && (initialDone || draftDone)) {
+  if (announcesContentModification && initialDone) {
     const shouldContinue = window.confirm("Cette modification sera signalée. La consigne perdra son statut Soldé.");
     if (!shouldContinue) {
       return;
     }
+  }
+
+  if (priorityChanged) {
+    ensureInitialRevision(revisions, note);
+    patch.priorityRawValue = priority || deleteField();
+    revisions.push({
+      id: crypto.randomUUID(),
+      author: currentDisplayName(),
+      authorIdentifier: state.currentUser.id,
+      date: textChanged ? priorityRevisionDate : now,
+      text: combinedNoteText(note.title, note.text),
+      isVisibleToOthers: false,
+      previousPriorityRawValue: note.priority || "",
+      newPriorityRawValue: priority || ""
+    });
   }
 
   if (textChanged) {
@@ -3296,9 +3388,7 @@ async function saveDetailEdit(note, options = {}) {
       authorIdentifier: state.currentUser.id,
       date: modificationDate,
       text: combinedNoteText(title, text),
-      isVisibleToOthers: announcesContentModification,
-      previousPriorityRawValue: priorityChanged ? note.priority || "" : undefined,
-      newPriorityRawValue: priorityChanged ? priority || "" : undefined
+      isVisibleToOthers: announcesContentModification
     });
     if (announcesContentModification) {
       patch.contentModifiedAt = modificationDate;
@@ -3330,31 +3420,17 @@ async function saveDetailEdit(note, options = {}) {
     }
   }
 
-  if (priorityChanged && !textChanged) {
-    ensureInitialRevision(revisions, note);
-    patch.priorityRawValue = priority || deleteField();
-    revisions.push({
-      id: crypto.randomUUID(),
-      author: currentDisplayName(),
-      authorIdentifier: state.currentUser.id,
-      date: now,
-      text: combinedNoteText(title, text),
-      isVisibleToOthers: false,
-      previousPriorityRawValue: note.priority || "",
-      newPriorityRawValue: priority || ""
-    });
-  } else if (priorityChanged) {
-    patch.priorityRawValue = priority || deleteField();
-  }
-
   if (destinationChanged) {
     patch.isGeneral = destination.isGeneral;
     patch.simulatorNamesStorage = destination.simulatorNames.join("\n");
   }
 
-  if (doneChanged || (announcesContentModification && (initialDone || draftDone))) {
-    const nextDone = announcesContentModification ? false : draftDone;
-    const doneUpdate = updatedCompletionState(note, context, nextDone, now);
+  if (doneChanged || (announcesContentModification && initialDone)) {
+    const nextDone = announcesContentModification && initialDone ? false : draftDone;
+    const completionDate = textChanged && nextDone
+      ? new Date(modificationDate.getTime() + 1)
+      : now;
+    const doneUpdate = updatedCompletionState(note, context, nextDone, completionDate);
     patch.completedContextsStorage = doneUpdate.completedContexts.join("\n");
     patch.completionHistoryData = doneUpdate.completions.length ? encodeRecordArray(doneUpdate.completions) : deleteField();
   }
@@ -3375,7 +3451,28 @@ async function saveDetailEdit(note, options = {}) {
   state.isSaving = true;
   refreshDetail();
   try {
-    await updateNote(note.id, patch);
+    if (shouldDetachContextModification(note, context, textChanged, destinationChanged)) {
+      await detachContextModification(note, context, {
+        patch,
+        title,
+        text,
+        richTextHTML,
+        priority,
+        displayDate,
+        revisions,
+        modificationDate,
+        contentModifiedAt: announcesContentModification ? modificationDate : note.contentModifiedAt,
+        doneChanged,
+        initialDone,
+        draftDone,
+        acknowledgementChanged,
+        draftAcknowledged,
+        announcesContentModification,
+        now
+      });
+    } else {
+      await updateNote(note.id, patch);
+    }
     if (handwritingClearChanged && state.pendingHandwritingClear.source === "utilisateur" && state.pendingHandwritingClear.documentID) {
       await deleteDoc(doc(db, "handwritingNotes", state.pendingHandwritingClear.documentID));
     }
@@ -3385,6 +3482,105 @@ async function saveDetailEdit(note, options = {}) {
     state.isSaving = false;
     refreshDetail();
   }
+}
+
+function shouldDetachContextModification(note, context, textChanged, destinationChanged) {
+  return textChanged
+    && !destinationChanged
+    && context !== generalName
+    && !note.isGeneral
+    && note.simulatorNames.length > 1
+    && note.simulatorNames.includes(context);
+}
+
+async function detachContextModification(note, context, draft) {
+  const remainingSimulators = note.simulatorNames.filter((name) => name !== context);
+  const currentContextCompletions = contextRecords(note.completions, context);
+  const currentContextCompletedKeys = contextCompletionKeys(note.completedContexts, context);
+  const currentContextAcknowledgements = draft.announcesContentModification
+    ? []
+    : contextRecords(note.acknowledgements, context);
+
+  let detachedCompletions = currentContextCompletions;
+  let detachedCompletedKeys = currentContextCompletedKeys;
+  if (draft.doneChanged || (draft.announcesContentModification && draft.initialDone)) {
+    const nextDone = draft.announcesContentModification && draft.initialDone ? false : draft.draftDone;
+    const completionDate = draft.doneChanged && nextDone
+      ? new Date(draft.modificationDate.getTime() + 1)
+      : draft.now;
+    const doneUpdate = updatedCompletionState(note, context, nextDone, completionDate);
+    detachedCompletions = contextRecords(doneUpdate.completions, context);
+    detachedCompletedKeys = contextCompletionKeys(doneUpdate.completedContexts, context);
+  }
+
+  let detachedAcknowledgements = currentContextAcknowledgements;
+  if (draft.acknowledgementChanged && !draft.announcesContentModification) {
+    detachedAcknowledgements = contextRecords(updatedAcknowledgementState(note, context, draft.draftAcknowledged, draft.now), context);
+  }
+
+  const detachedID = crypto.randomUUID().toUpperCase();
+  const detachedPayload = {
+    id: detachedID,
+    title: draft.title,
+    text: draft.text,
+    author: note.author,
+    authorIdentifier: note.authorIdentifier,
+    createdAt: note.createdAt || draft.now,
+    updatedAt: draft.now,
+    contentModifiedAt: draft.contentModifiedAt || null,
+    deletedAt: note.deletedAt || null,
+    deletedBy: note.deletedBy || "",
+    deletedByIdentifier: note.deletedByIdentifier || "",
+    displayDate: draft.patch.displayDate || note.displayDate,
+    firstDisplayDate: draft.patch.firstDisplayDate || note.firstDisplayDate || note.displayDate,
+    isGeneral: false,
+    simulatorNamesStorage: context,
+    richTextHTML: draft.richTextHTML || "",
+    richTextData: note.richTextData || "",
+    priorityRawValue: draft.priority || "",
+    handwritingData: note.handwritingData || "",
+    handwritingPreviewImageData: note.handwritingPreviewImageData || "",
+    handwritingAuthorIdentifier: note.handwritingAuthorIdentifier || "",
+    completedContextsStorage: detachedCompletedKeys.join("\n"),
+    completionHistoryData: detachedCompletions.length ? encodeRecordArray(detachedCompletions) : "",
+    acknowledgementHistoryData: detachedAcknowledgements.length ? encodeRecordArray(detachedAcknowledgements) : "",
+    revisionHistoryData: draft.revisions.length ? encodeRecordArray(draft.revisions) : ""
+  };
+
+  const originalPatch = {
+    updatedAt: draft.now,
+    simulatorNamesStorage: remainingSimulators.join("\n"),
+    completedContextsStorage: note.completedContexts.filter((key) => !isCompletionKeyForContext(key, context)).join("\n"),
+    completionHistoryData: withoutContextRecords(note.completions, context).length
+      ? encodeRecordArray(withoutContextRecords(note.completions, context))
+      : deleteField(),
+    acknowledgementHistoryData: withoutContextRecords(note.acknowledgements, context).length
+      ? encodeRecordArray(withoutContextRecords(note.acknowledgements, context))
+      : deleteField()
+  };
+
+  setStatus("Enregistrement...");
+  await Promise.all([
+    updateDoc(doc(db, "handoverNotes", note.id), originalPatch),
+    setDoc(doc(db, "handoverNotes", detachedID), detachedPayload)
+  ]);
+  setStatus("Données synchronisées");
+}
+
+function contextRecords(records, context) {
+  return records.filter((record) => record.context === context);
+}
+
+function withoutContextRecords(records, context) {
+  return records.filter((record) => record.context !== context);
+}
+
+function contextCompletionKeys(keys, context) {
+  return keys.filter((key) => isCompletionKeyForContext(key, context));
+}
+
+function isCompletionKeyForContext(key, context) {
+  return key === context || key.startsWith(`${context}#`);
 }
 
 async function undoLatestModificationFromDetail(note) {
@@ -3821,9 +4017,13 @@ function matchesPeriodSelection(note, context) {
     return true;
   }
 
-  return contentModificationDates(note).some((modificationDate) => {
+  if (contentModificationDates(note).some((modificationDate) => {
     return isEventActiveForCurrentView(modificationDate);
-  });
+  })) {
+    return true;
+  }
+
+  return completionDatesInContext(note, context).some((completionDate) => isDateInPeriod(completionDate));
 }
 
 function isAcknowledgedHidden(note, context) {
@@ -3869,8 +4069,8 @@ function compareNotes(a, b) {
 }
 
 function comparePeriodNotes(a, b) {
-  const activityDateA = noteSortingActivityDate(a)?.getTime() || 0;
-  const activityDateB = noteSortingActivityDate(b)?.getTime() || 0;
+  const activityDateA = periodSortingActivityDate(a)?.getTime() || 0;
+  const activityDateB = periodSortingActivityDate(b)?.getTime() || 0;
   if (activityDateA !== activityDateB) {
     return activityDateB - activityDateA;
   }
@@ -3898,6 +4098,56 @@ function compareSearchNotes(a, b) {
 
 function noteSortingActivityDate(note) {
   return latestContentModificationDate(note) || note.displayDate || note.createdAt || null;
+}
+
+function periodActivityDate(note, context) {
+  const range = selectedPeriodRange();
+  if (!range) {
+    return noteSortingActivityDate(note);
+  }
+
+  const modificationDate = [...contentModificationDates(note)]
+    .reverse()
+    .find((date) => isDateInPeriod(date));
+  if (modificationDate) {
+    return modificationDate;
+  }
+
+  const completionDate = [...completionDatesInContext(note, context)]
+    .reverse()
+    .find((date) => isDateInPeriod(date));
+  if (completionDate) {
+    return completionDate;
+  }
+
+  const assignmentDate = firstAssignmentDate(note);
+  if (assignmentDate && isDateInPeriod(assignmentDate)) {
+    return assignmentDate;
+  }
+
+  return noteSortingActivityDate(note);
+}
+
+function periodSortingActivityDate(note) {
+  const range = selectedPeriodRange();
+  if (!range) {
+    return noteSortingActivityDate(note);
+  }
+
+  const periodDates = [
+    ...contentModificationDates(note),
+    ...note.completions.map((completion) => completion.date).filter(Boolean),
+    firstAssignmentDate(note)
+  ].filter((date) => date && isDateInPeriod(date));
+
+  return periodDates.sort((a, b) => b - a)[0] || noteSortingActivityDate(note);
+}
+
+function completionDatesInContext(note, context) {
+  return note.completions
+    .filter((completion) => completion.context === context && completion.date)
+    .map((completion) => completion.date)
+    .sort((a, b) => a - b);
 }
 
 function isDailyTagged(noteID) {
@@ -5315,11 +5565,19 @@ function currentDisplayNameForUser(user) {
 }
 
 function shouldMaskAdminAccessCode(user) {
-  return Boolean(user.isAccessCodeUserDefined) || !stringValue(user.accessCode).trim();
+  return user?.role === "admin" || Boolean(user?.isAccessCodeUserDefined) || !stringValue(user?.accessCode).trim();
 }
 
 function isAdminSession() {
-  return state.currentUser?.role === "admin" || state.currentUser?.documentID === "ADMIN" || state.currentUser?.id === "ADMIN";
+  return state.currentUser?.role === "admin";
+}
+
+function isLastAdminUser(user) {
+  if (user?.role !== "admin") {
+    return false;
+  }
+
+  return state.users.filter((candidate) => candidate.role === "admin").length <= 1;
 }
 
 function currentUserDocumentID() {
