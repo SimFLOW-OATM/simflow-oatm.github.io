@@ -200,15 +200,17 @@ body.requires-login .login-panel > :not(.sidebar-login-button) {
 }
 
 .web-version-badge {
-  position: absolute;
-  left: 4px;
-  top: 4px;
-  color: rgba(255, 255, 255, 0.86);
-  font-size: 11px;
-  font-weight: 700;
+  display: block;
+  width: fit-content;
+  margin: -4px 14px 2px auto;
+  padding: 0;
+  color: rgba(80, 92, 104, 0.62);
+  background: transparent;
+  font-size: 8px;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0;
-  text-shadow: 0 1px 3px rgba(20, 61, 104, 0.28);
+  box-shadow: none;
 }
 
 .brand strong {
