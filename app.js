@@ -27,6 +27,7 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
+const WEB_APP_VERSION = "1.76";
 const deletedLegacySimulatorNames = new Set(["Simu 1", "Simu 2", "Simu 3", "Simu 4"]);
 const sessionStorageKey = "simflow.web.currentUser";
 const webDeviceStorageKey = "simflow.web.deviceIdentifier";
@@ -84,6 +85,7 @@ const elements = {
   content: document.querySelector(".content"),
   loginPanel: document.querySelector("#loginPanel"),
   brandResetButton: document.querySelector("#brandResetButton"),
+  webVersionBadge: document.querySelector("#webVersionBadge"),
   userPanel: document.querySelector("#userPanel"),
   openLoginButton: document.querySelector("#openLoginButton"),
   codeModal: document.querySelector("#codeModal"),
@@ -145,6 +147,8 @@ const elements = {
 
 let pendingCenteredSimulatorBandAnchor = null;
 
+elements.webVersionBadge.textContent = `v${WEB_APP_VERSION}`;
+elements.webVersionBadge.title = `Version web ${WEB_APP_VERSION}`;
 elements.selectedDate.value = isoDate(state.selectedDate);
 restoreSavedSession();
 if (window.location.protocol === "file:") {

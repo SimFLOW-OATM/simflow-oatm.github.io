@@ -167,10 +167,12 @@ body.requires-login .login-panel > :not(.sidebar-login-button) {
 }
 
 .brand {
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
   min-height: 78px;
   padding: 8px 12px 0;
+  position: relative;
 }
 
 .brand-reset-button {
@@ -195,6 +197,18 @@ body.requires-login .login-panel > :not(.sidebar-login-button) {
   height: auto;
   border-radius: 0;
   filter: drop-shadow(0 4px 5px rgba(20, 61, 104, 0.32));
+}
+
+.web-version-badge {
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  text-shadow: 0 1px 3px rgba(20, 61, 104, 0.28);
 }
 
 .brand strong {
