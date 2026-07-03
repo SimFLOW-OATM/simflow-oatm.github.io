@@ -1,5 +1,5 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { getAuth, onAuthStateChanged, signInWithCustomToken, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   collection,
   deleteField,
@@ -14,6 +14,7 @@ import {
   updateDoc,
   where
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDgYt_QMvFDcf0ZwG7-MKa8ChLriUVUqcY",
@@ -74,6 +75,9 @@ const state = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+const functions = getFunctions(app, "us-central1");
+const loginWithAccessCode = httpsCallable(functions, "loginWithAccessCode");
+const changeOwnAccessCode = httpsCallable(functions, "changeOwnAccessCode");
 
 const elements = {
   sidebarScroll: document.querySelector(".sidebar-scroll"),
@@ -148,25 +152,38 @@ if (window.location.protocol === "file:") {
   setStatus("Ouvrir via localhost");
 }
 
-if (window.location.protocol !== "file:") {
-  signInAnonymously(auth).catch((error) => {
-    setStatus("Erreur Firebase");
-    elements.loginHint.textContent = error.message;
-  });
-}
-
-onAuthStateChanged(auth, (user) => {
+onAuthStateChanged(auth, async (user) => {
   if (window.location.protocol === "file:") {
     setStatus("Ouvrir via localhost");
     return;
   }
 
-  state.authReady = Boolean(user);
-  setStatus(user ? "Connecté à Firebase" : "Hors ligne");
-  if (user) {
-    attachFirebaseListeners();
-    restartDailyTagsListener();
-    recordLoginAppearance();
+  if (!user) {
+    state.authReady = false;
+    state.currentUser = null;
+    setStatus("Connexion requise");
+    detachAuthenticatedDataSync();
+    clearSavedSession();
+    render();
+    return;
+  }
+
+  const token = await user.getIdTokenResult().catch(() => null);
+  if (token?.claims?.simflow !== true) {
+    state.authReady = false;
+    await signOut(auth).catch(() => {});
+    return;
+  }
+
+  state.authReady = true;
+  if (!state.currentUser) {
+    state.currentUser = userFromAuthClaims(user.uid, token.claims);
+    saveSession(state.currentUser);
+  }
+  setStatus("Connecté à Firebase");
+  if (state.currentUser) {
+    startAuthenticatedDataSync();
+    render();
   }
 });
 
@@ -552,78 +569,42 @@ async function changeCurrentUserCode() {
     return;
   }
 
-  const currentDocumentID = currentUserDocumentID();
-  const currentUserRecord = state.users.find((user) => user.documentID === currentDocumentID);
-  if (!currentUserRecord || currentUserRecord.accessCode !== currentCode) {
-    showChangeCodeError("Code non valide.");
-    return;
-  }
-
-  const codeAlreadyUsed = state.users.some((user) => {
-    return user.documentID !== currentDocumentID && user.accessCode === newCode;
+  await changeOwnAccessCode({ currentCode, newCode }).then(() => {
+    closeChangeCodePanel();
+    setStatus("Code utilisateur modifié");
+  }).catch((error) => {
+    showChangeCodeError(error.message || "Code non valide.");
   });
-
-  if (!currentDocumentID || codeAlreadyUsed) {
-    showChangeCodeError("Code non valide.");
-    return;
-  }
-
-  await updateDoc(doc(db, "users", currentDocumentID), {
-    accessCode: newCode,
-    isAccessCodeUserDefined: true,
-    updatedAt: new Date()
-  });
-
-  state.currentUser.documentID = currentDocumentID;
-  saveSession(state.currentUser);
-  closeChangeCodePanel();
-  setStatus("Code utilisateur modifié");
 }
 
 async function login() {
   const code = elements.accessCode.value.replace(/\D/g, "");
   elements.codeModalMessage.textContent = "Vérification...";
 
-  if (!state.authReady) {
-    elements.codeModalMessage.textContent = "Connexion Firebase en cours.";
-    return;
-  }
-
   if (code.length !== 6) {
     elements.codeModalMessage.textContent = "Code non valide.";
     return;
   }
 
-  const userQuery = query(collection(db, "users"), where("accessCode", "==", code));
-  const snapshot = await new Promise((resolve, reject) => {
-    const unsubscribe = onSnapshot(userQuery, (value) => {
-      unsubscribe();
-      resolve(value);
-    }, reject);
-  }).catch((error) => {
-    elements.codeModalMessage.textContent = error.message;
+  const response = await loginWithAccessCode({ accessCode: code }).catch((error) => {
+    elements.codeModalMessage.textContent = error.message || "Code non valide.";
     return null;
   });
-
-  if (!snapshot || snapshot.empty) {
-    elements.codeModalMessage.textContent = "Code non valide. L'ancien code admin fixe n'est plus utilisable : connecte-toi avec le code d'un compte Admin.";
+  const token = response?.data?.token;
+  const user = response?.data?.user;
+  if (!token || !user) {
+    if (!elements.codeModalMessage.textContent || elements.codeModalMessage.textContent === "Vérification...") {
+      elements.codeModalMessage.textContent = "Code non valide.";
+    }
     return;
   }
 
-  const doc = snapshot.docs[0];
-  const data = doc.data();
-  state.currentUser = {
-    id: stringValue(data.iCloudIdentifier, doc.id),
-    documentID: doc.id,
-    firstName: stringValue(data.firstName),
-    lastName: stringValue(data.lastName),
-    role: stringValue(data.roleRawValue, "consultation"),
-    team: stringValue(data.teamRawValue)
-  };
+  state.currentUser = normalizedSessionUser(user);
   saveSession(state.currentUser);
+  await signInWithCustomToken(auth, token);
+  state.authReady = true;
   state.lastLoginEventAt = 0;
-  restartDailyTagsListener();
-  recordLoginAppearance();
+  startAuthenticatedDataSync();
   elements.loginHint.textContent = "";
   closeCodeModal();
   renderSession();
@@ -638,8 +619,7 @@ function restoreSavedSession() {
 
   state.currentUser = savedSession.user;
   state.lastLoginEventAt = 0;
-  restartDailyTagsListener();
-  recordLoginAppearance();
+  startAuthenticatedDataSync();
   elements.loginHint.textContent = "Session restaurée sur cette machine.";
 }
 
@@ -683,7 +663,8 @@ function logout() {
   closeChangeCodePanel();
   closeCodeModal();
   clearSavedSession();
-  restartDailyTagsListener();
+  detachAuthenticatedDataSync();
+  signOut(auth).catch(() => {});
   render();
 }
 
@@ -707,7 +688,7 @@ function webDeviceName() {
 
 async function recordLoginAppearance(options = {}) {
   const heartbeat = Boolean(options.heartbeat);
-  if (!state.authReady || state.currentUser?.role === "admin" || document.visibilityState === "hidden") {
+  if (!state.authReady || !state.currentUser || state.currentUser.role === "admin" || document.visibilityState === "hidden") {
     return;
   }
 
@@ -718,8 +699,8 @@ async function recordLoginAppearance(options = {}) {
 
   state.lastLoginEventAt = now;
   const createdAt = new Date(now);
-  const userIdentifier = state.currentUser?.id || "WEB_ANONYMOUS";
-  const userDisplayName = state.currentUser ? currentDisplayName() : "Web non connecté";
+  const userIdentifier = state.currentUser.id;
+  const userDisplayName = currentDisplayName();
   const deviceIdentifier = getWebDeviceIdentifier();
   const deviceName = webDeviceName();
   const dayIdentifier = isoDate(createdAt);
@@ -746,6 +727,16 @@ async function recordLoginAppearance(options = {}) {
   });
 }
 
+function startAuthenticatedDataSync() {
+  if (!state.authReady || !state.currentUser) {
+    return;
+  }
+
+  attachFirebaseListeners();
+  restartDailyTagsListener();
+  recordLoginAppearance();
+}
+
 function attachFirebaseListeners() {
   if (!state.unsubscribeNotes) {
     state.unsubscribeNotes = onSnapshot(collection(db, "handoverNotes"), (snapshot) => {
@@ -765,7 +756,7 @@ function attachFirebaseListeners() {
     }, (error) => setStatus(error.message));
   }
 
-  if (!state.unsubscribeUsers) {
+  if (isAdminSession() && !state.unsubscribeUsers) {
     state.unsubscribeUsers = onSnapshot(collection(db, "users"), (snapshot) => {
       state.users = deduplicatedUsers(snapshot.docs
         .map((document) => userFromSnapshot(document.id, document.data())))
@@ -774,7 +765,7 @@ function attachFirebaseListeners() {
     }, (error) => setStatus(error.message));
   }
 
-  if (!state.unsubscribeLoginEvents) {
+  if (isAdminSession() && !state.unsubscribeLoginEvents) {
     state.unsubscribeLoginEvents = onSnapshot(collection(db, "loginEvents"), (snapshot) => {
       state.loginEvents = snapshot.docs
         .map((document) => loginEventFromSnapshot(document.id, document.data()))
@@ -795,6 +786,46 @@ function attachFirebaseListeners() {
       render();
     }, (error) => setStatus(error.message));
   }
+}
+
+function detachAuthenticatedDataSync() {
+  const unsubscribeKeys = [
+    "unsubscribeNotes",
+    "unsubscribeHandwritingNotes",
+    "unsubscribeDailyTags",
+    "unsubscribeLoginEvents",
+    "unsubscribeUsers",
+    "unsubscribeSimulators"
+  ];
+
+  unsubscribeKeys.forEach((key) => {
+    if (state[key]) {
+      state[key]();
+      state[key] = null;
+    }
+  });
+
+  state.notes = [];
+  state.handwritingNotes = [];
+  state.dailyTags = [];
+  state.loginEvents = [];
+  state.users = [];
+  state.allSimulators = [];
+  state.simulators = [];
+  state.detailTimelineEvents = [];
+  state.selectedDetail = null;
+  state.selectedCreate = null;
+  state.pendingHandwritingClear = null;
+  state.lastLoginEventAt = 0;
+
+  elements.noteGroups.innerHTML = "";
+  elements.teamPresenceList.innerHTML = "";
+  elements.simulatorShortcutGrid.innerHTML = "";
+  if (elements.simulatorList) {
+    elements.simulatorList.innerHTML = "";
+  }
+  elements.detailOverlay.classList.add("hidden");
+  elements.detailOverlay.setAttribute("aria-hidden", "true");
 }
 
 function restartDailyTagsListener() {
@@ -872,6 +903,21 @@ function render() {
   elements.searchInput.parentElement.classList.toggle("search-active", Boolean(state.search));
   elements.clearSearchButton.classList.toggle("hidden", !state.search);
   renderCalendar();
+
+  if (!state.currentUser) {
+    elements.teamPresenceList.innerHTML = "";
+    elements.simulatorShortcutGrid.innerHTML = "";
+    if (elements.simulatorList) {
+      elements.simulatorList.innerHTML = "";
+    }
+    elements.noteGroups.innerHTML = "";
+    elements.emptyState.classList.remove("hidden");
+    elements.pageTitle.textContent = "";
+    elements.pageSubtitle.textContent = "Connexion requise";
+    refreshDetail();
+    return;
+  }
+
   renderTeamPresences();
   renderSimulators();
 
@@ -2015,6 +2061,28 @@ function userFromSnapshot(documentID, data) {
   };
 }
 
+function userFromAuthClaims(uid, claims) {
+  return normalizedSessionUser({
+    id: stringValue(claims.iCloudIdentifier, uid),
+    documentID: stringValue(claims.documentID, uid),
+    firstName: stringValue(claims.firstName),
+    lastName: stringValue(claims.lastName),
+    role: stringValue(claims.role, "consultation"),
+    team: stringValue(claims.team)
+  });
+}
+
+function normalizedSessionUser(user) {
+  return {
+    id: stringValue(user?.id),
+    documentID: stringValue(user?.documentID, user?.id),
+    firstName: stringValue(user?.firstName),
+    lastName: stringValue(user?.lastName),
+    role: stringValue(user?.role, "consultation"),
+    team: stringValue(user?.team)
+  };
+}
+
 function loginEventFromSnapshot(documentID, data) {
   const createdAt = dateValue(data.createdAt);
   return {
@@ -2179,7 +2247,7 @@ function renderAdminUsers() {
       <div class="admin-form-grid create-user-grid">
         <label>Prénom<input id="newUserFirstName" autocomplete="off" placeholder="Prénom"></label>
         <label>Nom<input id="newUserLastName" autocomplete="off" placeholder="Nom"></label>
-        <label>Code à 6 chiffres<input id="newUserAccessCode" maxlength="6" inputmode="numeric" autocomplete="off" placeholder="000000"></label>
+        <label>Code à 6 chiffres<input id="newUserAccessCode" maxlength="6" inputmode="numeric" autocomplete="off" placeholder="Code"></label>
       </div>
       <div class="admin-actions create-user-actions">
         <button type="button" data-admin-action="create-user">Ajouter l'utilisateur</button>
@@ -5666,8 +5734,10 @@ function normalizeColor(value) {
 
 function generateAccessCode() {
   const existingCodes = new Set(state.users.map((user) => user.accessCode).filter(Boolean));
+  const minimumSixDigitCode = 10 ** 5;
+  const sixDigitCodeRange = 9 * minimumSixDigitCode;
   for (let attempt = 0; attempt < 1000; attempt += 1) {
-    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const code = String(Math.floor(minimumSixDigitCode + Math.random() * sixDigitCodeRange));
     if (!existingCodes.has(code)) {
       return code;
     }
