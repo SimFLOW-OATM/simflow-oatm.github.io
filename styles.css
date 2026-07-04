@@ -1546,6 +1546,7 @@ mark {
   color: var(--ink);
   font-size: 20px;
   font-weight: 800;
+  font-variant-numeric: tabular-nums;
 }
 
 .admin-connection-sessions {
@@ -2098,6 +2099,12 @@ mark {
   white-space: normal;
   font-size: 19px;
   line-height: 1.38;
+}
+
+.note-card .revision-diff.has-title::first-line {
+  font-size: 20px;
+  font-weight: 850;
+  line-height: 1.22;
 }
 
 .revision-entry {

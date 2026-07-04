@@ -27,7 +27,7 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
-const WEB_APP_VERSION = "1.76";
+const WEB_APP_VERSION = "1.77";
 const deletedLegacySimulatorNames = new Set(["Simu 1", "Simu 2", "Simu 3", "Simu 4"]);
 const sessionStorageKey = "simflow.web.currentUser";
 const webDeviceStorageKey = "simflow.web.deviceIdentifier";
@@ -48,6 +48,7 @@ const state = {
   showTagged: false,
   showAcknowledged: false,
   showDeleted: false,
+  showOnlyDeleted: false,
   selectedDetail: null,
   selectedCreate: null,
   pendingHandwritingClear: null,
@@ -121,6 +122,8 @@ const elements = {
   showAcknowledgedToggle: document.querySelector("#showAcknowledgedToggle"),
   showDeletedRow: document.querySelector("#showDeletedRow"),
   showDeletedToggle: document.querySelector("#showDeletedToggle"),
+  showOnlyDeletedRow: document.querySelector("#showOnlyDeletedRow"),
+  showOnlyDeletedToggle: document.querySelector("#showOnlyDeletedToggle"),
   searchInput: document.querySelector("#searchInput"),
   clearSearchButton: document.querySelector("#clearSearchButton"),
   simulatorShortcutGrid: document.querySelector("#simulatorShortcutGrid"),
@@ -273,9 +276,11 @@ elements.todayButton.addEventListener("click", () => {
   elements.showTaggedToggle,
   elements.showAcknowledgedToggle,
   elements.showDeletedToggle,
+  elements.showOnlyDeletedToggle,
   document.querySelector('label[for="showTaggedToggle"]'),
   document.querySelector('label[for="showAcknowledgedToggle"]'),
-  document.querySelector('label[for="showDeletedToggle"]')
+  document.querySelector('label[for="showDeletedToggle"]'),
+  document.querySelector('label[for="showOnlyDeletedToggle"]')
 ].filter(Boolean).forEach((control) => {
   control.addEventListener("pointerdown", prepareCenteredSimulatorBandAnchor);
   control.addEventListener("keydown", (event) => {
@@ -294,6 +299,16 @@ elements.showAcknowledgedToggle.addEventListener("change", () => {
 });
 elements.showDeletedToggle.addEventListener("change", () => {
   state.showDeleted = elements.showDeletedToggle.checked;
+  if (!state.showDeleted) {
+    state.showOnlyDeleted = false;
+  }
+  renderPreservingCenteredSimulatorBand(takePendingCenteredSimulatorBandAnchor());
+});
+elements.showOnlyDeletedToggle.addEventListener("change", () => {
+  state.showOnlyDeleted = elements.showOnlyDeletedToggle.checked;
+  if (state.showOnlyDeleted) {
+    state.showDeleted = true;
+  }
   renderPreservingCenteredSimulatorBand(takePendingCenteredSimulatorBandAnchor());
 });
 elements.searchInput.addEventListener("input", () => {
@@ -860,6 +875,10 @@ function renderSession() {
   elements.userPanel.classList.toggle("hidden", !isLoggedIn);
   const canViewDeleted = canCurrentUserViewDeletedNotes();
   elements.showDeletedRow.classList.toggle("hidden", !canViewDeleted);
+  elements.showOnlyDeletedRow.classList.toggle("hidden", !canViewDeleted || state.currentUser?.role !== "admin");
+  if ((!canViewDeleted || state.currentUser?.role !== "admin") && state.showOnlyDeleted) {
+    state.showOnlyDeleted = false;
+  }
   if (!canViewDeleted && state.showDeleted) {
     state.showDeleted = false;
   }
@@ -901,9 +920,11 @@ function render() {
   elements.showTaggedToggle.checked = state.showTagged;
   elements.showAcknowledgedToggle.checked = state.showAcknowledged;
   elements.showDeletedToggle.checked = state.showDeleted;
+  elements.showOnlyDeletedToggle.checked = state.showOnlyDeleted;
   elements.showTaggedToggle.disabled = filtersDisabled;
   elements.showAcknowledgedToggle.disabled = filtersDisabled;
   elements.showDeletedToggle.disabled = filtersDisabled;
+  elements.showOnlyDeletedToggle.disabled = filtersDisabled;
   elements.searchInput.parentElement.classList.toggle("search-active", Boolean(state.search));
   elements.clearSearchButton.classList.toggle("hidden", !state.search);
   renderCalendar();
@@ -1076,6 +1097,7 @@ function beginPeriodSelection(date) {
   state.showTagged = false;
   state.showAcknowledged = false;
   state.showDeleted = false;
+  state.showOnlyDeleted = false;
   state.periodStartDate = start;
   state.periodEndDate = null;
   state.isSelectingPeriodEnd = true;
@@ -1121,6 +1143,7 @@ function resetDisplayState() {
   state.showTagged = false;
   state.showAcknowledged = false;
   state.showDeleted = false;
+  state.showOnlyDeleted = false;
   clearPeriodMode();
 
   elements.selectedDate.value = isoDate(state.selectedDate);
@@ -1374,7 +1397,7 @@ function renderNote(note, context) {
       <div class="badges">${badges}</div>
       ${ageBadge}
       ${dailyDiffHTML
-        ? `<div class="note-text revision-diff">${dailyDiffHTML}</div>`
+        ? `<div class="note-text revision-diff${note.title ? " has-title" : ""}">${dailyDiffHTML}</div>`
         : `${note.title ? `<h2 class="note-title">${title}</h2>` : ""}
       ${note.text ? `<div class="note-text rich-text-preview">${richTextPreviewHTML(note)}</div>` : note.title ? "" : "<p class=\"note-text muted\">Note manuscrite</p>"}`}
       ${handwriting ? renderHandwritingCardPreview(handwriting) : ""}
@@ -2369,7 +2392,7 @@ function renderAdminConnectionGroup(group) {
         <span>◎ ${group.webCount} Web</span>
         <span>□ ${group.createdCount} créées</span>
         <span>⌁ ${group.modifiedCount} modifiées</span>
-        <strong>${group.totalCount}</strong>
+        <strong>${escapeHtml(formatConnectionTime(group.lastSeenAt))}</strong>
       </div>
       </div>
     </article>
@@ -2438,6 +2461,7 @@ function loginStatsRows() {
       displayName: matchedUser ? currentDisplayNameForUser(matchedUser) : fallbackName || userIdentifier,
       events,
       totalCount: events.reduce((sum, event) => sum + (event.appearanceCount || 1), 0),
+      lastSeenAt: latestEvent?.lastSeenAt || latestEvent?.createdAt || null,
       ipadCount: events.reduce((sum, event) => sum + (event.source === "ipad" ? event.appearanceCount || 1 : 0), 0),
       webCount: events.reduce((sum, event) => sum + (event.source === "web" ? event.appearanceCount || 1 : 0), 0),
       createdCount: createdCounts.get(userKey) || 0,
@@ -2453,8 +2477,8 @@ function loginStatsRows() {
         return first.isCurrent ? -1 : 1;
       }
 
-      if (first.totalCount !== second.totalCount) {
-        return second.totalCount - first.totalCount;
+      if ((first.lastSeenAt?.getTime() || 0) !== (second.lastSeenAt?.getTime() || 0)) {
+        return (second.lastSeenAt?.getTime() || 0) - (first.lastSeenAt?.getTime() || 0);
       }
 
       return first.displayName.localeCompare(second.displayName, "fr", { sensitivity: "base" });
@@ -2470,8 +2494,8 @@ function loginStatsGroups(rows) {
         return first.isCurrent ? -1 : 1;
       }
 
-      if (first.totalCount !== second.totalCount) {
-        return second.totalCount - first.totalCount;
+      if ((first.lastSeenAt?.getTime() || 0) !== (second.lastSeenAt?.getTime() || 0)) {
+        return (second.lastSeenAt?.getTime() || 0) - (first.lastSeenAt?.getTime() || 0);
       }
 
       const firstDevice = first.deviceDescriptions[0] || "";
@@ -2484,6 +2508,7 @@ function loginStatsGroups(rows) {
       displayName: sortedRows[0]?.displayName || "Utilisateur",
       rows: sortedRows,
       totalCount: sortedRows.reduce((sum, row) => sum + row.totalCount, 0),
+      lastSeenAt: sortedRows.map((row) => row.lastSeenAt).filter(Boolean).sort((a, b) => b - a)[0] || null,
       ipadCount: sortedRows.reduce((sum, row) => sum + row.ipadCount, 0),
       webCount: sortedRows.reduce((sum, row) => sum + row.webCount, 0),
       createdCount: sortedRows[0]?.createdCount || 0,
@@ -2496,8 +2521,8 @@ function loginStatsGroups(rows) {
         return first.hasCurrentSession ? -1 : 1;
       }
 
-      if (first.totalCount !== second.totalCount) {
-        return second.totalCount - first.totalCount;
+      if ((first.lastSeenAt?.getTime() || 0) !== (second.lastSeenAt?.getTime() || 0)) {
+        return (second.lastSeenAt?.getTime() || 0) - (first.lastSeenAt?.getTime() || 0);
       }
 
       return first.displayName.localeCompare(second.displayName, "fr", { sensitivity: "base" });
@@ -3404,7 +3429,6 @@ async function saveDetailEdit(note, options = {}) {
   const draftAcknowledged = ackButton?.dataset.draftState === "true";
   const now = new Date();
   const modificationDate = dateWithTime(modificationDay, now);
-  const priorityRevisionDate = new Date(modificationDate.getTime() - 1);
   const revisions = [...note.revisions];
   const patch = { updatedAt: now };
   const textChanged = title !== note.title || text !== note.text;
@@ -3413,6 +3437,8 @@ async function saveDetailEdit(note, options = {}) {
   const priorityChanged = priority !== note.priority;
   const destinationChanged = destination.isGeneral !== note.isGeneral
     || destination.simulatorNames.join("\n") !== note.simulatorNames.join("\n");
+  const destinationRevisionDate = textChanged ? new Date(modificationDate.getTime() - 1) : now;
+  const priorityRevisionDate = (textChanged || destinationChanged) ? new Date(modificationDate.getTime() - 2) : now;
   const doneChanged = initialDone !== draftDone;
   const acknowledgementChanged = initialAcknowledged !== draftAcknowledged;
   const handwritingClearChanged = state.pendingHandwritingClear?.noteID === note.id;
@@ -3447,6 +3473,22 @@ async function saveDetailEdit(note, options = {}) {
       isVisibleToOthers: false,
       previousPriorityRawValue: note.priority || "",
       newPriorityRawValue: priority || ""
+    });
+  }
+
+  if (destinationChanged) {
+    patch.isGeneral = destination.isGeneral;
+    patch.simulatorNamesStorage = destination.simulatorNames.join("\n");
+    ensureInitialRevision(revisions, note);
+    revisions.push({
+      id: crypto.randomUUID(),
+      author: currentDisplayName(),
+      authorIdentifier: state.currentUser.id,
+      date: destinationRevisionDate,
+      text: combinedNoteText(note.title, note.text),
+      isVisibleToOthers: false,
+      previousDestinationStorage: destinationStorage(note.isGeneral, note.simulatorNames),
+      newDestinationStorage: destinationStorage(destination.isGeneral, destination.simulatorNames)
     });
   }
 
@@ -3490,11 +3532,6 @@ async function saveDetailEdit(note, options = {}) {
         newDisplayDate: displayDate
       });
     }
-  }
-
-  if (destinationChanged) {
-    patch.isGeneral = destination.isGeneral;
-    patch.simulatorNamesStorage = destination.simulatorNames.join("\n");
   }
 
   if (doneChanged || (announcesContentModification && initialDone)) {
@@ -3699,6 +3736,13 @@ async function undoLatestModificationFromDetail(note) {
 
   if (latestRevision.previousPriorityRawValue || latestRevision.newPriorityRawValue) {
     patch.priorityRawValue = latestRevision.previousPriorityRawValue || deleteField();
+  }
+
+  if (latestRevision.previousDestinationStorage || latestRevision.newDestinationStorage) {
+    const restoredDestination = destinationNamesFromStorage(latestRevision.previousDestinationStorage);
+    const isGeneralDestination = restoredDestination.length === 1 && normalizeKey(restoredDestination[0]) === normalizeKey(generalName);
+    patch.isGeneral = isGeneralDestination;
+    patch.simulatorNamesStorage = isGeneralDestination ? "" : restoredDestination.join("\n");
   }
 
   state.isSaving = true;
@@ -3923,6 +3967,24 @@ function ensureInitialRevision(revisions, note) {
   });
 }
 
+function destinationStorage(isGeneral, simulatorNames) {
+  return isGeneral ? generalName : uniqueStrings(simulatorNames || []).join("\n");
+}
+
+function destinationNamesFromStorage(storage) {
+  const value = stringValue(storage).trim();
+  if (!value || normalizeKey(value) === normalizeKey(generalName)) {
+    return [generalName];
+  }
+
+  const names = value.split("\n").map((name) => name.trim()).filter(Boolean);
+  return names.length ? uniqueStrings(names) : [generalName];
+}
+
+function destinationLabelFromStorage(storage) {
+  return destinationNamesFromStorage(storage).join(", ");
+}
+
 function shouldAnnounceContentModification(oldTitle, oldText, newTitle, newText) {
   const oldWords = normalizedWords(combinedNoteText(oldTitle, oldText));
   const newWords = normalizedWords(combinedNoteText(newTitle, newText));
@@ -4049,6 +4111,10 @@ function matchesSelection(note, context, options = {}) {
   }
 
   if (state.search) {
+    if (state.showOnlyDeleted && state.currentUser?.role === "admin") {
+      return Boolean(note.deletedAt) && state.showDeleted && canCurrentUserViewDeletedNote(note);
+    }
+
     return !note.deletedAt || canCurrentUserViewDeletedNote(note);
   }
 
@@ -4077,6 +4143,10 @@ function matchesSelection(note, context, options = {}) {
 }
 
 function shouldShowDeletedNote(note) {
+  if (state.showOnlyDeleted && state.currentUser?.role === "admin") {
+    return Boolean(note.deletedAt) && state.showDeleted && canCurrentUserViewDeletedNote(note);
+  }
+
   if (!note.deletedAt) {
     return true;
   }
@@ -4466,7 +4536,9 @@ function isContentRevision(revision) {
   return !revision.previousDisplayDate
     && !revision.newDisplayDate
     && !revision.previousPriorityRawValue
-    && !revision.newPriorityRawValue;
+    && !revision.newPriorityRawValue
+    && !revision.previousDestinationStorage
+    && !revision.newDestinationStorage;
 }
 
 function noteCreationNewEventDate(note) {
@@ -4658,7 +4730,8 @@ function timelineRevisionsForCurrentUser(note) {
 function isVisibleInStandardTimeline(revision) {
   return isPublicContentRevision(revision)
     || Boolean(revision.previousDisplayDate || revision.newDisplayDate)
-    || Boolean(revision.previousPriorityRawValue || revision.newPriorityRawValue);
+    || Boolean(revision.previousPriorityRawValue || revision.newPriorityRawValue)
+    || Boolean(revision.previousDestinationStorage || revision.newDestinationStorage);
 }
 
 function isPublicContentRevision(revision) {
@@ -4666,11 +4739,13 @@ function isPublicContentRevision(revision) {
     && !revision.previousDisplayDate
     && !revision.newDisplayDate
     && !revision.previousPriorityRawValue
-    && !revision.newPriorityRawValue;
+    && !revision.newPriorityRawValue
+    && !revision.previousDestinationStorage
+    && !revision.newDestinationStorage;
 }
 
 function shouldHideSameDayAuthorModification(revision, note) {
-  if (revision.previousDisplayDate || revision.newDisplayDate || revision.previousPriorityRawValue || revision.newPriorityRawValue) {
+  if (revision.previousDisplayDate || revision.newDisplayDate || revision.previousPriorityRawValue || revision.newPriorityRawValue || revision.previousDestinationStorage || revision.newDestinationStorage) {
     return false;
   }
 
@@ -4794,6 +4869,15 @@ function revisionTimelineDetailHTML(revisions, initialPreviousText) {
       `);
     }
 
+    if (revision.previousDestinationStorage || revision.newDestinationStorage) {
+      revisionBlocks.push(`
+        <div class="timeline-change-block">
+          <strong>Changement de simulateur</strong>
+          <span>${escapeHtml(destinationLabelFromStorage(revision.previousDestinationStorage))} → ${escapeHtml(destinationLabelFromStorage(revision.newDestinationStorage))}</span>
+        </div>
+      `);
+    }
+
     const text = stringValue(revision.text).trim();
     if (previousText && previousText !== revision.text) {
       revisionBlocks.push(`<div>${renderTextDiff(previousText, revision.text)}</div>`);
@@ -4817,6 +4901,9 @@ function renderTextDiff(oldText, newText) {
       const token = escapeHtml(operation.token);
       if (operation.type === "added") {
         return `<span class="diff-added">${token}</span>`;
+      }
+      if (operation.type === "removed") {
+        return `<span class="diff-removed">${token}</span>`;
       }
       return operation.type === "unchanged" ? token : "";
     })
@@ -5098,6 +5185,10 @@ function revisionTitle(revision) {
     return "Changement de priorité";
   }
 
+  if (revision.previousDestinationStorage || revision.newDestinationStorage) {
+    return "Changement de simulateur";
+  }
+
   return isPublicContentRevision(revision) ? "Modification" : "Modification non signalee";
 }
 
@@ -5108,6 +5199,10 @@ function revisionDetail(revision) {
 
   if (revision.previousPriorityRawValue || revision.newPriorityRawValue) {
     return `${priorityLabel(revision.previousPriorityRawValue) || "Info"} → ${priorityLabel(revision.newPriorityRawValue) || "Info"}`;
+  }
+
+  if (revision.previousDestinationStorage || revision.newDestinationStorage) {
+    return `${destinationLabelFromStorage(revision.previousDestinationStorage)} → ${destinationLabelFromStorage(revision.newDestinationStorage)}`;
   }
 
   return stringValue(revision.text).trim();
@@ -5796,6 +5891,14 @@ function formatDateTime(date) {
     day: "2-digit",
     month: "2-digit",
     year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(date);
+}
+
+function formatConnectionTime(date) {
+  if (!date) return "-";
+  return new Intl.DateTimeFormat("fr-FR", {
     hour: "2-digit",
     minute: "2-digit"
   }).format(date);
