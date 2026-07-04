@@ -27,7 +27,7 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
-const WEB_APP_VERSION = "1.77b";
+const WEB_APP_VERSION = "1.77c";
 const deletedLegacySimulatorNames = new Set(["Simu 1", "Simu 2", "Simu 3", "Simu 4"]);
 const sessionStorageKey = "simflow.web.currentUser";
 const webDeviceStorageKey = "simflow.web.deviceIdentifier";
@@ -1410,6 +1410,7 @@ function renderNote(note, context) {
 function noteFromSnapshot(id, data) {
   const displayDate = startOfDay(dateValue(data.displayDate) || dateValue(data.createdAt) || new Date());
   const completions = decodeRecordArray(data.completionHistoryData);
+  const completionCancellations = decodeRecordArray(data.completionCancellationHistoryData);
   const revisions = decodeRecordArray(data.revisionHistoryData);
   const reports = decodeRecordArray(data.reportHistoryData);
   const acknowledgements = decodeRecordArray(data.acknowledgementHistoryData);
@@ -1437,6 +1438,7 @@ function noteFromSnapshot(id, data) {
     handwritingAuthorIdentifier: stringValue(data.handwritingAuthorIdentifier),
     completedContexts: stringValue(data.completedContextsStorage).split("\n").map((name) => name.trim()).filter(Boolean),
     completions,
+    completionCancellations,
     revisions,
     reports,
     acknowledgements
@@ -3118,15 +3120,22 @@ async function toggleDone(note, context) {
   const now = new Date();
   const key = completionStorageKey(context, state.selectedDate);
   const alreadyDone = isDoneInContext(note, context);
+  const removedCompletions = alreadyDone
+    ? activeCompletions(note).filter((completion) => completion.context === context && sameDay(completion.date, state.selectedDate))
+    : [];
   const completions = alreadyDone
-    ? note.completions.filter((completion) => !(completion.context === context && sameDay(completion.date, state.selectedDate)))
+    ? note.completions
     : [...note.completions, {
         id: crypto.randomUUID(),
         context,
         author: currentDisplayName(),
         authorIdentifier: state.currentUser.id,
-        date: now
+        date: now,
+        recordedDate: now
       }];
+  const completionCancellations = alreadyDone
+    ? completionCancellationsAfterRemoval(note, removedCompletions, context, now)
+    : note.completionCancellations;
   const completedContexts = alreadyDone
     ? note.completedContexts.filter((entry) => entry !== key)
     : uniqueStrings([...note.completedContexts, key]);
@@ -3134,6 +3143,7 @@ async function toggleDone(note, context) {
   await updateNote(note.id, {
     completedContextsStorage: completedContexts.join("\n"),
     completionHistoryData: completions.length ? encodeRecordArray(completions) : deleteField(),
+    completionCancellationHistoryData: completionCancellations.length ? encodeRecordArray(completionCancellations) : deleteField(),
     updatedAt: now
   });
 }
@@ -3295,8 +3305,10 @@ async function detachContextDeletionIfNeeded(note, now) {
   const remainingSimulators = note.simulatorNames.filter((name) => name !== context);
   const detachedID = crypto.randomUUID().toUpperCase();
   const detachedCompletions = contextRecords(note.completions, context);
+  const detachedCompletionCancellations = contextRecords(note.completionCancellations, context);
   const detachedAcknowledgements = contextRecords(note.acknowledgements, context);
   const remainingCompletions = withoutContextRecords(note.completions, context);
+  const remainingCompletionCancellations = withoutContextRecords(note.completionCancellations, context);
   const remainingAcknowledgements = withoutContextRecords(note.acknowledgements, context);
 
   const detachedPayload = {
@@ -3323,6 +3335,7 @@ async function detachContextDeletionIfNeeded(note, now) {
     handwritingAuthorIdentifier: note.handwritingAuthorIdentifier || "",
     completedContextsStorage: contextCompletionKeys(note.completedContexts, context).join("\n"),
     completionHistoryData: detachedCompletions.length ? encodeRecordArray(detachedCompletions) : "",
+    completionCancellationHistoryData: detachedCompletionCancellations.length ? encodeRecordArray(detachedCompletionCancellations) : "",
     acknowledgementHistoryData: detachedAcknowledgements.length ? encodeRecordArray(detachedAcknowledgements) : "",
     revisionHistoryData: note.revisions.length ? encodeRecordArray(note.revisions) : "",
     reportHistoryData: note.reports.length ? encodeRecordArray(note.reports) : ""
@@ -3333,6 +3346,7 @@ async function detachContextDeletionIfNeeded(note, now) {
     simulatorNamesStorage: remainingSimulators.join("\n"),
     completedContextsStorage: note.completedContexts.filter((key) => !isCompletionKeyForContext(key, context)).join("\n"),
     completionHistoryData: remainingCompletions.length ? encodeRecordArray(remainingCompletions) : deleteField(),
+    completionCancellationHistoryData: remainingCompletionCancellations.length ? encodeRecordArray(remainingCompletionCancellations) : deleteField(),
     acknowledgementHistoryData: remainingAcknowledgements.length ? encodeRecordArray(remainingAcknowledgements) : deleteField()
   };
 
@@ -3447,7 +3461,7 @@ function showCreateDateConfirmation(selectedDisplayDate) {
   elements.detailBody.appendChild(popover);
 }
 
-function showEditDateConfirmation(note, selectedModificationDate) {
+function showEditDateConfirmation(note, selectedModificationDate, options = {}) {
   elements.detailBody.querySelector(".date-confirm-popover")?.remove();
   const popover = document.createElement("div");
   popover.className = "date-confirm-popover";
@@ -3472,8 +3486,43 @@ function showEditDateConfirmation(note, selectedModificationDate) {
 
     popover.remove();
     saveDetailEdit(note, {
+      ...options,
       skipDateConfirmation: true,
       modificationDate: choice === "today" ? new Date() : selectedModificationDate
+    });
+  });
+
+  elements.detailBody.appendChild(popover);
+}
+
+function showDoneDateConfirmation(note, selectedDoneDate, options = {}) {
+  elements.detailBody.querySelector(".date-confirm-popover")?.remove();
+  const popover = document.createElement("div");
+  popover.className = "date-confirm-popover";
+  popover.setAttribute("role", "dialog");
+  popover.setAttribute("aria-modal", "true");
+  popover.innerHTML = `
+    <strong>La clôture n'est pas saisie<br>à la date du jour</strong>
+    <p>Voulez-vous solder cette consigne à la date sélectionnée ou à la date du jour ?</p>
+    <button type="button" class="date-confirm-choice" data-done-date-confirm="keep">
+      Solder à la date du ${escapeHtml(formatLongDate(selectedDoneDate))}
+    </button>
+    <button type="button" class="date-confirm-choice primary" data-done-date-confirm="today">
+      Solder à la date du jour
+    </button>
+  `;
+
+  popover.addEventListener("click", (event) => {
+    const choice = event.target.closest("[data-done-date-confirm]")?.dataset.doneDateConfirm;
+    if (!choice) {
+      return;
+    }
+
+    popover.remove();
+    saveDetailEdit(note, {
+      ...options,
+      doneDate: choice === "today" ? new Date() : selectedDoneDate,
+      skipDoneDateConfirmation: true
     });
   });
 
@@ -3489,6 +3538,7 @@ async function saveDetailEdit(note, options = {}) {
   const displayDate = startOfDay(parseDateInput(document.querySelector("#detailEditDate").value));
   const selectedModificationDate = startOfDay(state.selectedDate);
   const modificationDay = options.modificationDate ? startOfDay(options.modificationDate) : selectedModificationDate;
+  const selectedDoneDate = options.doneDate ? startOfDay(options.doneDate) : selectedModificationDate;
   const priority = document.querySelector("#detailEditPriority").value;
   const destination = collectDetailDestination(state.selectedDetail?.context || generalName);
   const context = state.selectedDetail?.context || generalName;
@@ -3520,8 +3570,13 @@ async function saveDetailEdit(note, options = {}) {
     return;
   }
 
+  if (!options.skipDoneDateConfirmation && doneChanged && draftDone && !sameDay(selectedDoneDate, new Date())) {
+    showDoneDateConfirmation(note, selectedDoneDate, options);
+    return;
+  }
+
   if (!options.skipDateConfirmation && announcesContentModification && !sameDay(selectedModificationDate, new Date())) {
-    showEditDateConfirmation(note, selectedModificationDate);
+    showEditDateConfirmation(note, selectedModificationDate, options);
     return;
   }
 
@@ -3607,12 +3662,13 @@ async function saveDetailEdit(note, options = {}) {
 
   if (doneChanged || (announcesContentModification && initialDone)) {
     const nextDone = announcesContentModification && initialDone ? false : draftDone;
-    const completionDate = textChanged && nextDone
-      ? new Date(modificationDate.getTime() + 1)
+    const completionDate = nextDone
+      ? dateWithTime(selectedDoneDate, now)
       : now;
-    const doneUpdate = updatedCompletionState(note, context, nextDone, completionDate);
+    const doneUpdate = updatedCompletionState(note, context, nextDone, completionDate, selectedDoneDate, now);
     patch.completedContextsStorage = doneUpdate.completedContexts.join("\n");
     patch.completionHistoryData = doneUpdate.completions.length ? encodeRecordArray(doneUpdate.completions) : deleteField();
+    patch.completionCancellationHistoryData = doneUpdate.completionCancellations.length ? encodeRecordArray(doneUpdate.completionCancellations) : deleteField();
   }
 
   if (acknowledgementChanged && !announcesContentModification) {
@@ -3643,6 +3699,7 @@ async function saveDetailEdit(note, options = {}) {
         modificationDate,
         contentModifiedAt: announcesContentModification ? modificationDate : note.contentModifiedAt,
         doneChanged,
+        selectedDoneDate,
         initialDone,
         draftDone,
         acknowledgementChanged,
@@ -3676,20 +3733,23 @@ function shouldDetachContextModification(note, context, textChanged, destination
 async function detachContextModification(note, context, draft) {
   const remainingSimulators = note.simulatorNames.filter((name) => name !== context);
   const currentContextCompletions = contextRecords(note.completions, context);
+  const currentContextCompletionCancellations = contextRecords(note.completionCancellations, context);
   const currentContextCompletedKeys = contextCompletionKeys(note.completedContexts, context);
   const currentContextAcknowledgements = draft.announcesContentModification
     ? []
     : contextRecords(note.acknowledgements, context);
 
   let detachedCompletions = currentContextCompletions;
+  let detachedCompletionCancellations = currentContextCompletionCancellations;
   let detachedCompletedKeys = currentContextCompletedKeys;
   if (draft.doneChanged || (draft.announcesContentModification && draft.initialDone)) {
     const nextDone = draft.announcesContentModification && draft.initialDone ? false : draft.draftDone;
     const completionDate = draft.doneChanged && nextDone
-      ? new Date(draft.modificationDate.getTime() + 1)
+      ? dateWithTime(draft.selectedDoneDate || state.selectedDate, draft.now)
       : draft.now;
-    const doneUpdate = updatedCompletionState(note, context, nextDone, completionDate);
+    const doneUpdate = updatedCompletionState(note, context, nextDone, completionDate, draft.selectedDoneDate || state.selectedDate, draft.now);
     detachedCompletions = contextRecords(doneUpdate.completions, context);
+    detachedCompletionCancellations = contextRecords(doneUpdate.completionCancellations, context);
     detachedCompletedKeys = contextCompletionKeys(doneUpdate.completedContexts, context);
   }
 
@@ -3723,6 +3783,7 @@ async function detachContextModification(note, context, draft) {
     handwritingAuthorIdentifier: note.handwritingAuthorIdentifier || "",
     completedContextsStorage: detachedCompletedKeys.join("\n"),
     completionHistoryData: detachedCompletions.length ? encodeRecordArray(detachedCompletions) : "",
+    completionCancellationHistoryData: detachedCompletionCancellations.length ? encodeRecordArray(detachedCompletionCancellations) : "",
     acknowledgementHistoryData: detachedAcknowledgements.length ? encodeRecordArray(detachedAcknowledgements) : "",
     revisionHistoryData: draft.revisions.length ? encodeRecordArray(draft.revisions) : ""
   };
@@ -3733,6 +3794,9 @@ async function detachContextModification(note, context, draft) {
     completedContextsStorage: note.completedContexts.filter((key) => !isCompletionKeyForContext(key, context)).join("\n"),
     completionHistoryData: withoutContextRecords(note.completions, context).length
       ? encodeRecordArray(withoutContextRecords(note.completions, context))
+      : deleteField(),
+    completionCancellationHistoryData: withoutContextRecords(note.completionCancellations, context).length
+      ? encodeRecordArray(withoutContextRecords(note.completionCancellations, context))
       : deleteField(),
     acknowledgementHistoryData: withoutContextRecords(note.acknowledgements, context).length
       ? encodeRecordArray(withoutContextRecords(note.acknowledgements, context))
@@ -4119,23 +4183,89 @@ function clearDateChangeHistory(revisions) {
   });
 }
 
-function updatedCompletionState(note, context, shouldBeDone, now) {
-  const key = completionStorageKey(context, state.selectedDate);
-  const hasCompletion = note.completions.some((completion) => completion.context === context && sameDay(completion.date, state.selectedDate));
+function activeCompletions(note) {
+  return note.completions.filter((completion) => !isCompletionCancelled(note, completion));
+}
+
+function timelineCompletions(note) {
+  return note.completions.filter((completion) => {
+    return !note.completionCancellations.some((cancellation) => {
+      return cancellation.isVisibleInTimeline === false && completionCancellationMatches(cancellation, completion);
+    });
+  });
+}
+
+function isCompletionCancelled(note, completion) {
+  return note.completionCancellations.some((cancellation) => {
+    return completionCancellationMatches(cancellation, completion);
+  });
+}
+
+function completionCancellationMatches(cancellation, completion) {
+  if (cancellation.completionID && cancellation.completionID === completion.id) {
+    return true;
+  }
+
+  if (cancellation.completionID) {
+    return false;
+  }
+
+  return cancellation.context === completion.context
+    && sameDay(cancellation.completionDate, completion.date)
+    && normalizeKey(cancellation.completedByIdentifier || cancellation.completedBy) === normalizeKey(completion.authorIdentifier || completion.author);
+}
+
+function completionCancellationsAfterRemoval(note, removedCompletions, context, now) {
+  const currentKey = normalizeKey(state.currentUser?.id || currentDisplayName());
+  const originalCompletion = [...removedCompletions]
+    .sort((a, b) => (b.recordedDate || b.date || 0) - (a.recordedDate || a.date || 0))
+    [0];
+
+  if (!originalCompletion) {
+    return note.completionCancellations;
+  }
+
+  const completionKey = normalizeKey(originalCompletion.authorIdentifier || originalCompletion.author);
+  const shouldShowInTimeline = Boolean(currentKey && currentKey !== completionKey);
+
+  return [...note.completionCancellations, {
+    id: crypto.randomUUID(),
+    context,
+    author: currentDisplayName(),
+    authorIdentifier: state.currentUser.id,
+    date: now,
+    completionID: originalCompletion.id,
+    completedBy: originalCompletion.author,
+    completedByIdentifier: originalCompletion.authorIdentifier || "",
+    completionDate: originalCompletion.date,
+    isVisibleInTimeline: shouldShowInTimeline
+  }];
+}
+
+function updatedCompletionState(note, context, shouldBeDone, completionDate, completionDay = state.selectedDate, recordedDate = new Date()) {
+  const key = completionStorageKey(context, completionDay);
+  const hasCompletion = activeCompletions(note).some((completion) => completion.context === context && sameDay(completion.date, completionDay));
+  const removedCompletions = shouldBeDone
+    ? []
+    : activeCompletions(note).filter((completion) => completion.context === context && sameDay(completion.date, completionDay));
   const completions = shouldBeDone && !hasCompletion
     ? [...note.completions, {
         id: crypto.randomUUID(),
         context,
         author: currentDisplayName(),
         authorIdentifier: state.currentUser.id,
-        date: now
+        date: completionDate,
+        recordedDate
       }]
-    : note.completions.filter((completion) => !(completion.context === context && sameDay(completion.date, state.selectedDate)));
+    : note.completions;
+  const completionCancellations = shouldBeDone
+    ? note.completionCancellations
+    : completionCancellationsAfterRemoval(note, removedCompletions, context, recordedDate);
   const completedContexts = shouldBeDone
     ? uniqueStrings([...note.completedContexts, key])
     : note.completedContexts.filter((entry) => entry !== key);
 
-  return { completions, completedContexts };
+  return { completions, completionCancellations, completedContexts };
 }
 
 function updatedAcknowledgementState(note, context, shouldBeAcknowledged, now) {
@@ -4349,7 +4479,7 @@ function periodSortingActivityDate(note) {
 
   const periodDates = [
     ...contentModificationDates(note),
-    ...note.completions.map((completion) => completion.date).filter(Boolean),
+    ...activeCompletions(note).map((completion) => completion.date).filter(Boolean),
     firstAssignmentDate(note)
   ].filter((date) => date && isDateInPeriod(date));
 
@@ -4357,7 +4487,7 @@ function periodSortingActivityDate(note) {
 }
 
 function completionDatesInContext(note, context) {
-  return note.completions
+  return activeCompletions(note)
     .filter((completion) => completion.context === context && completion.date)
     .map((completion) => completion.date)
     .sort((a, b) => a - b);
@@ -4473,7 +4603,7 @@ function newSortRank(note) {
 }
 
 function isDoneInContext(note, context) {
-  if (note.completions.some((completion) => completion.context === context && sameDay(completion.date, state.selectedDate))) {
+  if (activeCompletions(note).some((completion) => completion.context === context && sameDay(completion.date, state.selectedDate))) {
     return true;
   }
 
@@ -4481,13 +4611,13 @@ function isDoneInContext(note, context) {
 }
 
 function isDoneBadgeVisibleInContext(note, context) {
-  return note.completions.some((completion) => {
+  return activeCompletions(note).some((completion) => {
     return completion.context === context && isEventActiveForCurrentView(completion.date);
   }) || isDoneInContext(note, context);
 }
 
 function isCompletedBefore(note, day, context) {
-  return note.completions.some((completion) => completion.context === context && startOfDay(completion.date) < startOfDay(day));
+  return activeCompletions(note).some((completion) => completion.context === context && startOfDay(completion.date) < startOfDay(day));
 }
 
 function isAcknowledgedInContext(note, context) {
@@ -4733,14 +4863,25 @@ function timelineEvents(note, context) {
     previousRevisionText = revision.text;
   }
 
-  for (const completion of note.completions.filter((record) => record.context === context)) {
+  for (const completion of timelineCompletions(note).filter((record) => record.context === context)) {
     events.push({
-      date: completion.date,
-      title: "Cloture",
+      date: completion.recordedDate || completion.date,
+      title: "Soldé",
       author: completion.author,
       authorIdentifier: completion.authorIdentifier || completion.author,
-      context,
+      detail: completionAssignmentDetail(completion),
       kind: "completion",
+      hasDisclosure: false
+    });
+  }
+
+  for (const cancellation of note.completionCancellations.filter((record) => record.context === context && record.isVisibleInTimeline !== false)) {
+    events.push({
+      date: cancellation.date,
+      title: "Annulation Soldé",
+      author: cancellation.author,
+      authorIdentifier: cancellation.authorIdentifier || cancellation.author,
+      kind: "completion-cancellation",
       hasDisclosure: false
     });
   }
@@ -4871,6 +5012,16 @@ function creationAssignmentDetail(note) {
   const createdAt = note.createdAt;
   const assignedDate = note.firstDisplayDate || note.displayDate;
   if (!createdAt || !assignedDate || sameDay(createdAt, assignedDate)) {
+    return "";
+  }
+
+  return `Affectée au ${formatShortDate(assignedDate)}`;
+}
+
+function completionAssignmentDetail(completion) {
+  const recordedDate = completion.recordedDate;
+  const assignedDate = completion.date;
+  if (!recordedDate || !assignedDate || sameDay(recordedDate, assignedDate)) {
     return "";
   }
 
@@ -5800,6 +5951,20 @@ function currentDisplayName() {
 
 function currentDisplayNameForUser(user) {
   return [user.firstName, user.lastName].filter(Boolean).join(" ") || user.id || "Utilisateur";
+}
+
+function displayNameForIdentifier(identifier) {
+  const key = normalizeKey(identifier);
+  if (!key) {
+    return "";
+  }
+
+  const matchedUser = state.users.find((user) => {
+    return normalizeKey(user.id) === key
+      || normalizeKey(user.documentID) === key
+      || normalizeKey(currentDisplayNameForUser(user)) === key;
+  });
+  return matchedUser ? currentDisplayNameForUser(matchedUser) : stringValue(identifier);
 }
 
 function shouldMaskAdminAccessCode(user) {
