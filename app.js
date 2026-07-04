@@ -27,7 +27,7 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
-const WEB_APP_VERSION = "1.77";
+const WEB_APP_VERSION = "1.77b";
 const deletedLegacySimulatorNames = new Set(["Simu 1", "Simu 2", "Simu 3", "Simu 4"]);
 const sessionStorageKey = "simflow.web.currentUser";
 const webDeviceStorageKey = "simflow.web.deviceIdentifier";
@@ -1411,6 +1411,7 @@ function noteFromSnapshot(id, data) {
   const displayDate = startOfDay(dateValue(data.displayDate) || dateValue(data.createdAt) || new Date());
   const completions = decodeRecordArray(data.completionHistoryData);
   const revisions = decodeRecordArray(data.revisionHistoryData);
+  const reports = decodeRecordArray(data.reportHistoryData);
   const acknowledgements = decodeRecordArray(data.acknowledgementHistoryData);
   return {
     id,
@@ -1437,6 +1438,7 @@ function noteFromSnapshot(id, data) {
     completedContexts: stringValue(data.completedContextsStorage).split("\n").map((name) => name.trim()).filter(Boolean),
     completions,
     revisions,
+    reports,
     acknowledgements
   };
 }
@@ -3255,6 +3257,12 @@ async function performNoteDeletion(note, deletionMode) {
     } else {
       const now = new Date();
       setStatus("Suppression...");
+      if (await detachContextDeletionIfNeeded(note, now)) {
+        closeDetail();
+        render();
+        return;
+      }
+
       await updateNote(note.id, {
         deletedAt: now,
         deletedBy: currentDisplayName(),
@@ -3271,6 +3279,69 @@ async function performNoteDeletion(note, deletionMode) {
     state.isSaving = false;
     refreshDetail();
   }
+}
+
+async function detachContextDeletionIfNeeded(note, now) {
+  const context = state.selectedDetail?.context || "";
+  if (!context
+    || context === generalName
+    || note.isGeneral
+    || note.deletedAt
+    || note.simulatorNames.length <= 1
+    || !note.simulatorNames.includes(context)) {
+    return false;
+  }
+
+  const remainingSimulators = note.simulatorNames.filter((name) => name !== context);
+  const detachedID = crypto.randomUUID().toUpperCase();
+  const detachedCompletions = contextRecords(note.completions, context);
+  const detachedAcknowledgements = contextRecords(note.acknowledgements, context);
+  const remainingCompletions = withoutContextRecords(note.completions, context);
+  const remainingAcknowledgements = withoutContextRecords(note.acknowledgements, context);
+
+  const detachedPayload = {
+    id: detachedID,
+    title: note.title,
+    text: note.text,
+    author: note.author,
+    authorIdentifier: note.authorIdentifier,
+    createdAt: note.createdAt || now,
+    updatedAt: now,
+    contentModifiedAt: note.contentModifiedAt || null,
+    deletedAt: now,
+    deletedBy: currentDisplayName(),
+    deletedByIdentifier: state.currentUser.id,
+    displayDate: note.displayDate,
+    firstDisplayDate: note.firstDisplayDate || note.displayDate,
+    isGeneral: false,
+    simulatorNamesStorage: context,
+    richTextHTML: note.richTextHTML || "",
+    richTextData: note.richTextData || "",
+    priorityRawValue: note.priority || "",
+    handwritingData: note.handwritingData || "",
+    handwritingPreviewImageData: note.handwritingPreviewImageData || "",
+    handwritingAuthorIdentifier: note.handwritingAuthorIdentifier || "",
+    completedContextsStorage: contextCompletionKeys(note.completedContexts, context).join("\n"),
+    completionHistoryData: detachedCompletions.length ? encodeRecordArray(detachedCompletions) : "",
+    acknowledgementHistoryData: detachedAcknowledgements.length ? encodeRecordArray(detachedAcknowledgements) : "",
+    revisionHistoryData: note.revisions.length ? encodeRecordArray(note.revisions) : "",
+    reportHistoryData: note.reports.length ? encodeRecordArray(note.reports) : ""
+  };
+
+  const originalPatch = {
+    updatedAt: now,
+    simulatorNamesStorage: remainingSimulators.join("\n"),
+    completedContextsStorage: note.completedContexts.filter((key) => !isCompletionKeyForContext(key, context)).join("\n"),
+    completionHistoryData: remainingCompletions.length ? encodeRecordArray(remainingCompletions) : deleteField(),
+    acknowledgementHistoryData: remainingAcknowledgements.length ? encodeRecordArray(remainingAcknowledgements) : deleteField()
+  };
+
+  await Promise.all([
+    updateDoc(doc(db, "handoverNotes", note.id), originalPatch),
+    setDoc(doc(db, "handoverNotes", detachedID), detachedPayload)
+  ]);
+  setStatus("Consigne supprimée pour ce simulateur");
+  return true;
 }
 
 async function permanentlyDeleteNote(noteID) {
