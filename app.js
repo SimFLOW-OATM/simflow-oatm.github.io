@@ -27,7 +27,7 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
-const WEB_APP_VERSION = "1.77c";
+const WEB_APP_VERSION = "1.78";
 const deletedLegacySimulatorNames = new Set(["Simu 1", "Simu 2", "Simu 3", "Simu 4"]);
 const sessionStorageKey = "simflow.web.currentUser";
 const webDeviceStorageKey = "simflow.web.deviceIdentifier";
