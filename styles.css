@@ -1091,6 +1091,11 @@ h1:empty + p {
   cursor: pointer;
 }
 
+.note-card.priority-info {
+  margin-left: 24px;
+  border-color: rgba(148, 163, 184, 0.22);
+}
+
 .note-card.priority-urgent {
   border-color: var(--priority-color, var(--urgent));
   background: var(--priority-bg, rgba(255, 75, 85, 0.12));
@@ -2932,6 +2937,10 @@ mark {
 
   .topbar {
     flex-direction: column;
+  }
+
+  .note-card.priority-info {
+    margin-left: 8px;
   }
 
   .detail-overlay {

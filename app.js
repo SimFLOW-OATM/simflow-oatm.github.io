@@ -29,7 +29,7 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
-const WEB_APP_VERSION = "1.79";
+const WEB_APP_VERSION = "1.80";
 const deletedLegacySimulatorNames = new Set(["Simu 1", "Simu 2", "Simu 3", "Simu 4"]);
 const sessionStorageKey = "simflow.web.currentUser";
 const webDeviceStorageKey = "simflow.web.deviceIdentifier";
@@ -1440,7 +1440,7 @@ function renderGroup(group) {
 }
 
 function renderNote(note, context) {
-  const priorityClass = note.priority ? `priority-${note.priority}` : "";
+  const priorityClass = note.priority ? `priority-${note.priority}` : "priority-info";
   const priorityStyle = note.priority ? ` style="--priority-color:${priorityColor(note.priority)};--priority-bg:${priorityBackground(note.priority)}"` : "";
   const title = highlight(note.title);
   const dailyDiffHTML = highlightHTML(dailyModificationDiffHTML(note));
