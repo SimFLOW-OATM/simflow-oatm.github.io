@@ -8,7 +8,9 @@ import {
   getFirestore,
   getDocs,
   increment,
+  limit,
   onSnapshot,
+  orderBy,
   query,
   setDoc,
   updateDoc,
@@ -27,7 +29,7 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
-const WEB_APP_VERSION = "1.78";
+const WEB_APP_VERSION = "1.79";
 const deletedLegacySimulatorNames = new Set(["Simu 1", "Simu 2", "Simu 3", "Simu 4"]);
 const sessionStorageKey = "simflow.web.currentUser";
 const webDeviceStorageKey = "simflow.web.deviceIdentifier";
@@ -55,22 +57,27 @@ const state = {
   detailTimelineEvents: [],
   activeAdminTab: "home",
   adminLoginDate: startOfDay(new Date()),
+  adminActivityDate: startOfDay(new Date()),
   codeModalMode: "login",
   isSaving: false,
   notes: [],
   handwritingNotes: [],
   dailyTags: [],
   loginEvents: [],
+  activityEvents: [],
   users: [],
   allSimulators: [],
   simulators: [],
   adminLoginDateInteracting: false,
+  adminActivityDateInteracting: false,
   unsubscribeNotes: null,
   unsubscribeHandwritingNotes: null,
   unsubscribeDailyTags: null,
   unsubscribeLoginEvents: null,
+  unsubscribeActivityEvents: null,
   unsubscribeUsers: null,
   unsubscribeSimulators: null,
+  adminActivitySearch: "",
   lastLoginEventAt: 0
 };
 
@@ -80,6 +87,20 @@ const db = getFirestore(app);
 const functions = getFunctions(app, "us-central1");
 const loginWithAccessCode = httpsCallable(functions, "loginWithAccessCode");
 const changeOwnAccessCode = httpsCallable(functions, "changeOwnAccessCode");
+const activityActionTitles = {
+  created: "Creation",
+  modified: "Modification",
+  destinationChanged: "Destination modifiee",
+  priorityChanged: "Priorite modifiee",
+  assignedDateChanged: "Date modifiee",
+  completed: "Solde",
+  completionCancelled: "Annulation solde",
+  acknowledged: "Pris en compte",
+  acknowledgementCancelled: "Annulation prise en compte",
+  deleted: "Suppression",
+  restored: "Restauration",
+  permanentlyDeleted: "Suppression definitive"
+};
 
 const elements = {
   sidebarScroll: document.querySelector(".sidebar-scroll"),
@@ -477,8 +498,17 @@ elements.adminOverlay.addEventListener("click", (event) => {
   } else if (action === "open-admin-connections") {
     state.activeAdminTab = "connections";
     renderAdminSettings();
+  } else if (action === "open-admin-activity") {
+    state.activeAdminTab = "activity";
+    renderAdminSettings();
+  } else if (action === "open-activity-note") {
+    openActivityNote(actionButton.closest(".admin-card"));
   } else if (action === "admin-login-previous-day") {
     state.adminLoginDate = addDays(state.adminLoginDate, -1);
+    renderAdminSettings({ force: true });
+  } else if (action === "admin-activity-previous-day") {
+    state.adminActivityDate = addDays(state.adminActivityDate, -1);
+    restartActivityEventsListener(true);
     renderAdminSettings({ force: true });
   } else if (action === "create-user") {
     createAdminUser();
@@ -499,22 +529,38 @@ elements.adminOverlay.addEventListener("change", (event) => {
     state.adminLoginDate = startOfDay(parseDateInput(event.target.value));
     state.adminLoginDateInteracting = false;
     renderAdminSettings({ force: true });
+  } else if (event.target.matches("[data-admin-activity-date]")) {
+    state.adminActivityDate = startOfDay(parseDateInput(event.target.value));
+    state.adminActivityDateInteracting = false;
+    restartActivityEventsListener(true);
+    renderAdminSettings({ force: true });
+  } else if (event.target.matches("[data-admin-activity-search]")) {
+    state.adminActivitySearch = event.target.value;
+    renderAdminSettings({ force: true });
   }
 });
 elements.adminOverlay.addEventListener("focusin", (event) => {
   if (event.target.matches("[data-admin-login-date]")) {
     state.adminLoginDateInteracting = true;
+  } else if (event.target.matches("[data-admin-activity-date]")) {
+    state.adminActivityDateInteracting = true;
   }
 });
 elements.adminOverlay.addEventListener("pointerdown", (event) => {
   if (event.target.matches("[data-admin-login-date]")) {
     state.adminLoginDateInteracting = true;
+  } else if (event.target.matches("[data-admin-activity-date]")) {
+    state.adminActivityDateInteracting = true;
   }
 });
 elements.adminOverlay.addEventListener("focusout", (event) => {
   if (event.target.matches("[data-admin-login-date]")) {
     window.setTimeout(() => {
       state.adminLoginDateInteracting = false;
+    }, 250);
+  } else if (event.target.matches("[data-admin-activity-date]")) {
+    window.setTimeout(() => {
+      state.adminActivityDateInteracting = false;
     }, 250);
   }
 });
@@ -779,7 +825,7 @@ function attachFirebaseListeners() {
     state.unsubscribeUsers = onSnapshot(collection(db, "users"), (snapshot) => {
       state.users = deduplicatedUsers(snapshot.docs
         .map((document) => userFromSnapshot(document.id, document.data())))
-        .sort((a, b) => currentDisplayNameForUser(a).localeCompare(currentDisplayNameForUser(b), "fr"));
+        .sort(compareUsersByLastName);
       renderAdminSettings();
     }, (error) => setStatus(error.message));
   }
@@ -791,6 +837,10 @@ function attachFirebaseListeners() {
         .filter(Boolean);
       renderAdminSettings();
     }, (error) => setStatus(error.message));
+  }
+
+  if (isAdminSession()) {
+    restartActivityEventsListener();
   }
 
   if (!state.unsubscribeSimulators) {
@@ -807,12 +857,48 @@ function attachFirebaseListeners() {
   }
 }
 
+function restartActivityEventsListener(force = false) {
+  if (!state.authReady || !isAdminSession()) {
+    return;
+  }
+
+  if (state.unsubscribeActivityEvents && !force) {
+    return;
+  }
+
+  if (state.unsubscribeActivityEvents) {
+    state.unsubscribeActivityEvents();
+    state.unsubscribeActivityEvents = null;
+  }
+
+  const start = startOfDay(state.adminActivityDate);
+  const end = addDays(start, 1);
+  state.activityEvents = [];
+  state.unsubscribeActivityEvents = onSnapshot(
+    query(
+      collection(db, "activityEvents"),
+      where("createdAt", ">=", start),
+      where("createdAt", "<", end),
+      orderBy("createdAt", "desc"),
+      limit(500)
+    ),
+    (snapshot) => {
+      state.activityEvents = snapshot.docs
+        .map((document) => activityEventFromSnapshot(document.id, document.data()))
+        .filter(Boolean);
+      renderAdminSettings();
+    },
+    (error) => setStatus(error.message)
+  );
+}
+
 function detachAuthenticatedDataSync() {
   const unsubscribeKeys = [
     "unsubscribeNotes",
     "unsubscribeHandwritingNotes",
     "unsubscribeDailyTags",
     "unsubscribeLoginEvents",
+    "unsubscribeActivityEvents",
     "unsubscribeUsers",
     "unsubscribeSimulators"
   ];
@@ -828,6 +914,7 @@ function detachAuthenticatedDataSync() {
   state.handwritingNotes = [];
   state.dailyTags = [];
   state.loginEvents = [];
+  state.activityEvents = [];
   state.users = [];
   state.allSimulators = [];
   state.simulators = [];
@@ -1445,10 +1532,11 @@ function noteFromSnapshot(id, data) {
   };
 }
 
-function openDetail(noteId, context) {
+function openDetail(noteId, context, options = {}) {
   state.selectedCreate = null;
   state.pendingHandwritingClear = null;
   state.selectedDetail = { noteId, context };
+  elements.detailOverlay.classList.toggle("over-admin", Boolean(options.overAdmin));
   refreshDetail();
 }
 
@@ -1460,6 +1548,7 @@ function openCreate(context) {
 
   state.selectedDetail = null;
   state.selectedCreate = { context };
+  elements.detailOverlay.classList.remove("over-admin");
   renderCreate(context);
 }
 
@@ -1469,6 +1558,7 @@ function closeDetail() {
   state.selectedCreate = null;
   state.pendingHandwritingClear = null;
   elements.detailOverlay.classList.add("hidden");
+  elements.detailOverlay.classList.remove("over-admin");
   elements.detailOverlay.setAttribute("aria-hidden", "true");
   closeCreationTextModal();
   if (hadPendingHandwritingClear) {
@@ -2079,6 +2169,9 @@ function deduplicatedSimulators(simulators) {
 }
 
 function userFromSnapshot(documentID, data) {
+  const rawRole = stringValue(data.roleRawValue);
+  const rawTeam = stringValue(data.teamRawValue);
+  const migratedSupportRole = rawRole || (rawTeam === "support" ? "support" : "");
   return {
     documentID,
     id: stringValue(data.iCloudIdentifier, documentID),
@@ -2086,8 +2179,8 @@ function userFromSnapshot(documentID, data) {
     lastName: stringValue(data.lastName),
     accessCode: stringValue(data.accessCode),
     isAccessCodeUserDefined: Boolean(data.isAccessCodeUserDefined),
-    role: stringValue(data.roleRawValue),
-    team: stringValue(data.teamRawValue),
+    role: migratedSupportRole,
+    team: rawTeam === "support" ? "" : rawTeam,
     updatedAt: dateValue(data.updatedAt)
   };
 }
@@ -2128,6 +2221,29 @@ function loginEventFromSnapshot(documentID, data) {
     createdAt,
     lastSeenAt: dateValue(data.lastSeenAt) || createdAt,
     appearanceCount: Math.max(1, Number(data.appearanceCount) || 1)
+  };
+}
+
+function activityEventFromSnapshot(documentID, data) {
+  const action = stringValue(data.action, "modified");
+  const noteID = stringValue(data.noteID);
+  if (!noteID) {
+    return null;
+  }
+
+  return {
+    id: stringValue(data.id, documentID),
+    userIdentifier: stringValue(data.userIdentifier),
+    userDisplayName: stringValue(data.userDisplayName),
+    action,
+    actionTitle: stringValue(data.actionTitle, activityActionTitles[action] || action),
+    noteID,
+    noteTitle: stringValue(data.noteTitle),
+    simulatorNames: Array.isArray(data.simulatorNames)
+      ? data.simulatorNames.map((name) => stringValue(name)).filter(Boolean)
+      : [],
+    context: stringValue(data.context),
+    createdAt: dateValue(data.createdAt) || new Date(0)
   };
 }
 
@@ -2186,7 +2302,7 @@ function renderAdminSettings(options = {}) {
     return;
   }
 
-  if (!options.force && isAdminLoginDateInteractionActive()) {
+  if (!options.force && isAdminDateInteractionActive()) {
     return;
   }
 
@@ -2198,7 +2314,9 @@ function renderAdminSettings(options = {}) {
       ? "Simulateurs"
       : state.activeAdminTab === "connections"
         ? "Connexions"
-        : "Administration";
+        : state.activeAdminTab === "activity"
+          ? "Suivi d'activité"
+          : "Administration";
   elements.adminOverlay.querySelector("#adminTitle").textContent = title;
 
   if (state.activeAdminTab === "users") {
@@ -2207,6 +2325,8 @@ function renderAdminSettings(options = {}) {
     elements.adminBody.innerHTML = renderAdminSimulators();
   } else if (state.activeAdminTab === "connections") {
     elements.adminBody.innerHTML = renderAdminConnections();
+  } else if (state.activeAdminTab === "activity") {
+    elements.adminBody.innerHTML = renderAdminActivity();
   } else {
     elements.adminBody.innerHTML = renderAdminHome();
   }
@@ -2224,12 +2344,18 @@ function refreshAdminConnectionsPresence() {
   renderAdminSettings();
 }
 
-function isAdminLoginDateInteractionActive() {
-  return state.activeAdminTab === "connections"
-    && (
-      state.adminLoginDateInteracting
-      || document.activeElement?.matches?.("[data-admin-login-date]")
-    );
+function isAdminDateInteractionActive() {
+  if (state.activeAdminTab === "connections") {
+    return state.adminLoginDateInteracting
+      || document.activeElement?.matches?.("[data-admin-login-date]");
+  }
+
+  if (state.activeAdminTab === "activity") {
+    return state.adminActivityDateInteracting
+      || document.activeElement?.matches?.("[data-admin-activity-date]");
+  }
+
+  return false;
 }
 
 function renderAdminHome() {
@@ -2256,6 +2382,13 @@ function renderAdminHome() {
           <small>Ouvertures par jour, iOS et Web</small>
         </span>
       </button>
+      <button class="admin-menu-row" type="button" data-admin-action="open-admin-activity">
+        <span class="admin-menu-icon">☷</span>
+        <span>
+          <strong>Suivi d'activité</strong>
+          <small>Actions utilisateur et lien direct consigne</small>
+        </span>
+      </button>
     </div>
   `;
 }
@@ -2279,6 +2412,25 @@ function renderAdminUsers() {
         <label>Prénom<input id="newUserFirstName" autocomplete="off" placeholder="Prénom"></label>
         <label>Nom<input id="newUserLastName" autocomplete="off" placeholder="Nom"></label>
         <label>Code à 6 chiffres<input id="newUserAccessCode" maxlength="6" inputmode="numeric" autocomplete="off" placeholder="Code"></label>
+        <label>Rôle
+          <select id="newUserRole">
+            <option value="">Consultation</option>
+            <option value="technician">Technicien</option>
+            <option value="teamLeader">Chef d'équipe</option>
+            <option value="support">Support</option>
+            <option value="admin">Admin</option>
+          </select>
+        </label>
+        <label>Équipe
+          <select id="newUserTeam">
+            <option value="">Aucune</option>
+            <option value="team1">Equipe 1</option>
+            <option value="team2">Equipe 2</option>
+            <option value="team3">Equipe 3</option>
+            <option value="team4">Equipe 4</option>
+            <option value="team5">Equipe 5</option>
+          </select>
+        </label>
       </div>
       <div class="admin-actions create-user-actions">
         <button type="button" data-admin-action="create-user">Ajouter l'utilisateur</button>
@@ -2312,6 +2464,7 @@ function renderAdminUserCard(user) {
             <option value="" ${!user.role ? "selected" : ""}>Consultation</option>
             <option value="technician" ${user.role === "technician" ? "selected" : ""}>Technicien</option>
             <option value="teamLeader" ${user.role === "teamLeader" ? "selected" : ""}>Chef d'équipe</option>
+            <option value="support" ${user.role === "support" ? "selected" : ""}>Support</option>
             <option value="admin" ${user.role === "admin" ? "selected" : ""}>Admin</option>
           </select>
         </label>
@@ -2323,7 +2476,6 @@ function renderAdminUserCard(user) {
             <option value="team3" ${user.team === "team3" ? "selected" : ""}>Equipe 3</option>
             <option value="team4" ${user.team === "team4" ? "selected" : ""}>Equipe 4</option>
             <option value="team5" ${user.team === "team5" ? "selected" : ""}>Equipe 5</option>
-            <option value="support" ${user.team === "support" ? "selected" : ""}>Support</option>
           </select>
         </label>
       </div>
@@ -2401,6 +2553,91 @@ function renderAdminConnectionGroup(group) {
       </div>
     </article>
   `;
+}
+
+function renderAdminActivity() {
+  const events = filteredActivityEvents();
+  return `
+    ${renderAdminBackButton()}
+    <div class="admin-section-heading">
+      <h3>Jour</h3>
+      <p>Actions enregistrées sur les consignes.</p>
+    </div>
+    <div class="admin-card">
+      <div class="admin-form-grid admin-activity-date-grid">
+        <div class="admin-login-date-control">
+          <button class="secondary icon-button" type="button" data-admin-action="admin-activity-previous-day" title="Jour précédent">‹</button>
+          <label>Date<input type="date" data-admin-activity-date value="${escapeAttribute(isoDate(state.adminActivityDate))}"></label>
+        </div>
+        <label>Total<input value="${events.length} action${events.length > 1 ? "s" : ""}" readonly></label>
+      </div>
+    </div>
+    <div class="admin-card admin-activity-filter">
+      <label>Rechercher<input data-admin-activity-search value="${escapeAttribute(state.adminActivitySearch)}" placeholder="Utilisateur, action, simulateur ou consigne"></label>
+    </div>
+    <div class="admin-section-heading">
+      <h3>Actions</h3>
+    </div>
+    <div class="admin-list">
+      ${events.map(renderAdminActivityEvent).join("") || "<p class=\"muted\">Aucune action.</p>"}
+    </div>
+  `;
+}
+
+function renderAdminActivityEvent(event) {
+  const note = state.notes.find((candidate) => candidate.id === event.noteID);
+  const displayName = displayNameForIdentifier(event.userIdentifier) || event.userDisplayName || event.userIdentifier;
+  const noteTitle = event.noteTitle || note?.title || "Consigne sans titre";
+  const simulatorText = event.simulatorNames.length ? event.simulatorNames.join(", ") : activitySimulatorNames(note || event).join(", ");
+  return `
+    <article class="admin-card admin-activity-card" data-note-id="${escapeAttribute(event.noteID)}" data-context="${escapeAttribute(event.context)}">
+      <div class="admin-card-title">
+        <strong>${escapeHtml(event.actionTitle)}</strong>
+        <span>${escapeHtml(formatDateTime(event.createdAt))}</span>
+      </div>
+      <div class="admin-activity-meta">
+        <span>👤 ${escapeHtml(displayName)}</span>
+        <span>▦ ${escapeHtml(simulatorText)}</span>
+      </div>
+      <div class="admin-activity-note-row">
+        <span>${escapeHtml(noteTitle)}</span>
+        <button type="button" class="secondary" data-admin-action="open-activity-note" ${note ? "" : "disabled"}>Ouvrir</button>
+      </div>
+    </article>
+  `;
+}
+
+function filteredActivityEvents() {
+  const queryText = normalizeKey(state.adminActivitySearch);
+  if (!queryText) {
+    return state.activityEvents;
+  }
+
+  return state.activityEvents.filter((event) => {
+    const note = state.notes.find((candidate) => candidate.id === event.noteID);
+    const displayName = displayNameForIdentifier(event.userIdentifier) || event.userDisplayName || event.userIdentifier;
+    const searchable = [
+      displayName,
+      event.actionTitle,
+      event.noteTitle,
+      note?.title || "",
+      event.simulatorNames.join(" "),
+      event.context
+    ].join(" ");
+    return normalizeKey(searchable).includes(queryText);
+  });
+}
+
+function openActivityNote(card) {
+  const noteID = card?.dataset.noteId || "";
+  const note = state.notes.find((candidate) => candidate.id === noteID);
+  if (!note) {
+    setStatus("Consigne introuvable");
+    return;
+  }
+
+  const context = card?.dataset.context || (note.isGeneral ? generalName : note.simulatorNames[0] || generalName);
+  openDetail(note.id, context, { overAdmin: true });
 }
 
 function renderAdminSimulatorCard(simulator) {
@@ -2638,6 +2875,8 @@ async function createAdminUser() {
   const accessCode = (elements.adminBody.querySelector("#newUserAccessCode")?.value || "")
     .replace(/\D/g, "")
     .slice(0, 6);
+  const role = nullableString(elements.adminBody.querySelector("#newUserRole")?.value || "");
+  const team = nullableString(elements.adminBody.querySelector("#newUserTeam")?.value || "");
 
   if (accessCode.length !== 6) {
     setStatus("Le code utilisateur doit contenir 6 chiffres");
@@ -2659,8 +2898,8 @@ async function createAdminUser() {
       lastName,
       accessCode,
       isAccessCodeUserDefined: false,
-      roleRawValue: "",
-      teamRawValue: "",
+      roleRawValue: role,
+      teamRawValue: team,
       updatedAt: new Date()
     });
     setStatus("Utilisateur ajouté");
@@ -3146,6 +3385,7 @@ async function toggleDone(note, context) {
     completionCancellationHistoryData: completionCancellations.length ? encodeRecordArray(completionCancellations) : deleteField(),
     updatedAt: now
   });
+  await recordActivityEvent(alreadyDone ? "completionCancelled" : "completed", note, context);
 }
 
 async function toggleAcknowledgement(note, context) {
@@ -3181,6 +3421,7 @@ async function toggleAcknowledgement(note, context) {
     acknowledgementHistoryData: acknowledgements.length ? encodeRecordArray(acknowledgements) : deleteField(),
     updatedAt: now
   });
+  await recordActivityEvent(alreadyAcknowledged ? "acknowledgementCancelled" : "acknowledged", note, context);
 }
 
 function confirmPermanentDeleteFromDetail(note) {
@@ -3256,6 +3497,7 @@ async function performNoteDeletion(note, deletionMode) {
     if (isPermanent) {
       setStatus("Suppression définitive...");
       await permanentlyDeleteNote(note.id);
+      await recordActivityEvent("permanentlyDeleted", note, state.selectedDetail?.context);
     } else if (deletionMode === "restore") {
       setStatus("Restauration...");
       await updateNote(note.id, {
@@ -3264,6 +3506,7 @@ async function performNoteDeletion(note, deletionMode) {
         deletedByIdentifier: deleteField(),
         updatedAt: new Date()
       });
+      await recordActivityEvent("restored", note, state.selectedDetail?.context);
     } else {
       const now = new Date();
       setStatus("Suppression...");
@@ -3279,6 +3522,7 @@ async function performNoteDeletion(note, deletionMode) {
         deletedByIdentifier: state.currentUser.id,
         updatedAt: now
       });
+      await recordActivityEvent("deleted", note, state.selectedDetail?.context);
     }
     closeDetail();
     render();
@@ -3354,6 +3598,7 @@ async function detachContextDeletionIfNeeded(note, now) {
     updateDoc(doc(db, "handoverNotes", note.id), originalPatch),
     setDoc(doc(db, "handoverNotes", detachedID), detachedPayload)
   ]);
+  await recordActivityEvent("deleted", detachedPayload, context);
   setStatus("Consigne supprimée pour ce simulateur");
   return true;
 }
@@ -3421,6 +3666,7 @@ async function saveNewNote(options = {}) {
   setStatus("Enregistrement...");
   try {
     await setDoc(doc(db, "handoverNotes", id), payload);
+    await recordActivityEvent("created", payload, destination.isGeneral ? generalName : destination.simulatorNames[0]);
     closeDetail();
     setStatus("Consigne créée");
   } finally {
@@ -3709,6 +3955,17 @@ async function saveDetailEdit(note, options = {}) {
       });
     } else {
       await updateNote(note.id, patch);
+      await recordNoteEditActivity(note, context, {
+        textChanged,
+        richTextChanged,
+        dateChanged,
+        priorityChanged,
+        destinationChanged,
+        doneChanged,
+        draftDone,
+        acknowledgementChanged,
+        draftAcknowledged
+      });
     }
     if (handwritingClearChanged && state.pendingHandwritingClear.source === "utilisateur" && state.pendingHandwritingClear.documentID) {
       await deleteDoc(doc(db, "handwritingNotes", state.pendingHandwritingClear.documentID));
@@ -3808,6 +4065,17 @@ async function detachContextModification(note, context, draft) {
     updateDoc(doc(db, "handoverNotes", note.id), originalPatch),
     setDoc(doc(db, "handoverNotes", detachedID), detachedPayload)
   ]);
+  await recordNoteEditActivity(detachedPayload, context, {
+    textChanged: true,
+    richTextChanged: Boolean(draft.richTextHTML !== (note.richTextHTML || "")),
+    dateChanged: Boolean(draft.patch.displayDate),
+    priorityChanged: draft.priority !== note.priority,
+    destinationChanged: false,
+    doneChanged: draft.doneChanged,
+    draftDone: draft.draftDone,
+    acknowledgementChanged: draft.acknowledgementChanged,
+    draftAcknowledged: draft.draftAcknowledged
+  });
   setStatus("Données synchronisées");
 }
 
@@ -5949,8 +6217,75 @@ function currentDisplayName() {
   return [state.currentUser.firstName, state.currentUser.lastName].filter(Boolean).join(" ") || state.currentUser.id;
 }
 
+async function recordNoteEditActivity(note, context, changes) {
+  const actions = [];
+  if (changes.textChanged || changes.richTextChanged) {
+    actions.push("modified");
+  }
+  if (changes.destinationChanged) {
+    actions.push("destinationChanged");
+  }
+  if (changes.priorityChanged) {
+    actions.push("priorityChanged");
+  }
+  if (changes.dateChanged) {
+    actions.push("assignedDateChanged");
+  }
+  if (changes.doneChanged) {
+    actions.push(changes.draftDone ? "completed" : "completionCancelled");
+  }
+  if (changes.acknowledgementChanged) {
+    actions.push(changes.draftAcknowledged ? "acknowledged" : "acknowledgementCancelled");
+  }
+
+  for (const action of actions) {
+    await recordActivityEvent(action, note, context);
+  }
+}
+
+async function recordActivityEvent(action, note, context = "") {
+  if (!state.authReady || !state.currentUser?.id || !note?.id) {
+    return;
+  }
+
+  const id = crypto.randomUUID();
+  await setDoc(doc(db, "activityEvents", id), {
+    id,
+    userIdentifier: state.currentUser.id,
+    userDisplayName: currentDisplayName(),
+    action,
+    actionTitle: activityActionTitles[action] || action,
+    noteID: note.id,
+    noteTitle: note.title || "",
+    simulatorNames: activitySimulatorNames(note),
+    context: context || "",
+    createdAt: new Date()
+  });
+}
+
+function activitySimulatorNames(note) {
+  if (note.isGeneral) {
+    return [generalName];
+  }
+
+  if (Array.isArray(note.simulatorNames)) {
+    const names = note.simulatorNames.map((name) => String(name || "").trim()).filter(Boolean);
+    return names.length ? names : [generalName];
+  }
+
+  const storage = stringValue(note.simulatorNamesStorage);
+  const names = storage.split("\n").map((name) => name.trim()).filter(Boolean);
+  return names.length ? names : [generalName];
+}
+
 function currentDisplayNameForUser(user) {
   return [user.firstName, user.lastName].filter(Boolean).join(" ") || user.id || "Utilisateur";
+}
+
+function compareUsersByLastName(first, second) {
+  return stringValue(first.lastName).localeCompare(stringValue(second.lastName), "fr", { sensitivity: "base" })
+    || stringValue(first.firstName).localeCompare(stringValue(second.firstName), "fr", { sensitivity: "base" })
+    || stringValue(first.id).localeCompare(stringValue(second.id), "fr", { sensitivity: "base" });
 }
 
 function displayNameForIdentifier(identifier) {
@@ -6044,8 +6379,7 @@ function teamInfo(team) {
     team2: "Equipe 2",
     team3: "Equipe 3",
     team4: "Equipe 4",
-    team5: "Equipe 5",
-    support: "Support"
+    team5: "Equipe 5"
   };
   return { id: team, title: labels[team] || team || "" };
 }
@@ -6155,12 +6489,12 @@ function formatTimelineDate(date) {
 }
 
 function userRoleLabel(role, team) {
-  const roleLabel = role === "teamLeader" ? "Chef d'équipe" : role === "technician" ? "Technicien" : role === "admin" ? "Admin" : "Consultation";
+  const roleLabel = role === "teamLeader" ? "Chef d'équipe" : role === "technician" ? "Technicien" : role === "support" ? "Support" : role === "admin" ? "Admin" : "Consultation";
   return [roleLabel, teamInfo(team).title].filter(Boolean).join(" · ");
 }
 
 function userRoleMetaHTML(role, team) {
-  const roleLabel = role === "teamLeader" ? "Chef d'équipe" : role === "technician" ? "Technicien" : role === "admin" ? "Admin" : "Consultation";
+  const roleLabel = role === "teamLeader" ? "Chef d'équipe" : role === "technician" ? "Technicien" : role === "support" ? "Support" : role === "admin" ? "Admin" : "Consultation";
   const teamLabel = teamInfo(team).title;
   return [roleLabel, teamLabel]
     .filter(Boolean)

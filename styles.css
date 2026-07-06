@@ -1366,6 +1366,10 @@ mark {
   backdrop-filter: blur(12px);
 }
 
+.detail-overlay.over-admin {
+  z-index: 40;
+}
+
 .admin-overlay {
   position: fixed;
   inset: 0;
@@ -1588,6 +1592,55 @@ mark {
   overflow-wrap: anywhere;
 }
 
+.admin-activity-filter {
+  margin-bottom: 14px;
+}
+
+.admin-activity-filter label {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  color: rgba(16, 21, 31, 0.66);
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.admin-activity-filter input {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 550;
+  text-transform: none;
+}
+
+.admin-activity-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.admin-activity-note-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.admin-activity-note-row span {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 700;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.admin-activity-note-row button {
+  flex: 0 0 auto;
+}
+
 .admin-form-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -1599,10 +1652,11 @@ mark {
 }
 
 .admin-form-grid.create-user-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
-.admin-form-grid.admin-login-date-grid {
+.admin-form-grid.admin-login-date-grid,
+.admin-form-grid.admin-activity-date-grid {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
 
@@ -2902,7 +2956,8 @@ mark {
 
   .admin-form-grid,
   .admin-form-grid.simulator-grid,
-  .admin-form-grid.admin-login-date-grid {
+  .admin-form-grid.admin-login-date-grid,
+  .admin-form-grid.admin-activity-date-grid {
     grid-template-columns: 1fr;
   }
 
