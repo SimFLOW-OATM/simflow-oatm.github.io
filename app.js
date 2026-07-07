@@ -29,7 +29,7 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
-const WEB_APP_VERSION = "1.80";
+const WEB_APP_VERSION = "1.81";
 const deletedLegacySimulatorNames = new Set(["Simu 1", "Simu 2", "Simu 3", "Simu 4"]);
 const sessionStorageKey = "simflow.web.currentUser";
 const webDeviceStorageKey = "simflow.web.deviceIdentifier";
@@ -68,6 +68,9 @@ const state = {
   users: [],
   allSimulators: [],
   simulators: [],
+  appSettings: {
+    requiredIOSAppVersion: ""
+  },
   adminLoginDateInteracting: false,
   adminActivityDateInteracting: false,
   unsubscribeNotes: null,
@@ -77,6 +80,7 @@ const state = {
   unsubscribeActivityEvents: null,
   unsubscribeUsers: null,
   unsubscribeSimulators: null,
+  unsubscribeAppSettings: null,
   adminActivitySearch: "",
   lastLoginEventAt: 0
 };
@@ -501,6 +505,9 @@ elements.adminOverlay.addEventListener("click", (event) => {
   } else if (action === "open-admin-activity") {
     state.activeAdminTab = "activity";
     renderAdminSettings();
+  } else if (action === "open-admin-app-version") {
+    state.activeAdminTab = "appVersion";
+    renderAdminSettings();
   } else if (action === "open-activity-note") {
     openActivityNote(actionButton.closest(".admin-card"));
   } else if (action === "admin-login-previous-day") {
@@ -522,6 +529,8 @@ elements.adminOverlay.addEventListener("click", (event) => {
     saveAdminSimulator(actionButton.closest(".admin-card")?.dataset.simulatorId);
   } else if (action === "new-simulator") {
     createAdminSimulator();
+  } else if (action === "save-app-version") {
+    saveAdminAppVersion();
   }
 });
 elements.adminOverlay.addEventListener("change", (event) => {
@@ -821,6 +830,16 @@ function attachFirebaseListeners() {
     }, (error) => setStatus(error.message));
   }
 
+  if (!state.unsubscribeAppSettings) {
+    state.unsubscribeAppSettings = onSnapshot(doc(db, "appSettings", "global"), (snapshot) => {
+      const data = snapshot.data() || {};
+      state.appSettings = {
+        requiredIOSAppVersion: stringValue(data.requiredIOSAppVersion)
+      };
+      renderAdminSettings();
+    }, (error) => setStatus(error.message));
+  }
+
   if (isAdminSession() && !state.unsubscribeUsers) {
     state.unsubscribeUsers = onSnapshot(collection(db, "users"), (snapshot) => {
       state.users = deduplicatedUsers(snapshot.docs
@@ -900,7 +919,8 @@ function detachAuthenticatedDataSync() {
     "unsubscribeLoginEvents",
     "unsubscribeActivityEvents",
     "unsubscribeUsers",
-    "unsubscribeSimulators"
+    "unsubscribeSimulators",
+    "unsubscribeAppSettings"
   ];
 
   unsubscribeKeys.forEach((key) => {
@@ -918,6 +938,9 @@ function detachAuthenticatedDataSync() {
   state.users = [];
   state.allSimulators = [];
   state.simulators = [];
+  state.appSettings = {
+    requiredIOSAppVersion: ""
+  };
   state.detailTimelineEvents = [];
   state.selectedDetail = null;
   state.selectedCreate = null;
@@ -1443,11 +1466,11 @@ function renderNote(note, context) {
   const priorityClass = note.priority ? `priority-${note.priority}` : "priority-info";
   const priorityStyle = note.priority ? ` style="--priority-color:${priorityColor(note.priority)};--priority-bg:${priorityBackground(note.priority)}"` : "";
   const title = highlight(note.title);
-  const dailyDiffHTML = highlightHTML(dailyModificationDiffHTML(note));
   const newBadge = isNew(note);
   const carryOver = carryOverDayCount(note);
   const modificationTitle = modificationBadgeTitle(note, context, newBadge, carryOver);
   const showsModificationNew = modificationTitle === "NEW";
+  const dailyDiffHTML = highlightHTML(dailyModificationDiffHTML(note, showsModificationNew));
   const done = isDoneBadgeVisibleInContext(note, context);
   const acknowledged = !done && isAcknowledgedInContext(note, context) && !hasContentModificationAfterAcknowledgement(note, context);
   const handwriting = visibleHandwritingFor(note);
@@ -2312,10 +2335,12 @@ function renderAdminSettings(options = {}) {
     ? "Droits"
     : state.activeAdminTab === "simulators"
       ? "Simulateurs"
-      : state.activeAdminTab === "connections"
-        ? "Connexions"
-        : state.activeAdminTab === "activity"
-          ? "Suivi d'activité"
+    : state.activeAdminTab === "connections"
+      ? "Connexions"
+      : state.activeAdminTab === "activity"
+        ? "Suivi d'activité"
+        : state.activeAdminTab === "appVersion"
+          ? "Version iPad"
           : "Administration";
   elements.adminOverlay.querySelector("#adminTitle").textContent = title;
 
@@ -2327,6 +2352,8 @@ function renderAdminSettings(options = {}) {
     elements.adminBody.innerHTML = renderAdminConnections();
   } else if (state.activeAdminTab === "activity") {
     elements.adminBody.innerHTML = renderAdminActivity();
+  } else if (state.activeAdminTab === "appVersion") {
+    elements.adminBody.innerHTML = renderAdminAppVersion();
   } else {
     elements.adminBody.innerHTML = renderAdminHome();
   }
@@ -2389,7 +2416,39 @@ function renderAdminHome() {
           <small>Actions utilisateur et lien direct consigne</small>
         </span>
       </button>
+      <button class="admin-menu-row" type="button" data-admin-action="open-admin-app-version">
+        <span class="admin-menu-icon">▣</span>
+        <span>
+          <strong>Version iPad requise</strong>
+          <small>${state.appSettings.requiredIOSAppVersion ? `Version attendue ${escapeHTML(state.appSettings.requiredIOSAppVersion)}` : "Aucun contrôle activé"}</small>
+        </span>
+      </button>
     </div>
+  `;
+}
+
+function renderAdminAppVersion() {
+  return `
+    <div class="admin-back-row">
+      <button class="secondary" type="button" data-admin-action="admin-home">‹ Administration</button>
+    </div>
+    <div class="admin-section-heading">
+      <h3>Version iPad requise</h3>
+    </div>
+    <article class="admin-card">
+      <div class="admin-form-grid">
+        <label>Version attendue
+          <input data-app-version-field value="${escapeAttribute(state.appSettings.requiredIOSAppVersion || "")}" placeholder="Exemple : 1.80" inputmode="decimal">
+        </label>
+        <label>Version web actuelle
+          <input value="${escapeAttribute(WEB_APP_VERSION)}" disabled>
+        </label>
+      </div>
+      <p class="admin-help-text">Si la version installee sur un iPad est differente de cette valeur, une fenetre apparait au lancement de l'app iPad. Laisser vide desactive le controle.</p>
+      <div class="admin-actions">
+        <button type="button" data-admin-action="save-app-version">Enregistrer</button>
+      </div>
+    </article>
   `;
 }
 
@@ -3077,6 +3136,28 @@ async function createAdminSimulator() {
     updatedAt: new Date()
   });
   setStatus("Simulateur créé");
+}
+
+async function saveAdminAppVersion() {
+  if (state.currentUser?.role !== "admin") {
+    setStatus("Acces admin requis");
+    return;
+  }
+
+  const requiredIOSAppVersion = elements.adminBody
+    .querySelector("[data-app-version-field]")
+    ?.value
+    .trim() || "";
+
+  await setDoc(doc(db, "appSettings", "global"), {
+    id: "global",
+    requiredIOSAppVersion,
+    updatedAt: new Date()
+  }, { merge: true });
+
+  state.appSettings.requiredIOSAppVersion = requiredIOSAppVersion;
+  renderAdminSettings();
+  setStatus(requiredIOSAppVersion ? "Version iPad requise enregistrée" : "Controle de version iPad désactivé");
 }
 
 function visibleHandwritingFor(note) {
@@ -4945,12 +5026,19 @@ function contentModificationDates(note) {
     .sort((a, b) => a - b);
 }
 
-function dailyModificationDiffHTML(note) {
+function dailyModificationDiffHTML(note, showsActiveModificationNew = false) {
   if (isPeriodResultsMode()) {
     return "";
   }
 
-  const revisionPair = latestContentRevisionPairOnDay(note, state.selectedDate);
+  let revisionPair = latestContentRevisionPairOnDay(note, state.selectedDate);
+  if (!revisionPair && showsActiveModificationNew) {
+    const modificationDate = latestContentModificationDate(note);
+    if (modificationDate) {
+      revisionPair = latestContentRevisionPairOnDay(note, modificationDate);
+    }
+  }
+
   if (!revisionPair || revisionPair.previousText === revisionPair.revision.text) {
     return "";
   }
@@ -5154,7 +5242,7 @@ function timelineEvents(note, context) {
     });
   }
 
-  for (const acknowledgement of note.acknowledgements.filter((record) => record.context === context)) {
+  for (const acknowledgement of visibleTimelineAcknowledgements(note, context)) {
     events.push({
       date: acknowledgement.date,
       title: "Pris en compte",
@@ -5188,6 +5276,19 @@ function timelineEvents(note, context) {
     ...creationEvents,
     ...mergeConsecutiveTimelineRevisions(timelineEventsAfterCreation)
   ];
+}
+
+function visibleTimelineAcknowledgements(note, context) {
+  const contextAcknowledgements = note.acknowledgements.filter((record) => record.context === context);
+  if (state.currentUser?.role === "admin") {
+    return contextAcknowledgements;
+  }
+
+  const currentUserID = normalizeKey(state.currentUser?.id);
+  return contextAcknowledgements.filter((acknowledgement) => {
+    return normalizeKey(acknowledgement.scopeID) === currentUserID
+      || normalizeKey(acknowledgement.authorIdentifier || acknowledgement.author) === currentUserID;
+  });
 }
 
 function timelineRevisionsForCurrentUser(note) {
@@ -5461,10 +5562,12 @@ function renderAnnotatedDiffTokens(tokens, note) {
       return;
     }
     const escaped = escapeHtml(currentText);
-    if (currentManualStyle) {
+    if (currentHighlighted) {
+      const highlightStyle = "background:#dcfce7;color:#15803d;";
+      const styleAttribute = ` style="${escapeAttribute(`${currentManualStyle || ""}${highlightStyle}`)}"`;
+      output.push(`<span class="diff-added"${styleAttribute}>${escaped}</span>`);
+    } else if (currentManualStyle) {
       output.push(`<span style="${escapeAttribute(currentManualStyle)}">${escaped}</span>`);
-    } else if (currentHighlighted) {
-      output.push(`<span class="diff-added">${escaped}</span>`);
     } else {
       output.push(escaped);
     }

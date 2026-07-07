@@ -1515,6 +1515,13 @@ mark {
   box-shadow: 0 10px 25px rgba(15, 23, 42, 0.06);
 }
 
+.admin-help-text {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
 .admin-card.is-current {
   background: rgba(47, 128, 237, 0.1);
   outline: 1px solid rgba(47, 128, 237, 0.28);
