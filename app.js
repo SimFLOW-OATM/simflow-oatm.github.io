@@ -2312,7 +2312,8 @@ function openAdminSettings() {
   state.activeAdminTab = "home";
   elements.adminOverlay.classList.remove("hidden");
   elements.adminOverlay.setAttribute("aria-hidden", "false");
-  renderAdminSettings();
+  elements.adminBody.scrollTop = 0;
+  renderAdminSettings({ resetScroll: true, force: true });
 }
 
 function closeAdminSettings() {
@@ -2329,37 +2330,54 @@ function renderAdminSettings(options = {}) {
     return;
   }
 
-  const previousTab = state.activeAdminTab;
+  const previousTab = elements.adminBody.dataset.activeAdminTab || "";
   const previousScrollTop = elements.adminBody.scrollTop;
-  const title = state.activeAdminTab === "users"
-    ? "Droits"
-    : state.activeAdminTab === "simulators"
-      ? "Simulateurs"
-    : state.activeAdminTab === "connections"
-      ? "Connexions"
-      : state.activeAdminTab === "activity"
-        ? "Suivi d'activité"
-        : state.activeAdminTab === "appVersion"
-          ? "Version iPad"
-          : "Administration";
-  elements.adminOverlay.querySelector("#adminTitle").textContent = title;
 
-  if (state.activeAdminTab === "users") {
-    elements.adminBody.innerHTML = renderAdminUsers();
-  } else if (state.activeAdminTab === "simulators") {
-    elements.adminBody.innerHTML = renderAdminSimulators();
-  } else if (state.activeAdminTab === "connections") {
-    elements.adminBody.innerHTML = renderAdminConnections();
-  } else if (state.activeAdminTab === "activity") {
-    elements.adminBody.innerHTML = renderAdminActivity();
-  } else if (state.activeAdminTab === "appVersion") {
-    elements.adminBody.innerHTML = renderAdminAppVersion();
-  } else {
-    elements.adminBody.innerHTML = renderAdminHome();
-  }
+  try {
+    const title = state.activeAdminTab === "users"
+      ? "Droits"
+      : state.activeAdminTab === "simulators"
+        ? "Simulateurs"
+        : state.activeAdminTab === "connections"
+          ? "Connexions"
+          : state.activeAdminTab === "activity"
+            ? "Suivi d'activité"
+            : state.activeAdminTab === "appVersion"
+              ? "Version iPad"
+              : "Administration";
+    elements.adminOverlay.querySelector("#adminTitle").textContent = title;
 
-  if (state.activeAdminTab === previousTab) {
-    elements.adminBody.scrollTop = previousScrollTop;
+    if (state.activeAdminTab === "users") {
+      elements.adminBody.innerHTML = renderAdminUsers();
+    } else if (state.activeAdminTab === "simulators") {
+      elements.adminBody.innerHTML = renderAdminSimulators();
+    } else if (state.activeAdminTab === "connections") {
+      elements.adminBody.innerHTML = renderAdminConnections();
+    } else if (state.activeAdminTab === "activity") {
+      elements.adminBody.innerHTML = renderAdminActivity();
+    } else if (state.activeAdminTab === "appVersion") {
+      elements.adminBody.innerHTML = renderAdminAppVersion();
+    } else {
+      elements.adminBody.innerHTML = renderAdminHome();
+    }
+
+    elements.adminBody.dataset.activeAdminTab = state.activeAdminTab;
+    if (options.resetScroll || state.activeAdminTab !== previousTab) {
+      elements.adminBody.scrollTop = 0;
+    } else {
+      elements.adminBody.scrollTop = previousScrollTop;
+    }
+  } catch (error) {
+    console.error("Admin rendering failed", error);
+    elements.adminBody.scrollTop = 0;
+    elements.adminBody.innerHTML = `
+      <article class="admin-card">
+        <div class="admin-card-title">
+          <strong>Administration indisponible</strong>
+        </div>
+        <p class="admin-help-text">Le menu admin n'a pas pu se charger. Recharge la page puis ouvre a nouveau l'administration.</p>
+      </article>
+    `;
   }
 }
 
@@ -2386,6 +2404,7 @@ function isAdminDateInteractionActive() {
 }
 
 function renderAdminHome() {
+  const requiredIOSAppVersion = stringValue(state.appSettings?.requiredIOSAppVersion);
   return `
     <div class="admin-menu-list">
       <button class="admin-menu-row" type="button" data-admin-action="open-admin-users">
@@ -2420,7 +2439,7 @@ function renderAdminHome() {
         <span class="admin-menu-icon">▣</span>
         <span>
           <strong>Version iPad requise</strong>
-          <small>${state.appSettings.requiredIOSAppVersion ? `Version attendue ${escapeHTML(state.appSettings.requiredIOSAppVersion)}` : "Aucun contrôle activé"}</small>
+          <small>${requiredIOSAppVersion ? `Version attendue ${escapeHtml(requiredIOSAppVersion)}` : "Aucun contrôle activé"}</small>
         </span>
       </button>
     </div>
