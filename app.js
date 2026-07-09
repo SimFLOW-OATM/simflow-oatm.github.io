@@ -34,8 +34,7 @@ const deletedLegacySimulatorNames = new Set(["Simu 1", "Simu 2", "Simu 3", "Simu
 const sessionStorageKey = "simflow.web.currentUser";
 const webDeviceStorageKey = "simflow.web.deviceIdentifier";
 const sessionDurationMs = 30 * 24 * 60 * 60 * 1000;
-const activeLoginSessionWindowMs = 25 * 1000;
-const loginPresenceHeartbeatMs = 10 * 1000;
+const activeLoginSessionWindowMs = 90 * 1000;
 const loginPresenceRefreshMs = 2 * 1000;
 
 const state = {
@@ -65,6 +64,11 @@ const state = {
   dailyTags: [],
   loginEvents: [],
   activityEvents: [],
+  adminMessagesAll: [],
+  adminMessagesTargeted: [],
+  adminMessageDismissals: new Set(),
+  acknowledgedAdminMessageIDs: new Set(),
+  activeAdminMessage: null,
   users: [],
   allSimulators: [],
   simulators: [],
@@ -78,10 +82,16 @@ const state = {
   unsubscribeDailyTags: null,
   unsubscribeLoginEvents: null,
   unsubscribeActivityEvents: null,
+  unsubscribeAdminMessagesAll: null,
+  unsubscribeAdminMessagesTargeted: null,
+  unsubscribeAdminMessageDismissals: null,
   unsubscribeUsers: null,
   unsubscribeSimulators: null,
   unsubscribeAppSettings: null,
   adminActivitySearch: "",
+  adminMessageText: "",
+  adminMessageSendsToAll: false,
+  adminMessageRecipientIDs: new Set(),
   lastLoginEventAt: 0
 };
 
@@ -168,6 +178,10 @@ const elements = {
   creationTextDate: document.querySelector("#creationTextDate"),
   creationTextActions: document.querySelector("#creationTextActions"),
   creationTextContent: document.querySelector("#creationTextContent"),
+  adminMessageOverlay: document.querySelector("#adminMessageOverlay"),
+  adminMessageText: document.querySelector("#adminMessageText"),
+  adminMessageOkButton: document.querySelector("#adminMessageOkButton"),
+  adminMessageDeleteButton: document.querySelector("#adminMessageDeleteButton"),
   adminOverlay: document.querySelector("#adminOverlay"),
   adminCloseButton: document.querySelector("#adminCloseButton"),
   adminBody: document.querySelector("#adminBody")
@@ -244,7 +258,6 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 window.addEventListener("focus", recordLoginAppearance);
-window.setInterval(() => recordLoginAppearance({ heartbeat: true }), loginPresenceHeartbeatMs);
 window.setInterval(refreshAdminConnectionsPresence, loginPresenceRefreshMs);
 elements.userSummaryButton.addEventListener("click", () => {
   elements.userMenu.classList.toggle("hidden");
@@ -263,6 +276,8 @@ elements.changeCodeButton.addEventListener("click", () => {
 });
 elements.cancelChangeCodeButton.addEventListener("click", closeChangeCodePanel);
 elements.saveChangeCodeButton.addEventListener("click", changeCurrentUserCode);
+elements.adminMessageOkButton.addEventListener("click", acknowledgeActiveAdminMessage);
+elements.adminMessageDeleteButton.addEventListener("click", deleteActiveAdminMessage);
 [elements.currentCodeInput, elements.newCodeInput, elements.confirmCodeInput].forEach((input) => {
   input.addEventListener("input", () => {
     input.value = input.value.replace(/\D/g, "").slice(0, 6);
@@ -447,6 +462,8 @@ elements.detailOverlay.addEventListener("click", (event) => {
     toggleDraftAcknowledgementButton(event.target.closest("[data-detail-action]"));
   } else if (action === "save-edit") {
     saveDetailEdit(note);
+  } else if (action === "resync-note") {
+    resyncNoteForOlderDevices(note);
   } else if (action === "delete-note") {
     deleteNoteFromDetail(note);
   } else if (action === "permanent-delete-note") {
@@ -501,6 +518,7 @@ elements.adminOverlay.addEventListener("click", (event) => {
     renderAdminSettings();
   } else if (action === "open-admin-connections") {
     state.activeAdminTab = "connections";
+    restartLoginEventsListener(true);
     renderAdminSettings();
   } else if (action === "open-admin-activity") {
     state.activeAdminTab = "activity";
@@ -508,10 +526,15 @@ elements.adminOverlay.addEventListener("click", (event) => {
   } else if (action === "open-admin-app-version") {
     state.activeAdminTab = "appVersion";
     renderAdminSettings();
+  } else if (action === "open-admin-messages") {
+    state.activeAdminTab = "messages";
+    resetAdminMessageComposer();
+    renderAdminSettings();
   } else if (action === "open-activity-note") {
     openActivityNote(actionButton.closest(".admin-card"));
   } else if (action === "admin-login-previous-day") {
     state.adminLoginDate = addDays(state.adminLoginDate, -1);
+    restartLoginEventsListener(true);
     renderAdminSettings({ force: true });
   } else if (action === "admin-activity-previous-day") {
     state.adminActivityDate = addDays(state.adminActivityDate, -1);
@@ -531,12 +554,15 @@ elements.adminOverlay.addEventListener("click", (event) => {
     createAdminSimulator();
   } else if (action === "save-app-version") {
     saveAdminAppVersion();
+  } else if (action === "send-admin-message") {
+    sendAdminMessage();
   }
 });
 elements.adminOverlay.addEventListener("change", (event) => {
   if (event.target.matches("[data-admin-login-date]")) {
     state.adminLoginDate = startOfDay(parseDateInput(event.target.value));
     state.adminLoginDateInteracting = false;
+    restartLoginEventsListener(true);
     renderAdminSettings({ force: true });
   } else if (event.target.matches("[data-admin-activity-date]")) {
     state.adminActivityDate = startOfDay(parseDateInput(event.target.value));
@@ -546,6 +572,20 @@ elements.adminOverlay.addEventListener("change", (event) => {
   } else if (event.target.matches("[data-admin-activity-search]")) {
     state.adminActivitySearch = event.target.value;
     renderAdminSettings({ force: true });
+  } else if (event.target.matches("[data-admin-message-all]")) {
+    state.adminMessageSendsToAll = event.target.checked;
+    elements.adminBody.querySelector("[data-admin-message-recipients]")?.classList.toggle("hidden", state.adminMessageSendsToAll);
+  } else if (event.target.matches("[data-admin-message-recipient]")) {
+    if (event.target.checked) {
+      state.adminMessageRecipientIDs.add(event.target.value);
+    } else {
+      state.adminMessageRecipientIDs.delete(event.target.value);
+    }
+  }
+});
+elements.adminOverlay.addEventListener("input", (event) => {
+  if (event.target.matches("[data-admin-message-text]")) {
+    state.adminMessageText = event.target.value;
   }
 });
 elements.adminOverlay.addEventListener("focusin", (event) => {
@@ -760,8 +800,7 @@ function webDeviceName() {
   return `${platform} - ${navigator.userAgentData?.brands?.[0]?.brand || navigator.userAgent.split(" ")[0] || "Web"}`;
 }
 
-async function recordLoginAppearance(options = {}) {
-  const heartbeat = Boolean(options.heartbeat);
+async function recordLoginAppearance() {
   if (!state.authReady || !state.currentUser || state.currentUser.role === "admin" || document.visibilityState === "hidden") {
     return;
   }
@@ -787,14 +826,13 @@ async function recordLoginAppearance(options = {}) {
     deviceIdentifier,
     deviceName,
     iCloudIdentifier: userIdentifier,
+    iosAppVersion: "",
     dayIdentifier,
     createdAt,
     lastSeenAt: createdAt
   };
 
-  if (!heartbeat) {
-    payload.appearanceCount = increment(1);
-  }
+  payload.appearanceCount = increment(1);
 
   await setDoc(doc(db, "loginEvents", id), payload, { merge: true }).catch((error) => {
     setStatus(error.message);
@@ -816,6 +854,7 @@ function attachFirebaseListeners() {
     state.unsubscribeNotes = onSnapshot(collection(db, "handoverNotes"), (snapshot) => {
       state.notes = snapshot.docs.map((doc) => noteFromSnapshot(doc.id, doc.data()));
       setStatus("Données synchronisées");
+      renderSimulators();
       render();
     }, (error) => setStatus(error.message));
   }
@@ -849,18 +888,9 @@ function attachFirebaseListeners() {
     }, (error) => setStatus(error.message));
   }
 
-  if (isAdminSession() && !state.unsubscribeLoginEvents) {
-    state.unsubscribeLoginEvents = onSnapshot(collection(db, "loginEvents"), (snapshot) => {
-      state.loginEvents = snapshot.docs
-        .map((document) => loginEventFromSnapshot(document.id, document.data()))
-        .filter(Boolean);
-      renderAdminSettings();
-    }, (error) => setStatus(error.message));
-  }
+  restartAdminTabListeners();
 
-  if (isAdminSession()) {
-    restartActivityEventsListener();
-  }
+  restartAdminMessageListeners();
 
   if (!state.unsubscribeSimulators) {
     state.unsubscribeSimulators = onSnapshot(collection(db, "simulators"), (snapshot) => {
@@ -876,8 +906,80 @@ function attachFirebaseListeners() {
   }
 }
 
+function restartAdminTabListeners() {
+  if (!state.authReady || !isAdminSession()) {
+    return;
+  }
+
+  stopInactiveAdminTabListeners();
+
+  if (state.activeAdminTab === "connections") {
+    restartLoginEventsListener();
+  }
+
+  if (state.activeAdminTab === "activity") {
+    restartActivityEventsListener();
+  }
+}
+
+function stopInactiveAdminTabListeners() {
+  if (state.activeAdminTab !== "connections" && state.unsubscribeLoginEvents) {
+    state.unsubscribeLoginEvents();
+    state.unsubscribeLoginEvents = null;
+    state.loginEvents = [];
+  }
+
+  if (state.activeAdminTab !== "activity" && state.unsubscribeActivityEvents) {
+    state.unsubscribeActivityEvents();
+    state.unsubscribeActivityEvents = null;
+    state.activityEvents = [];
+  }
+}
+
+function restartLoginEventsListener(force = false) {
+  if (!state.authReady || !isAdminSession()) {
+    return;
+  }
+
+  if (state.activeAdminTab !== "connections") {
+    return;
+  }
+
+  if (state.unsubscribeLoginEvents && !force) {
+    return;
+  }
+
+  if (state.unsubscribeLoginEvents) {
+    state.unsubscribeLoginEvents();
+    state.unsubscribeLoginEvents = null;
+  }
+
+  const start = startOfDay(state.adminLoginDate);
+  const end = addDays(start, 1);
+  state.loginEvents = [];
+  state.unsubscribeLoginEvents = onSnapshot(
+    query(
+      collection(db, "loginEvents"),
+      where("createdAt", ">=", start),
+      where("createdAt", "<", end),
+      orderBy("createdAt", "desc")
+    ),
+    (snapshot) => {
+      state.loginEvents = snapshot.docs
+        .map((document) => loginEventFromSnapshot(document.id, document.data()))
+        .filter(Boolean);
+      renderAdminSettings();
+    },
+    (error) => setStatus(error.message)
+  );
+}
+
 function restartActivityEventsListener(force = false) {
   if (!state.authReady || !isAdminSession()) {
+    return;
+  }
+
+  if (state.activeAdminTab !== "activity") {
     return;
   }
 
@@ -911,6 +1013,63 @@ function restartActivityEventsListener(force = false) {
   );
 }
 
+function restartAdminMessageListeners() {
+  ["unsubscribeAdminMessagesAll", "unsubscribeAdminMessagesTargeted", "unsubscribeAdminMessageDismissals"].forEach((key) => {
+    if (state[key]) {
+      state[key]();
+      state[key] = null;
+    }
+  });
+
+  state.adminMessagesAll = [];
+  state.adminMessagesTargeted = [];
+  state.adminMessageDismissals = new Set();
+  state.activeAdminMessage = null;
+  renderAdminMessageOverlay();
+
+  if (!state.authReady || !state.currentUser || isAdminSession()) {
+    return;
+  }
+
+  const userIdentifier = stringValue(state.currentUser.id).trim();
+  if (!userIdentifier) {
+    return;
+  }
+
+  state.unsubscribeAdminMessagesAll = onSnapshot(
+    query(collection(db, "adminMessages"), where("sendsToAll", "==", true)),
+    (snapshot) => {
+      state.adminMessagesAll = snapshot.docs
+        .map((document) => adminMessageFromSnapshot(document.id, document.data()))
+        .filter(Boolean);
+      refreshActiveAdminMessage();
+    },
+    (error) => setStatus(error.message)
+  );
+
+  state.unsubscribeAdminMessagesTargeted = onSnapshot(
+    query(collection(db, "adminMessages"), where("recipientUserIDs", "array-contains", userIdentifier)),
+    (snapshot) => {
+      state.adminMessagesTargeted = snapshot.docs
+        .map((document) => adminMessageFromSnapshot(document.id, document.data()))
+        .filter(Boolean);
+      refreshActiveAdminMessage();
+    },
+    (error) => setStatus(error.message)
+  );
+
+  state.unsubscribeAdminMessageDismissals = onSnapshot(
+    query(collection(db, "adminMessageDismissals"), where("userIdentifier", "==", userIdentifier)),
+    (snapshot) => {
+      state.adminMessageDismissals = new Set(snapshot.docs
+        .map((document) => stringValue(document.data().messageID))
+        .filter(Boolean));
+      refreshActiveAdminMessage();
+    },
+    (error) => setStatus(error.message)
+  );
+}
+
 function detachAuthenticatedDataSync() {
   const unsubscribeKeys = [
     "unsubscribeNotes",
@@ -918,6 +1077,9 @@ function detachAuthenticatedDataSync() {
     "unsubscribeDailyTags",
     "unsubscribeLoginEvents",
     "unsubscribeActivityEvents",
+    "unsubscribeAdminMessagesAll",
+    "unsubscribeAdminMessagesTargeted",
+    "unsubscribeAdminMessageDismissals",
     "unsubscribeUsers",
     "unsubscribeSimulators",
     "unsubscribeAppSettings"
@@ -935,6 +1097,12 @@ function detachAuthenticatedDataSync() {
   state.dailyTags = [];
   state.loginEvents = [];
   state.activityEvents = [];
+  state.adminMessagesAll = [];
+  state.adminMessagesTargeted = [];
+  state.adminMessageDismissals = new Set();
+  state.acknowledgedAdminMessageIDs = new Set();
+  state.activeAdminMessage = null;
+  renderAdminMessageOverlay();
   state.users = [];
   state.allSimulators = [];
   state.simulators = [];
@@ -1148,7 +1316,7 @@ function restoreCenteredSimulatorBandAnchor(anchor) {
 }
 
 function renderSimulators() {
-  const items = [{ name: generalName, colorHex: "#111827" }, ...state.simulators];
+  const items = [{ name: generalName, colorHex: "#111827" }, ...visibleSimulatorContexts()];
   renderSimulatorShortcuts(items);
 
   if (elements.simulatorList) {
@@ -1397,7 +1565,7 @@ function groupedNotes() {
     .filter((note) => matchesSearch(note))
     .sort(state.search ? compareSearchNotes : isPeriodResultsMode() ? comparePeriodNotes : compareNotes);
 
-  const simulators = [{ name: generalName, colorHex: "#111827", sortOrder: -1 }, ...state.simulators];
+  const simulators = [{ name: generalName, colorHex: "#111827", sortOrder: -1 }, ...visibleSimulatorContexts()];
   const groups = [];
 
   for (const simulator of simulators) {
@@ -1539,7 +1707,7 @@ function noteFromSnapshot(id, data) {
     displayDate,
     firstDisplayDate: startOfDay(dateValue(data.firstDisplayDate) || displayDate),
     isGeneral: Boolean(data.isGeneral),
-    simulatorNames: stringValue(data.simulatorNamesStorage).split("\n").map((name) => name.trim()).filter(Boolean),
+    simulatorNames: destinationSimulatorNamesFromData(data),
     priority: stringValue(data.priorityRawValue),
     handwritingData: stringValue(data.handwritingData),
     handwritingPreviewImageData: stringValue(data.handwritingPreviewImageData),
@@ -1781,6 +1949,7 @@ function renderDetail(note, context) {
   const canToggleAcknowledgement = canWrite && !done && !note.priority && !isNew(note);
   const canDelete = canCurrentUserDeleteNote(note);
   const canPermanentlyDelete = state.currentUser?.role === "admin" && Boolean(note.deletedAt);
+  const canResyncNote = state.currentUser?.role === "admin";
   const handwriting = visibleHandwritingFor(note);
 
   elements.detailTitle.textContent = context;
@@ -1810,6 +1979,11 @@ function renderDetail(note, context) {
       ${canPermanentlyDelete ? `
         <button class="secondary danger action-permanent-delete" data-detail-action="permanent-delete-note">
           <span class="action-icon">⌫</span>Supprimer définitivement
+        </button>
+      ` : ""}
+      ${canResyncNote ? `
+        <button class="secondary" data-detail-action="resync-note">
+          <span class="action-icon">↻</span>Resynchroniser iPhone
         </button>
       ` : ""}
     </div>
@@ -2132,9 +2306,7 @@ function renderSimulatorToggles(note, options = {}) {
   const editable = Boolean(options.editable);
   const simulatorRows = [
     { name: generalName, label: "Consigne generale" },
-    ...state.allSimulators
-      .filter((simulator) => simulator.name !== generalName && !simulator.isHidden)
-      .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, "fr"))
+    ...visibleSimulatorContexts()
       .map((simulator) => ({ name: simulator.name, label: simulator.name }))
   ];
 
@@ -2191,6 +2363,63 @@ function deduplicatedSimulators(simulators) {
   });
 }
 
+function destinationSimulatorNamesFromData(data) {
+  const storageNames = stringValue(data.simulatorNamesStorage)
+    .replaceAll("\\n", "\n")
+    .split("\n")
+    .map((name) => name.trim())
+    .filter(Boolean);
+  const arrayNames = Array.isArray(data.simulatorNames)
+    ? data.simulatorNames.map((name) => stringValue(name).trim()).filter(Boolean)
+    : [];
+
+  return uniqueStrings([...storageNames, ...arrayNames]);
+}
+
+function visibleSimulatorContexts() {
+  const configuredKeys = new Set(state.allSimulators.map((simulator) => normalizeKey(simulator.name)));
+  const visibleKeys = new Set();
+  const visibleConfiguredSimulators = state.allSimulators
+    .filter((simulator) => simulator.name !== generalName && !simulator.isHidden)
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, "fr"))
+    .filter((simulator) => {
+      const key = normalizeKey(simulator.name);
+      if (!key || visibleKeys.has(key)) {
+        return false;
+      }
+
+      visibleKeys.add(key);
+      return true;
+    });
+
+  const missingNamesByKey = new Map();
+  for (const note of state.notes.filter((candidate) => canCurrentUserSeeNote(candidate))) {
+    for (const rawName of note.simulatorNames || []) {
+      const name = stringValue(rawName).trim();
+      const key = normalizeKey(name);
+      if (!name || key === normalizeKey(generalName) || configuredKeys.has(key) || missingNamesByKey.has(key)) {
+        continue;
+      }
+
+      missingNamesByKey.set(key, name);
+    }
+  }
+
+  const missingSimulators = [...missingNamesByKey.values()]
+    .sort((a, b) => a.localeCompare(b, "fr"))
+    .map((name, index) => ({
+      id: `referenced-${normalizeKey(name)}`,
+      documentID: `referenced-${normalizeKey(name)}`,
+      name,
+      sortOrder: Number.MAX_SAFE_INTEGER - missingNamesByKey.size + index,
+      colorHex: "#6b7280",
+      isHidden: false,
+      isReferencedOnly: true
+    }));
+
+  return [...visibleConfiguredSimulators, ...missingSimulators];
+}
+
 function userFromSnapshot(documentID, data) {
   const rawRole = stringValue(data.roleRawValue);
   const rawTeam = stringValue(data.teamRawValue);
@@ -2240,10 +2469,28 @@ function loginEventFromSnapshot(documentID, data) {
     deviceIdentifier: stringValue(data.deviceIdentifier),
     deviceName: stringValue(data.deviceName),
     iCloudIdentifier: stringValue(data.iCloudIdentifier, data.userIdentifier),
+    iosAppVersion: stringValue(data.iosAppVersion),
     dayIdentifier: stringValue(data.dayIdentifier, createdAt ? isoDate(createdAt) : ""),
     createdAt,
     lastSeenAt: dateValue(data.lastSeenAt) || createdAt,
     appearanceCount: Math.max(1, Number(data.appearanceCount) || 1)
+  };
+}
+
+function adminMessageFromSnapshot(documentID, data) {
+  const text = stringValue(data.text).trim();
+  if (!text) {
+    return null;
+  }
+
+  return {
+    id: stringValue(data.id, documentID),
+    text,
+    recipientUserIDs: Array.isArray(data.recipientUserIDs) ? data.recipientUserIDs.map(stringValue).filter(Boolean) : [],
+    recipientDisplayNames: Array.isArray(data.recipientDisplayNames) ? data.recipientDisplayNames.map(stringValue).filter(Boolean) : [],
+    sendsToAll: Boolean(data.sendsToAll),
+    authorIdentifier: stringValue(data.authorIdentifier),
+    createdAt: dateValue(data.createdAt) || new Date()
   };
 }
 
@@ -2317,6 +2564,8 @@ function openAdminSettings() {
 }
 
 function closeAdminSettings() {
+  state.activeAdminTab = "home";
+  stopInactiveAdminTabListeners();
   elements.adminOverlay.classList.add("hidden");
   elements.adminOverlay.setAttribute("aria-hidden", "true");
 }
@@ -2325,6 +2574,8 @@ function renderAdminSettings(options = {}) {
   if (elements.adminOverlay.classList.contains("hidden")) {
     return;
   }
+
+  stopInactiveAdminTabListeners();
 
   if (!options.force && isAdminDateInteractionActive()) {
     return;
@@ -2344,7 +2595,9 @@ function renderAdminSettings(options = {}) {
             ? "Suivi d'activité"
             : state.activeAdminTab === "appVersion"
               ? "Version iPad"
-              : "Administration";
+              : state.activeAdminTab === "messages"
+                ? "Messages"
+                : "Administration";
     elements.adminOverlay.querySelector("#adminTitle").textContent = title;
 
     if (state.activeAdminTab === "users") {
@@ -2357,6 +2610,8 @@ function renderAdminSettings(options = {}) {
       elements.adminBody.innerHTML = renderAdminActivity();
     } else if (state.activeAdminTab === "appVersion") {
       elements.adminBody.innerHTML = renderAdminAppVersion();
+    } else if (state.activeAdminTab === "messages") {
+      elements.adminBody.innerHTML = renderAdminMessages();
     } else {
       elements.adminBody.innerHTML = renderAdminHome();
     }
@@ -2387,6 +2642,78 @@ function refreshAdminConnectionsPresence() {
   }
 
   renderAdminSettings();
+}
+
+function refreshActiveAdminMessage() {
+  if (isAdminSession()) {
+    state.activeAdminMessage = null;
+    renderAdminMessageOverlay();
+    return;
+  }
+
+  const visibleMessages = uniqueAdminMessages([...state.adminMessagesAll, ...state.adminMessagesTargeted])
+    .filter((message) => !state.adminMessageDismissals.has(message.id))
+    .filter((message) => !state.acknowledgedAdminMessageIDs.has(message.id))
+    .sort((first, second) => (first.createdAt?.getTime() || 0) - (second.createdAt?.getTime() || 0));
+
+  if (state.activeAdminMessage && visibleMessages.some((message) => message.id === state.activeAdminMessage.id)) {
+    renderAdminMessageOverlay();
+    return;
+  }
+
+  state.activeAdminMessage = visibleMessages[0] || null;
+  renderAdminMessageOverlay();
+}
+
+function uniqueAdminMessages(messages) {
+  const byID = new Map();
+  messages.forEach((message) => {
+    if (message?.id && !byID.has(message.id)) {
+      byID.set(message.id, message);
+    }
+  });
+  return [...byID.values()];
+}
+
+function renderAdminMessageOverlay() {
+  const message = state.activeAdminMessage;
+  elements.adminMessageOverlay.classList.toggle("hidden", !message);
+  elements.adminMessageOverlay.setAttribute("aria-hidden", message ? "false" : "true");
+  elements.adminMessageText.textContent = message?.text || "";
+}
+
+function acknowledgeActiveAdminMessage() {
+  const message = state.activeAdminMessage;
+  if (!message) {
+    return;
+  }
+
+  state.acknowledgedAdminMessageIDs.add(message.id);
+  state.activeAdminMessage = null;
+  refreshActiveAdminMessage();
+}
+
+async function deleteActiveAdminMessage() {
+  const message = state.activeAdminMessage;
+  const userIdentifier = stringValue(state.currentUser?.id).trim();
+  if (!message || !userIdentifier) {
+    return;
+  }
+
+  state.adminMessageDismissals.add(message.id);
+  state.activeAdminMessage = null;
+  renderAdminMessageOverlay();
+  await setDoc(doc(db, "adminMessageDismissals", adminMessageDismissalID(message.id, userIdentifier)), {
+    id: adminMessageDismissalID(message.id, userIdentifier),
+    messageID: message.id,
+    userIdentifier,
+    dismissedAt: new Date()
+  }, { merge: true }).catch((error) => setStatus(error.message));
+  refreshActiveAdminMessage();
+}
+
+function adminMessageDismissalID(messageID, userIdentifier) {
+  return `${firestoreDocumentID(messageID)}_${firestoreDocumentID(userIdentifier)}`;
 }
 
 function isAdminDateInteractionActive() {
@@ -2442,6 +2769,13 @@ function renderAdminHome() {
           <small>${requiredIOSAppVersion ? `Version attendue ${escapeHtml(requiredIOSAppVersion)}` : "Aucun contrôle activé"}</small>
         </span>
       </button>
+      <button class="admin-menu-row" type="button" data-admin-action="open-admin-messages">
+        <span class="admin-menu-icon">✉</span>
+        <span>
+          <strong>Messages utilisateurs</strong>
+          <small>Envoyer une information a un ou plusieurs comptes</small>
+        </span>
+      </button>
     </div>
   `;
 }
@@ -2469,6 +2803,51 @@ function renderAdminAppVersion() {
       </div>
     </article>
   `;
+}
+
+function renderAdminMessages() {
+  const users = state.users.filter((user) => {
+    return !isAdminIdentifier(user.id) && !isAdminIdentifier(currentDisplayNameForUser(user));
+  });
+  const sendsToAll = state.adminMessageSendsToAll;
+  return `
+    ${renderAdminBackButton()}
+    <div class="admin-section-heading">
+      <h3>Nouveau message</h3>
+      <p>Le bouton OK masque le message pour la session. Supprimer le masque definitivement pour l'utilisateur.</p>
+    </div>
+    <article class="admin-card admin-message-composer">
+      <label>Message
+        <textarea data-admin-message-text placeholder="Texte du message">${escapeHtml(state.adminMessageText)}</textarea>
+      </label>
+      <label class="simulator-toggle-row">
+        <span>Envoyer a tous les utilisateurs</span>
+        <input type="checkbox" data-admin-message-all ${sendsToAll ? "checked" : ""}>
+        <span class="ios-switch" aria-hidden="true"></span>
+      </label>
+      <div data-admin-message-recipients class="admin-message-recipient-list ${sendsToAll ? "hidden" : ""}">
+        ${users.map((user) => `
+          <label class="admin-message-recipient">
+            <span>
+              <strong>${escapeHtml(currentDisplayNameForUser(user))}</strong>
+              <small>${escapeHtml(userRoleLabel(user.role, user.team))}</small>
+            </span>
+            <input type="checkbox" value="${escapeAttribute(user.id)}" data-admin-message-recipient ${state.adminMessageRecipientIDs.has(user.id) ? "checked" : ""}>
+            <span class="ios-switch" aria-hidden="true"></span>
+          </label>
+        `).join("") || "<p class=\"muted\">Aucun utilisateur.</p>"}
+      </div>
+      <div class="admin-actions">
+        <button type="button" data-admin-action="send-admin-message">Envoyer</button>
+      </div>
+    </article>
+  `;
+}
+
+function resetAdminMessageComposer() {
+  state.adminMessageText = "";
+  state.adminMessageSendsToAll = false;
+  state.adminMessageRecipientIDs.clear();
 }
 
 function renderAdminBackButton() {
@@ -2623,6 +3002,7 @@ function renderAdminConnectionGroup(group) {
       <div class="admin-connection-session ${group.hasCurrentSession ? "is-current" : ""}">
       <div class="admin-connection-metrics">
         <span>▯ ${group.ipadCount} iOS</span>
+        ${group.latestIOSAppVersion ? `<span>⇩ iOS v${escapeHtml(group.latestIOSAppVersion)}</span>` : ""}
         <span>◎ ${group.webCount} Web</span>
         <span>□ ${group.createdCount} créées</span>
         <span>⌁ ${group.modifiedCount} modifiées</span>
@@ -2666,7 +3046,12 @@ function renderAdminActivityEvent(event) {
   const note = state.notes.find((candidate) => candidate.id === event.noteID);
   const displayName = displayNameForIdentifier(event.userIdentifier) || event.userDisplayName || event.userIdentifier;
   const noteTitle = event.noteTitle || note?.title || "Consigne sans titre";
-  const simulatorText = event.simulatorNames.length ? event.simulatorNames.join(", ") : activitySimulatorNames(note || event).join(", ");
+  const destinationText = event.simulatorNames.length ? event.simulatorNames.join(", ") : activitySimulatorNames(note || event).join(", ");
+  const actionContext = stringValue(event.context).trim();
+  const simulatorText = actionContext || destinationText;
+  const destinationsMeta = actionContext && destinationText && destinationText !== actionContext
+    ? `<span>Destinations : ${escapeHtml(destinationText)}</span>`
+    : "";
   return `
     <article class="admin-card admin-activity-card" data-note-id="${escapeAttribute(event.noteID)}" data-context="${escapeAttribute(event.context)}">
       <div class="admin-card-title">
@@ -2676,6 +3061,7 @@ function renderAdminActivityEvent(event) {
       <div class="admin-activity-meta">
         <span>👤 ${escapeHtml(displayName)}</span>
         <span>▦ ${escapeHtml(simulatorText)}</span>
+        ${destinationsMeta}
       </div>
       <div class="admin-activity-note-row">
         <span>${escapeHtml(noteTitle)}</span>
@@ -2783,6 +3169,7 @@ function loginStatsRows() {
       lastSeenAt: latestEvent?.lastSeenAt || latestEvent?.createdAt || null,
       ipadCount: events.reduce((sum, event) => sum + (event.source === "ipad" ? event.appearanceCount || 1 : 0), 0),
       webCount: events.reduce((sum, event) => sum + (event.source === "web" ? event.appearanceCount || 1 : 0), 0),
+      latestIOSAppVersion: latestIOSAppVersionForEvents(events),
       createdCount: createdCounts.get(userKey) || 0,
       modifiedCount: modifiedCounts.get(userKey) || 0,
       iCloudIdentifiers: uniqueValues(events.map((event) => event.iCloudIdentifier || event.userIdentifier)),
@@ -2830,6 +3217,7 @@ function loginStatsGroups(rows) {
       lastSeenAt: sortedRows.map((row) => row.lastSeenAt).filter(Boolean).sort((a, b) => b - a)[0] || null,
       ipadCount: sortedRows.reduce((sum, row) => sum + row.ipadCount, 0),
       webCount: sortedRows.reduce((sum, row) => sum + row.webCount, 0),
+      latestIOSAppVersion: latestIOSAppVersionForRows(sortedRows),
       createdCount: sortedRows[0]?.createdCount || 0,
       modifiedCount: sortedRows[0]?.modifiedCount || 0,
       hasCurrentSession: sortedRows.some((row) => row.isCurrent)
@@ -2916,6 +3304,25 @@ function deviceDescriptionsForEvents(events) {
       const name = stringValue(event.deviceName).trim();
       return name ? `${name} (${event.deviceIdentifier})` : event.deviceIdentifier;
     }));
+}
+
+function latestIOSAppVersionForEvents(events) {
+  const latestIPadEvent = [...events]
+    .filter((event) => event.source === "ipad" && stringValue(event.iosAppVersion).trim())
+    .sort((first, second) => {
+      return (second.lastSeenAt?.getTime() || second.createdAt?.getTime() || 0)
+        - (first.lastSeenAt?.getTime() || first.createdAt?.getTime() || 0);
+    })[0];
+  return stringValue(latestIPadEvent?.iosAppVersion).trim();
+}
+
+function latestIOSAppVersionForRows(rows) {
+  const latestRow = [...rows]
+    .filter((row) => stringValue(row.latestIOSAppVersion).trim())
+    .sort((first, second) => {
+      return (second.lastSeenAt?.getTime() || 0) - (first.lastSeenAt?.getTime() || 0);
+    })[0];
+  return stringValue(latestRow?.latestIOSAppVersion).trim();
 }
 
 function uniqueValues(values) {
@@ -3177,6 +3584,45 @@ async function saveAdminAppVersion() {
   state.appSettings.requiredIOSAppVersion = requiredIOSAppVersion;
   renderAdminSettings();
   setStatus(requiredIOSAppVersion ? "Version iPad requise enregistrée" : "Controle de version iPad désactivé");
+}
+
+async function sendAdminMessage() {
+  if (state.currentUser?.role !== "admin") {
+    setStatus("Acces admin requis");
+    return;
+  }
+
+  const text = elements.adminBody.querySelector("[data-admin-message-text]")?.value.trim() || "";
+  const sendsToAll = Boolean(elements.adminBody.querySelector("[data-admin-message-all]")?.checked);
+  const selectedUserIDs = [...elements.adminBody.querySelectorAll("[data-admin-message-recipient]:checked")]
+    .map((input) => input.value)
+    .filter(Boolean);
+
+  if (!text) {
+    setStatus("Le message est vide");
+    return;
+  }
+  if (!sendsToAll && selectedUserIDs.length === 0) {
+    setStatus("Selectionne au moins un destinataire");
+    return;
+  }
+
+  const recipients = state.users.filter((user) => selectedUserIDs.includes(user.id));
+  const id = crypto.randomUUID();
+
+  await setDoc(doc(db, "adminMessages", id), {
+    id,
+    text,
+    sendsToAll,
+    recipientUserIDs: sendsToAll ? [] : selectedUserIDs,
+    recipientDisplayNames: sendsToAll ? [] : recipients.map(currentDisplayNameForUser),
+    authorIdentifier: state.currentUser.id,
+    createdAt: new Date()
+  });
+
+  resetAdminMessageComposer();
+  renderAdminSettings();
+  setStatus("Message envoyé");
 }
 
 function visibleHandwritingFor(note) {
@@ -4570,7 +5016,7 @@ function isCompletionCancelled(note, completion) {
 }
 
 function completionCancellationMatches(cancellation, completion) {
-  if (cancellation.completionID && cancellation.completionID === completion.id) {
+  if (cancellation.completionID && normalizeKey(cancellation.completionID) === normalizeKey(completion.id)) {
     return true;
   }
 
@@ -4666,12 +5112,29 @@ async function updateNote(noteID, patch) {
   setStatus("Données synchronisées");
 }
 
+async function resyncNoteForOlderDevices(note) {
+  if (state.currentUser?.role !== "admin" || state.isSaving) {
+    return;
+  }
+
+  state.isSaving = true;
+  try {
+    await updateNote(note.id, { updatedAt: new Date() });
+    setStatus("Consigne republiée pour les iPhone");
+  } catch (error) {
+    setStatus(`Resynchronisation impossible : ${error.message}`);
+  } finally {
+    state.isSaving = false;
+  }
+}
+
 function noteBelongsToContext(note, context) {
   if (context === generalName) {
     return note.isGeneral;
   }
 
-  return note.simulatorNames.includes(context);
+  const contextKey = normalizeKey(context);
+  return note.simulatorNames.some((name) => normalizeKey(name) === contextKey);
 }
 
 function matchesSelection(note, context, options = {}) {
@@ -4868,6 +5331,7 @@ function isDailyTagged(noteID) {
 
 function matchesTaggedFilter(note, context) {
   return isDailyTagged(note.id)
+    || Boolean(note.priority)
     || isNew(note)
     || isModificationNewBadgeVisible(note, context);
 }
@@ -6379,7 +6843,7 @@ async function recordActivityEvent(action, note, context = "") {
     actionTitle: activityActionTitles[action] || action,
     noteID: note.id,
     noteTitle: note.title || "",
-    simulatorNames: activitySimulatorNames(note),
+    simulatorNames: context ? [context] : activitySimulatorNames(note),
     context: context || "",
     createdAt: new Date()
   });

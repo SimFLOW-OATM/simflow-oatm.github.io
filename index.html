@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>SimFLOW Web</title>
-  <link rel="stylesheet" href="./styles.css?v=20260707-web-181-adminfix2">
+  <link rel="stylesheet" href="./styles.css?v=20260709-web-multisim-contexts">
   <script>
     if (window.location.protocol === "file:") {
       window.location.replace("http://127.0.0.1:8765/");
@@ -193,6 +193,18 @@
     </main>
   </div>
 
+  <div class="admin-message-overlay hidden" id="adminMessageOverlay" aria-hidden="true">
+    <section class="admin-message-panel" role="dialog" aria-modal="true" aria-labelledby="adminMessageTitle">
+      <p class="detail-kicker">Message administrateur</p>
+      <h2 id="adminMessageTitle">Information</h2>
+      <div class="admin-message-text" id="adminMessageText"></div>
+      <div class="admin-message-actions">
+        <button class="secondary" id="adminMessageOkButton" type="button">OK</button>
+        <button class="danger-text" id="adminMessageDeleteButton" type="button">Supprimer</button>
+      </div>
+    </section>
+  </div>
+
   <div class="detail-overlay hidden" id="detailOverlay" aria-hidden="true">
     <section class="detail-panel" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
       <div class="detail-header">
@@ -233,6 +245,6 @@
     </section>
   </div>
 
-  <script type="module" src="./app.js?v=20260707-web-181-adminfix2"></script>
+  <script type="module" src="./app.js?v=20260709-web-multisim-contexts"></script>
 </body>
 </html>

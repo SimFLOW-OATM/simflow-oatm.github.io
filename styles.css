@@ -2926,6 +2926,122 @@ mark {
   color: var(--muted);
 }
 
+.admin-message-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.34);
+  backdrop-filter: blur(6px);
+}
+
+.admin-message-overlay.hidden {
+  display: none;
+}
+
+.admin-message-panel {
+  width: min(560px, 100%);
+  max-height: min(70vh, 620px);
+  overflow: auto;
+  padding: 28px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.30);
+}
+
+.admin-message-panel h2 {
+  margin: 4px 0 18px;
+  font-size: 30px;
+}
+
+.admin-message-text {
+  white-space: pre-wrap;
+  line-height: 1.45;
+  font-size: 18px;
+  color: var(--ink);
+}
+
+.admin-message-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 24px;
+  flex-wrap: wrap;
+}
+
+.admin-message-composer textarea {
+  min-height: 150px;
+  resize: vertical;
+}
+
+.admin-message-recipient-list {
+  overflow: hidden;
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: white;
+}
+
+.admin-message-recipient-list.hidden {
+  display: none;
+}
+
+.admin-message-recipient {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 62px;
+  gap: 14px;
+  margin: 0;
+  padding: 10px 12px 10px 0;
+  border-bottom: 1px solid var(--line);
+  color: #111827;
+  text-transform: none;
+}
+
+.admin-message-recipient:last-child {
+  border-bottom: 0;
+}
+
+.admin-message-recipient > span:first-child {
+  display: grid;
+  gap: 2px;
+  padding-left: 0;
+}
+
+.admin-message-recipient strong {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.admin-message-recipient small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.admin-message-recipient input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.admin-message-recipient input:checked + .ios-switch {
+  background: #34c759;
+}
+
+.admin-message-recipient input:checked + .ios-switch::after {
+  transform: translateX(22px);
+}
+
 @media (max-width: 720px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -2968,6 +3084,15 @@ mark {
     width: 100%;
     height: 100vh;
     border-radius: 0;
+  }
+
+  .admin-message-overlay {
+    padding: 18px;
+  }
+
+  .admin-message-panel {
+    border-radius: 14px;
+    padding: 22px;
   }
 
   .admin-form-grid,
