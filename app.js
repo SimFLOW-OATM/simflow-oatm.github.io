@@ -29,7 +29,8 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
-const WEB_APP_VERSION = "1.81";
+const WEB_APP_VERSION = "1.82";
+const userGuideURL = "./assets/Guide%20utilisateur%20SimFLOW.pdf";
 const deletedLegacySimulatorNames = new Set(["Simu 1", "Simu 2", "Simu 3", "Simu 4"]);
 const sessionStorageKey = "simflow.web.currentUser";
 const webDeviceStorageKey = "simflow.web.deviceIdentifier";
@@ -140,6 +141,7 @@ const elements = {
   loginHint: document.querySelector("#loginHint"),
   fileWarning: document.querySelector("#fileWarning"),
   adminSettingsButton: document.querySelector("#adminSettingsButton"),
+  userGuideButton: document.querySelector("#userGuideButton"),
   logoutButton: document.querySelector("#logoutButton"),
   changeCodeButton: document.querySelector("#changeCodeButton"),
   userSummaryButton: document.querySelector("#userSummaryButton"),
@@ -273,6 +275,10 @@ elements.logoutButton.addEventListener("click", () => {
 elements.changeCodeButton.addEventListener("click", () => {
   elements.userMenu.classList.add("hidden");
   openChangeCodePanel();
+});
+elements.userGuideButton.addEventListener("click", () => {
+  elements.userMenu.classList.add("hidden");
+  window.open(userGuideURL, "_blank", "noopener");
 });
 elements.cancelChangeCodeButton.addEventListener("click", closeChangeCodePanel);
 elements.saveChangeCodeButton.addEventListener("click", changeCurrentUserCode);
@@ -912,7 +918,10 @@ function restartAdminTabListeners() {
   }
 
   stopInactiveAdminTabListeners();
+  startActiveAdminTabListener();
+}
 
+function startActiveAdminTabListener() {
   if (state.activeAdminTab === "connections") {
     restartLoginEventsListener();
   }
@@ -2576,6 +2585,7 @@ function renderAdminSettings(options = {}) {
   }
 
   stopInactiveAdminTabListeners();
+  startActiveAdminTabListener();
 
   if (!options.force && isAdminDateInteractionActive()) {
     return;
