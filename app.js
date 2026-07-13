@@ -29,7 +29,7 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
-const WEB_APP_VERSION = "1.83";
+const WEB_APP_VERSION = "1.84";
 const userGuideURL = "./assets/Guide%20utilisateur%20SimFLOW.pdf";
 const deletedLegacySimulatorNames = new Set(["Simu 1", "Simu 2", "Simu 3", "Simu 4"]);
 const sessionStorageKey = "simflow.web.currentUser";
@@ -68,6 +68,7 @@ const state = {
   handwritingNotes: [],
   dailyTags: [],
   loginEvents: [],
+  userStats: [],
   activityEvents: [],
   adminMaintenanceAudit: null,
   adminMaintenanceStatus: "",
@@ -90,6 +91,8 @@ const state = {
   unsubscribeHandwritingNotes: null,
   unsubscribeDailyTags: null,
   unsubscribeLoginEvents: null,
+  loginEventsMode: "",
+  unsubscribeUserStats: null,
   unsubscribeActivityEvents: null,
   unsubscribeAdminMessagesAll: null,
   unsubscribeAdminMessagesTargeted: null,
@@ -528,6 +531,7 @@ elements.adminOverlay.addEventListener("click", (event) => {
     renderAdminSettings();
   } else if (action === "open-admin-users") {
     state.activeAdminTab = "users";
+    restartUserStatsListener();
     renderAdminSettings();
   } else if (action === "open-admin-simulators") {
     state.activeAdminTab = "simulators";
@@ -876,7 +880,20 @@ async function recordLoginAppearance() {
 
   payload.appearanceCount = increment(1);
 
-  await setDoc(doc(db, "loginEvents", id), payload, { merge: true }).catch((error) => {
+  const statsID = firestoreDocumentID(userIdentifier);
+  const statsPayload = {
+    userIdentifier,
+    userDisplayName,
+    totalWebConnections: increment(1),
+    lastWebSeenAt: createdAt,
+    lastSeenAt: createdAt,
+    updatedAt: createdAt
+  };
+
+  await Promise.all([
+    setDoc(doc(db, "loginEvents", id), payload, { merge: true }),
+    setDoc(doc(db, "userStats", statsID), statsPayload, { merge: true })
+  ]).catch((error) => {
     setStatus(error.message);
   });
 }
@@ -1080,6 +1097,10 @@ function restartAdminTabListeners() {
 }
 
 function startActiveAdminTabListener() {
+  if (state.activeAdminTab === "users") {
+    restartUserStatsListener();
+  }
+
   if (state.activeAdminTab === "connections") {
     restartLoginEventsListener();
   }
@@ -1093,7 +1114,14 @@ function stopInactiveAdminTabListeners() {
   if (state.activeAdminTab !== "connections" && state.unsubscribeLoginEvents) {
     state.unsubscribeLoginEvents();
     state.unsubscribeLoginEvents = null;
+    state.loginEventsMode = "";
     state.loginEvents = [];
+  }
+
+  if (state.activeAdminTab !== "users" && state.unsubscribeUserStats) {
+    state.unsubscribeUserStats();
+    state.unsubscribeUserStats = null;
+    state.userStats = [];
   }
 
   if (state.activeAdminTab !== "activity" && state.unsubscribeActivityEvents) {
@@ -1112,7 +1140,8 @@ function restartLoginEventsListener(force = false) {
     return;
   }
 
-  if (state.unsubscribeLoginEvents && !force) {
+  const mode = `connections:${isoDate(state.adminLoginDate)}`;
+  if (state.unsubscribeLoginEvents && state.loginEventsMode === mode && !force) {
     return;
   }
 
@@ -1121,19 +1150,50 @@ function restartLoginEventsListener(force = false) {
     state.unsubscribeLoginEvents = null;
   }
 
-  const start = startOfDay(state.adminLoginDate);
-  const end = addDays(start, 1);
+  state.loginEventsMode = mode;
   state.loginEvents = [];
+  const loginQuery = query(
+    collection(db, "loginEvents"),
+    where("createdAt", ">=", startOfDay(state.adminLoginDate)),
+    where("createdAt", "<", addDays(startOfDay(state.adminLoginDate), 1)),
+    orderBy("createdAt", "desc")
+  );
   state.unsubscribeLoginEvents = onSnapshot(
-    query(
-      collection(db, "loginEvents"),
-      where("createdAt", ">=", start),
-      where("createdAt", "<", end),
-      orderBy("createdAt", "desc")
-    ),
+    loginQuery,
     (snapshot) => {
       state.loginEvents = snapshot.docs
         .map((document) => loginEventFromSnapshot(document.id, document.data()))
+        .filter(Boolean);
+      renderAdminSettings();
+    },
+    (error) => setStatus(error.message)
+  );
+}
+
+function restartUserStatsListener(force = false) {
+  if (!state.authReady || !isAdminSession()) {
+    return;
+  }
+
+  if (state.activeAdminTab !== "users") {
+    return;
+  }
+
+  if (state.unsubscribeUserStats && !force) {
+    return;
+  }
+
+  if (state.unsubscribeUserStats) {
+    state.unsubscribeUserStats();
+    state.unsubscribeUserStats = null;
+  }
+
+  state.userStats = [];
+  state.unsubscribeUserStats = onSnapshot(
+    collection(db, "userStats"),
+    (snapshot) => {
+      state.userStats = snapshot.docs
+        .map((document) => userStatsFromSnapshot(document.id, document.data()))
         .filter(Boolean);
       renderAdminSettings();
     },
@@ -1266,6 +1326,7 @@ function detachAuthenticatedDataSync() {
   state.handwritingNotes = [];
   state.dailyTags = [];
   state.loginEvents = [];
+  state.userStats = [];
   state.activityEvents = [];
   state.adminMessagesAll = [];
   state.adminMessagesTargeted = [];
@@ -2655,6 +2716,19 @@ function loginEventFromSnapshot(documentID, data) {
   };
 }
 
+function userStatsFromSnapshot(documentID, data) {
+  return {
+    id: stringValue(data.id, documentID),
+    userIdentifier: stringValue(data.userIdentifier, documentID),
+    userDisplayName: stringValue(data.userDisplayName),
+    totalWebConnections: Math.max(0, Number(data.totalWebConnections) || 0),
+    totalIOSConnections: Math.max(0, Number(data.totalIOSConnections) || 0),
+    latestIOSAppVersion: stringValue(data.latestIOSAppVersion),
+    lastSeenAt: dateValue(data.lastSeenAt) || dateValue(data.updatedAt) || null,
+    updatedAt: dateValue(data.updatedAt) || null
+  };
+}
+
 function adminMessageFromSnapshot(documentID, data) {
   const text = stringValue(data.text).trim();
   if (!text) {
@@ -3176,10 +3250,24 @@ function renderAdminUsers() {
 function renderAdminUserCard(user) {
   const codeValue = shouldMaskAdminAccessCode(user) ? "••••••" : user.accessCode;
   const codeInputType = shouldMaskAdminAccessCode(user) ? "password" : "text";
+  const stats = userStatsForUser(user);
+  const version = stringValue(stats?.latestIOSAppVersion);
+  const totalConnections = (stats?.totalWebConnections || 0) + (stats?.totalIOSConnections || 0);
+  const requiredVersion = stringValue(state.appSettings?.requiredIOSAppVersion).trim();
+  const versionOK = Boolean(version) && (!requiredVersion || version === requiredVersion);
+  const versionTitle = requiredVersion
+    ? `Version demandée : ${requiredVersion}`
+    : "Aucune version demandée";
   return `
     <article class="admin-card" data-user-id="${escapeAttribute(user.documentID)}">
       <div class="admin-card-title">
         <strong>${escapeHtml(currentDisplayNameForUser(user))}</strong>
+        <span class="admin-user-version ${versionOK ? "is-ok" : "is-ko"}" title="${escapeAttribute(versionTitle)}">
+          ${escapeHtml(version || "Non détectée")}
+        </span>
+        <span class="admin-user-connections" title="Connexions totales Web + iPad">
+          ${totalConnections}
+        </span>
         <span>${escapeHtml(user.id)}</span>
       </div>
       <div class="admin-form-grid">
@@ -3584,6 +3672,26 @@ function latestIOSAppVersionForEvents(events) {
         - (first.lastSeenAt?.getTime() || first.createdAt?.getTime() || 0);
     })[0];
   return stringValue(latestIPadEvent?.iosAppVersion).trim();
+}
+
+function userStatsForUser(user) {
+  const userKeys = new Set([
+    normalizeKey(user.id),
+    normalizeKey(user.documentID),
+    normalizeKey(user.iCloudIdentifier)
+  ].filter(Boolean));
+
+  return [...state.userStats]
+    .filter((stats) => {
+      return [
+        normalizeKey(stats.id),
+        normalizeKey(stats.userIdentifier)
+      ].some((key) => key && userKeys.has(key));
+    })
+    .sort((first, second) => {
+      return (second.lastSeenAt?.getTime() || second.updatedAt?.getTime() || 0)
+        - (first.lastSeenAt?.getTime() || first.updatedAt?.getTime() || 0);
+    })[0];
 }
 
 function latestIOSAppVersionForRows(rows) {

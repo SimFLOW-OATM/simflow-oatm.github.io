@@ -1630,6 +1630,8 @@ mark {
 }
 
 .admin-card-title strong {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 18px;
 }
 
@@ -1647,9 +1649,49 @@ mark {
 }
 
 .admin-card-title span {
+  flex: 0 0 auto;
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
+}
+
+.admin-card-title .admin-user-version {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 54px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: white;
+  background: #dc2626;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.admin-card-title .admin-user-version.is-ok {
+  color: #050505;
+  background: #34c759;
+}
+
+.admin-card-title .admin-user-version.is-ko {
+  color: white;
+  background: #dc2626;
+}
+
+.admin-card-title .admin-user-connections {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: #050505;
+  background: #ffd400;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 
 .admin-card-title .admin-connection-total {
