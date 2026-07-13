@@ -9,7 +9,7 @@
   --surface-strong: rgba(255, 255, 255, 0.96);
   --urgent: #ff4b55;
   --soon: #ff8a24;
-  --asap: #8b5cf6;
+  --asap: #ff8a24;
 }
 
 * {
@@ -752,6 +752,35 @@ body.requires-login .login-panel > :not(.sidebar-login-button) {
   line-height: 1.25;
 }
 
+.login-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -2px 0 12px;
+  color: var(--blue);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.login-spinner {
+  width: 17px;
+  height: 17px;
+  border: 2px solid rgba(47, 128, 237, 0.22);
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: simflow-spin 0.75s linear infinite;
+}
+
+.code-modal.is-loading .code-dialog {
+  cursor: progress;
+}
+
+@keyframes simflow-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .code-dialog input {
   width: 100%;
   min-height: 39px;
@@ -935,13 +964,25 @@ h1:empty + p {
 }
 
 .status-pill {
-  min-width: max-content;
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 1000;
+  width: 8px;
+  height: 8px;
   border-radius: 999px;
-  padding: 9px 13px;
-  color: var(--blue-dark);
-  background: rgba(255, 255, 255, 0.68);
-  font-size: 13px;
-  font-weight: 850;
+  background: rgba(16, 21, 31, 0.26);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.8);
+  opacity: 0.55;
+  pointer-events: none;
+  transition: background 120ms ease, box-shadow 120ms ease, opacity 120ms ease, transform 120ms ease;
+}
+
+.status-pill.active {
+  background: #111827;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.95), 0 0 0 5px rgba(17, 24, 39, 0.12);
+  opacity: 1;
+  transform: scale(1.25);
 }
 
 .notice {
@@ -1098,17 +1139,17 @@ h1:empty + p {
 
 .note-card.priority-urgent {
   border-color: var(--priority-color, var(--urgent));
-  background: var(--priority-bg, rgba(255, 75, 85, 0.12));
+  background: var(--priority-bg, rgba(255, 75, 85, 0.24));
 }
 
 .note-card.priority-soon {
   border-color: var(--priority-color, var(--urgent));
-  background: var(--priority-bg, rgba(255, 75, 85, 0.12));
+  background: var(--priority-bg, rgba(255, 75, 85, 0.24));
 }
 
 .note-card.priority-whenever {
-  border-color: var(--priority-color, #35c759);
-  background: var(--priority-bg, rgba(53, 199, 89, 0.13));
+  border-color: var(--priority-color, var(--asap));
+  background: var(--priority-bg, rgba(255, 138, 36, 0.10));
 }
 
 .note-card.carryover-card {
@@ -1261,6 +1302,12 @@ h1:empty + p {
   background: color-mix(in srgb, var(--priority-color, #ff4b55) 18%, white);
 }
 
+.badge.priority.priority-urgent,
+.badge.priority.priority-soon {
+  color: white;
+  background: var(--urgent);
+}
+
 .note-status-pill {
   display: inline-flex;
   align-items: center;
@@ -1275,6 +1322,36 @@ h1:empty + p {
   font-weight: 850;
   line-height: 1;
   box-shadow: 0 4px 10px rgba(15, 23, 42, 0.08);
+}
+
+.note-leading-badges {
+  position: absolute;
+  top: -8px;
+  left: 8px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: stretch;
+  gap: 6px;
+  max-width: calc(100% - 24px);
+}
+
+.note-leading-badges .age-badge {
+  position: static;
+}
+
+.note-leading-badges .note-status-pill {
+  min-height: 21px;
+  margin-top: 0;
+  padding: 0 8px 0 6px;
+  gap: 4px;
+  font-size: 11px;
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.24);
+}
+
+.note-leading-badges .note-status-icon {
+  width: 14px;
+  height: 14px;
+  font-size: 10px;
 }
 
 .note-status-pill.done {
@@ -1300,15 +1377,17 @@ h1:empty + p {
 .age-badge {
   position: absolute;
   top: -8px;
-  left: -10px;
+  left: 8px;
   z-index: 3;
   display: inline-flex;
+  flex: 0 0 auto;
   overflow: hidden;
   border-radius: 999px;
   color: white;
   font-size: 11px;
   font-weight: 950;
   line-height: 1;
+  white-space: nowrap;
   box-shadow: 0 4px 10px rgba(15, 23, 42, 0.24);
 }
 
@@ -1322,16 +1401,31 @@ h1:empty + p {
   color: #171717;
 }
 
+.age-badge-done {
+  color: white;
+}
+
+.age-new-done {
+  background: #34c759;
+  color: white;
+}
+
 .age-badge-part {
   display: inline-grid;
+  flex: 0 0 auto;
   min-height: 21px;
   place-items: center;
   padding: 0 5px;
+  white-space: nowrap;
 }
 
 .age-created {
-  min-width: 31px;
+  min-width: 38px;
   background: #050505;
+}
+
+.age-created-urgent {
+  background: var(--urgent);
 }
 
 .age-modified {
@@ -2317,7 +2411,7 @@ mark {
 }
 
 .priority-option.priority-whenever {
-  border-color: #35c759;
+  border-color: var(--asap);
 }
 
 .priority-option.priority-urgent.selected {
@@ -2332,7 +2426,7 @@ mark {
 
 .priority-option.priority-whenever.selected {
   color: white;
-  background: #35c759;
+  background: var(--asap);
 }
 
 .date-line {

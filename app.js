@@ -29,10 +29,12 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
-const WEB_APP_VERSION = "1.82";
+const WEB_APP_VERSION = "1.83";
 const userGuideURL = "./assets/Guide%20utilisateur%20SimFLOW.pdf";
 const deletedLegacySimulatorNames = new Set(["Simu 1", "Simu 2", "Simu 3", "Simu 4"]);
 const sessionStorageKey = "simflow.web.currentUser";
+const archiveRealtimeRetentionDays = 15;
+const activeRealtimeUntil = new Date("2100-01-01T00:00:00.000Z");
 const webDeviceStorageKey = "simflow.web.deviceIdentifier";
 const sessionDurationMs = 30 * 24 * 60 * 60 * 1000;
 const activeLoginSessionWindowMs = 90 * 1000;
@@ -61,10 +63,16 @@ const state = {
   codeModalMode: "login",
   isSaving: false,
   notes: [],
+  fetchedNoteDayKeys: new Set(),
+  fetchedNotesByID: new Map(),
   handwritingNotes: [],
   dailyTags: [],
   loginEvents: [],
   activityEvents: [],
+  adminMaintenanceAudit: null,
+  adminMaintenanceStatus: "",
+  isAdminMaintenanceScanning: false,
+  isAdminMaintenanceRepairing: false,
   adminMessagesAll: [],
   adminMessagesTargeted: [],
   adminMessageDismissals: new Set(),
@@ -128,6 +136,7 @@ const elements = {
   codeModal: document.querySelector("#codeModal"),
   codeModalTitle: document.querySelector("#codeModalTitle"),
   codeModalMessage: document.querySelector("#codeModalMessage"),
+  loginLoading: document.querySelector("#loginLoading"),
   accessCode: document.querySelector("#accessCode"),
   loginButton: document.querySelector("#loginButton"),
   cancelLoginButton: document.querySelector("#cancelLoginButton"),
@@ -305,6 +314,7 @@ elements.selectedDate.addEventListener("change", () => {
   state.selectedDate = startOfDay(parseDateInput(elements.selectedDate.value));
   state.visibleMonth = startOfMonth(state.selectedDate);
   clearPeriodMode();
+  fetchNotesForSelectedDateIfNeeded(state.selectedDate);
   renderPreservingCenteredSimulatorBand();
 });
 elements.previousMonthButton.addEventListener("click", () => {
@@ -532,6 +542,12 @@ elements.adminOverlay.addEventListener("click", (event) => {
   } else if (action === "open-admin-app-version") {
     state.activeAdminTab = "appVersion";
     renderAdminSettings();
+  } else if (action === "open-admin-maintenance") {
+    state.activeAdminTab = "maintenance";
+    renderAdminSettings();
+    if (!state.adminMaintenanceAudit && !state.isAdminMaintenanceScanning) {
+      scanAdminMaintenance();
+    }
   } else if (action === "open-admin-messages") {
     state.activeAdminTab = "messages";
     resetAdminMessageComposer();
@@ -560,6 +576,10 @@ elements.adminOverlay.addEventListener("click", (event) => {
     createAdminSimulator();
   } else if (action === "save-app-version") {
     saveAdminAppVersion();
+  } else if (action === "scan-admin-maintenance") {
+    scanAdminMaintenance();
+  } else if (action === "repair-admin-syncstate") {
+    repairAdminSyncState();
   } else if (action === "send-admin-message") {
     sendAdminMessage();
   }
@@ -706,6 +726,7 @@ async function login() {
     return;
   }
 
+  setLoginLoading(true);
   const response = await loginWithAccessCode({ accessCode: code }).catch((error) => {
     elements.codeModalMessage.textContent = error.message || "Code non valide.";
     return null;
@@ -716,12 +737,18 @@ async function login() {
     if (!elements.codeModalMessage.textContent || elements.codeModalMessage.textContent === "Vérification...") {
       elements.codeModalMessage.textContent = "Code non valide.";
     }
+    setLoginLoading(false);
     return;
   }
 
   state.currentUser = normalizedSessionUser(user);
   saveSession(state.currentUser);
-  await signInWithCustomToken(auth, token);
+  const signInSucceeded = await signInWithCustomToken(auth, token).then(() => true).catch((error) => {
+    elements.codeModalMessage.textContent = error.message || "Connexion impossible.";
+    setLoginLoading(false);
+    return false;
+  });
+  if (!signInSucceeded) return;
   state.authReady = true;
   state.lastLoginEventAt = 0;
   startAuthenticatedDataSync();
@@ -729,6 +756,15 @@ async function login() {
   closeCodeModal();
   renderSession();
   render();
+  setLoginLoading(false);
+}
+
+function setLoginLoading(isLoading) {
+  elements.loginLoading?.classList.toggle("hidden", !isLoading);
+  elements.codeModal?.classList.toggle("is-loading", isLoading);
+  elements.loginButton.disabled = isLoading;
+  elements.cancelLoginButton.disabled = isLoading;
+  elements.accessCode.disabled = isLoading;
 }
 
 function restoreSavedSession() {
@@ -857,9 +893,76 @@ function startAuthenticatedDataSync() {
 
 function attachFirebaseListeners() {
   if (!state.unsubscribeNotes) {
-    state.unsubscribeNotes = onSnapshot(collection(db, "handoverNotes"), (snapshot) => {
-      state.notes = snapshot.docs.map((doc) => noteFromSnapshot(doc.id, doc.data()));
+    const activeNotes = new Map();
+    const displayWindowNotes = new Map();
+    const recentArchivedNotes = new Map();
+    const syncNotes = () => {
+      state.notes = Array.from(new Map([
+        ...state.fetchedNotesByID,
+        ...recentArchivedNotes,
+        ...displayWindowNotes,
+        ...activeNotes
+      ]).values());
       setStatus("Données synchronisées");
+      renderSimulators();
+      render();
+    };
+    const applyNotesSnapshot = (target, snapshot) => {
+      snapshot.docChanges().forEach((change) => {
+        if (change.type === "removed") {
+          target.delete(change.doc.id);
+        } else {
+          target.set(change.doc.id, noteFromSnapshot(change.doc.id, change.doc.data()));
+        }
+      });
+      syncNotes();
+    };
+    const unsubscribeActive = onSnapshot(
+      query(collection(db, "handoverNotes"), where("syncState", "==", "active")),
+      (snapshot) => applyNotesSnapshot(activeNotes, snapshot),
+      (error) => setStatus(error.message)
+    );
+    const displayWindow = realtimeDisplayWindow();
+    const unsubscribeDisplayWindow = onSnapshot(
+      query(
+        collection(db, "handoverNotes"),
+        where("displayDate", ">=", displayWindow.start),
+        where("displayDate", "<", displayWindow.end)
+      ),
+      (snapshot) => applyNotesSnapshot(displayWindowNotes, snapshot),
+      (error) => setStatus(error.message)
+    );
+    const unsubscribeRecentArchived = onSnapshot(
+      query(
+        collection(db, "handoverNotes"),
+        where("syncState", "==", "archived"),
+        where("realtimeActiveUntil", ">=", displayWindow.start)
+      ),
+      (snapshot) => applyNotesSnapshot(recentArchivedNotes, snapshot),
+      (error) => setStatus(error.message)
+    );
+    state.unsubscribeNotes = () => {
+      unsubscribeActive();
+      unsubscribeDisplayWindow();
+      unsubscribeRecentArchived();
+    };
+  }
+
+  if (!state.unsubscribeNoteDeletions) {
+    state.unsubscribeNoteDeletions = onSnapshot(collection(db, "handoverNoteDeletions"), (snapshot) => {
+      const deletedIDs = snapshot.docChanges()
+        .filter((change) => change.type === "added" || change.type === "modified")
+        .map((change) => stringValue(change.doc.data().noteID, change.doc.id))
+        .filter(Boolean);
+
+      if (!deletedIDs.length) {
+        return;
+      }
+
+      const deletedIDSet = new Set(deletedIDs);
+      state.notes = state.notes.filter((note) => !deletedIDSet.has(note.id));
+      deletedIDs.forEach((noteID) => state.fetchedNotesByID.delete(noteID));
+      state.handwritingNotes = state.handwritingNotes.filter((note) => !deletedIDSet.has(note.noteID));
       renderSimulators();
       render();
     }, (error) => setStatus(error.message));
@@ -909,6 +1012,61 @@ function attachFirebaseListeners() {
       renderAdminSettings();
       render();
     }, (error) => setStatus(error.message));
+  }
+}
+
+function realtimeDisplayWindow() {
+  const today = startOfDay(new Date());
+  return {
+    start: addDays(today, -4),
+    end: addDays(today, 1)
+  };
+}
+
+function isInRealtimeNoteDisplayWindow(date) {
+  const day = startOfDay(date);
+  const window = realtimeDisplayWindow();
+  return day >= window.start && day < window.end;
+}
+
+async function fetchNotesForSelectedDateIfNeeded(date) {
+  if (!state.currentUser || !state.authReady) {
+    return;
+  }
+
+  const day = startOfDay(date);
+  if (isInRealtimeNoteDisplayWindow(day)) {
+    return;
+  }
+
+  const dayKey = isoDate(day);
+  if (state.fetchedNoteDayKeys.has(dayKey)) {
+    return;
+  }
+
+  state.fetchedNoteDayKeys.add(dayKey);
+  const start = day;
+  const end = addDays(day, 1);
+
+  try {
+    const snapshot = await getDocs(query(
+      collection(db, "handoverNotes"),
+      where("displayDate", ">=", start),
+      where("displayDate", "<", end)
+    ));
+    const fetchedNotes = snapshot.docs.map((doc) => noteFromSnapshot(doc.id, doc.data()));
+    const notesByID = new Map(state.notes.map((note) => [note.id, note]));
+    fetchedNotes.forEach((note) => {
+      state.fetchedNotesByID.set(note.id, note);
+      notesByID.set(note.id, note);
+    });
+    state.notes = Array.from(notesByID.values());
+    setStatus("Données synchronisées");
+    renderSimulators();
+    render();
+  } catch (error) {
+    state.fetchedNoteDayKeys.delete(dayKey);
+    setStatus(error.message);
   }
 }
 
@@ -1082,6 +1240,7 @@ function restartAdminMessageListeners() {
 function detachAuthenticatedDataSync() {
   const unsubscribeKeys = [
     "unsubscribeNotes",
+    "unsubscribeNoteDeletions",
     "unsubscribeHandwritingNotes",
     "unsubscribeDailyTags",
     "unsubscribeLoginEvents",
@@ -1102,6 +1261,8 @@ function detachAuthenticatedDataSync() {
   });
 
   state.notes = [];
+  state.fetchedNoteDayKeys = new Set();
+  state.fetchedNotesByID = new Map();
   state.handwritingNotes = [];
   state.dailyTags = [];
   state.loginEvents = [];
@@ -1392,6 +1553,7 @@ function beginPeriodSelection(date) {
   state.visibleMonth = startOfMonth(start);
   elements.selectedDate.value = isoDate(start);
   elements.searchInput.value = "";
+  fetchNotesForSelectedDateIfNeeded(start);
   render();
 }
 
@@ -1406,6 +1568,8 @@ function finishPeriodSelection(date) {
   state.selectedDate = end;
   state.visibleMonth = startOfMonth(end);
   elements.selectedDate.value = isoDate(end);
+  fetchNotesForSelectedDateIfNeeded(state.periodStartDate);
+  fetchNotesForSelectedDateIfNeeded(end);
   render();
 }
 
@@ -1420,6 +1584,7 @@ function goToToday() {
   state.visibleMonth = startOfMonth(state.selectedDate);
   clearPeriodMode();
   elements.selectedDate.value = isoDate(state.selectedDate);
+  fetchNotesForSelectedDateIfNeeded(state.selectedDate);
   renderPreservingCenteredSimulatorBand();
 }
 
@@ -1563,6 +1728,7 @@ function renderCalendar() {
       state.visibleMonth = startOfMonth(date);
       clearPeriodMode();
       elements.selectedDate.value = isoDate(state.selectedDate);
+      fetchNotesForSelectedDateIfNeeded(state.selectedDate);
       renderPreservingCenteredSimulatorBand();
     });
   });
@@ -1571,8 +1737,7 @@ function renderCalendar() {
 function groupedNotes() {
   const matchingNotes = state.notes
     .filter((note) => canCurrentUserSeeNote(note))
-    .filter((note) => matchesSearch(note))
-    .sort(state.search ? compareSearchNotes : isPeriodResultsMode() ? comparePeriodNotes : compareNotes);
+    .filter((note) => matchesSearch(note));
 
   const simulators = [{ name: generalName, colorHex: "#111827", sortOrder: -1 }, ...visibleSimulatorContexts()];
   const groups = [];
@@ -1595,7 +1760,7 @@ function groupedNotes() {
     const notes = contextNotes.filter((note) => {
       const belongsToContext = noteBelongsToContext(note, simulator.name);
       return belongsToContext && matchesSelection(note, simulator.name);
-    });
+    }).sort((first, second) => compareNotesForContext(first, second, simulator.name));
 
     const shouldRenderGroup = state.search || isPeriodResultsMode()
       ? notes.length > 0
@@ -1641,7 +1806,6 @@ function renderGroup(group) {
 
 function renderNote(note, context) {
   const priorityClass = note.priority ? `priority-${note.priority}` : "priority-info";
-  const priorityStyle = note.priority ? ` style="--priority-color:${priorityColor(note.priority)};--priority-bg:${priorityBackground(note.priority)}"` : "";
   const title = highlight(note.title);
   const newBadge = isNew(note);
   const carryOver = carryOverDayCount(note);
@@ -1649,22 +1813,30 @@ function renderNote(note, context) {
   const showsModificationNew = modificationTitle === "NEW";
   const dailyDiffHTML = highlightHTML(dailyModificationDiffHTML(note, showsModificationNew));
   const done = isDoneBadgeVisibleInContext(note, context);
+  const priorityColorValue = done ? "#34c759" : priorityColor(note.priority);
+  const priorityStyle = note.priority ? ` style="--priority-color:${priorityColorValue};--priority-bg:${priorityBackground(note.priority)}"` : "";
   const acknowledged = !done && isAcknowledgedInContext(note, context) && !hasContentModificationAfterAcknowledgement(note, context);
   const handwriting = visibleHandwritingFor(note);
   const isTagged = isDailyTagged(note.id);
   const ageBadge = newBadge
-    ? renderNewAgeBadge(note.id, isTagged)
+    ? renderNewAgeBadge(note.id, isTagged, done)
     : carryOver && !state.search
-      ? renderAgeBadge(note.id, carryOver, modificationTitle, isTagged)
+      ? renderAgeBadge(
+        note.id,
+        carryOver,
+        modificationTitle,
+        isTagged,
+        (note.priority === "urgent" || note.priority === "soon") && !done && carryOver > 7
+      )
       : "";
   const badges = [
-    note.priority ? `<span class="badge priority">${priorityLabel(note.priority)}</span>` : ""
+    note.priority && !done ? `<span class="badge priority priority-${escapeAttribute(note.priority)}">${priorityLabel(note.priority)}</span>` : ""
   ].filter(Boolean).join("");
-  const statusBadge = done
-    ? renderStatusBadge("done", "Soldé")
-    : acknowledged
-      ? renderStatusBadge("ack", "Pris en compte")
-      : "";
+  const doneStatusBadge = done ? renderStatusBadge("done", "Soldé") : "";
+  const acknowledgementStatusBadge = acknowledged ? renderStatusBadge("ack", "Pris en compte") : "";
+  const leadingBadges = ageBadge || doneStatusBadge
+    ? `<div class="note-leading-badges">${ageBadge}${doneStatusBadge}</div>`
+    : "";
   const metadataDate = state.search
     ? firstAssignmentDate(note)
     : isPeriodResultsMode()
@@ -1682,13 +1854,13 @@ function renderNote(note, context) {
       data-context="${escapeAttribute(encodeURIComponent(context))}"
     >
       <div class="badges">${badges}</div>
-      ${ageBadge}
+      ${leadingBadges}
       ${dailyDiffHTML
         ? `<div class="note-text revision-diff${note.title ? " has-title" : ""}">${dailyDiffHTML}</div>`
         : `${note.title ? `<h2 class="note-title">${title}</h2>` : ""}
       ${note.text ? `<div class="note-text rich-text-preview">${richTextPreviewHTML(note)}</div>` : note.title ? "" : "<p class=\"note-text muted\">Note manuscrite</p>"}`}
       ${handwriting ? renderHandwritingCardPreview(handwriting) : ""}
-      ${statusBadge}
+      ${acknowledgementStatusBadge}
       ${periodDate}
     </article>
   `;
@@ -1710,6 +1882,9 @@ function noteFromSnapshot(id, data) {
     createdAt: dateValue(data.createdAt),
     updatedAt: dateValue(data.updatedAt),
     contentModifiedAt: dateValue(data.contentModifiedAt),
+    syncState: stringValue(data.syncState),
+    lastRealtimeRelevantAt: dateValue(data.lastRealtimeRelevantAt),
+    realtimeActiveUntil: dateValue(data.realtimeActiveUntil),
     deletedAt: dateValue(data.deletedAt),
     deletedBy: stringValue(data.deletedBy),
     deletedByIdentifier: stringValue(data.deletedByIdentifier),
@@ -1958,7 +2133,6 @@ function renderDetail(note, context) {
   const canToggleAcknowledgement = canWrite && !done && !note.priority && !isNew(note);
   const canDelete = canCurrentUserDeleteNote(note);
   const canPermanentlyDelete = state.currentUser?.role === "admin" && Boolean(note.deletedAt);
-  const canResyncNote = state.currentUser?.role === "admin";
   const handwriting = visibleHandwritingFor(note);
 
   elements.detailTitle.textContent = context;
@@ -1988,11 +2162,6 @@ function renderDetail(note, context) {
       ${canPermanentlyDelete ? `
         <button class="secondary danger action-permanent-delete" data-detail-action="permanent-delete-note">
           <span class="action-icon">⌫</span>Supprimer définitivement
-        </button>
-      ` : ""}
-      ${canResyncNote ? `
-        <button class="secondary" data-detail-action="resync-note">
-          <span class="action-icon">↻</span>Resynchroniser iPhone
         </button>
       ` : ""}
     </div>
@@ -2605,9 +2774,11 @@ function renderAdminSettings(options = {}) {
             ? "Suivi d'activité"
             : state.activeAdminTab === "appVersion"
               ? "Version iPad"
-              : state.activeAdminTab === "messages"
-                ? "Messages"
-                : "Administration";
+              : state.activeAdminTab === "maintenance"
+                ? "Maintenance des données"
+                : state.activeAdminTab === "messages"
+                  ? "Messages"
+                  : "Administration";
     elements.adminOverlay.querySelector("#adminTitle").textContent = title;
 
     if (state.activeAdminTab === "users") {
@@ -2620,6 +2791,8 @@ function renderAdminSettings(options = {}) {
       elements.adminBody.innerHTML = renderAdminActivity();
     } else if (state.activeAdminTab === "appVersion") {
       elements.adminBody.innerHTML = renderAdminAppVersion();
+    } else if (state.activeAdminTab === "maintenance") {
+      elements.adminBody.innerHTML = renderAdminMaintenance();
     } else if (state.activeAdminTab === "messages") {
       elements.adminBody.innerHTML = renderAdminMessages();
     } else {
@@ -2779,6 +2952,13 @@ function renderAdminHome() {
           <small>${requiredIOSAppVersion ? `Version attendue ${escapeHtml(requiredIOSAppVersion)}` : "Aucun contrôle activé"}</small>
         </span>
       </button>
+      <button class="admin-menu-row" type="button" data-admin-action="open-admin-maintenance">
+        <span class="admin-menu-icon">◎</span>
+        <span>
+          <strong>Maintenance des données</strong>
+          <small>Contrôles Firestore et index de synchronisation</small>
+        </span>
+      </button>
       <button class="admin-menu-row" type="button" data-admin-action="open-admin-messages">
         <span class="admin-menu-icon">✉</span>
         <span>
@@ -2786,6 +2966,86 @@ function renderAdminHome() {
           <small>Envoyer une information a un ou plusieurs comptes</small>
         </span>
       </button>
+    </div>
+  `;
+}
+
+function renderAdminMaintenance() {
+  const audit = state.adminMaintenanceAudit;
+  const anomalies = audit?.anomalies || [];
+  const status = state.adminMaintenanceStatus
+    || (audit ? (anomalies.length ? `${anomalies.length} anomalie${anomalies.length > 1 ? "s" : ""} détectée${anomalies.length > 1 ? "s" : ""}.` : "Aucune anomalie détectée.") : "Lancer un scan Firestore pour contrôler les index.");
+
+  return `
+    <div class="admin-back-row">
+      <button class="secondary" type="button" data-admin-action="admin-home">‹ Administration</button>
+    </div>
+    <div class="admin-section-heading">
+      <h3>Maintenance des données</h3>
+      <p>Contrôle les champs utilisés pour limiter les lectures Firestore.</p>
+    </div>
+    <article class="admin-card">
+      <div class="admin-card-title">
+        <strong>Index de synchronisation</strong>
+        <span>${audit ? `${audit.totalCount} consigne${audit.totalCount > 1 ? "s" : ""}` : "Non scanné"}</span>
+      </div>
+      <p class="admin-help-text">${escapeHtml(status)}</p>
+      <div class="admin-actions">
+        <button type="button" data-admin-action="scan-admin-maintenance" ${state.isAdminMaintenanceScanning || state.isAdminMaintenanceRepairing ? "disabled" : ""}>
+          ${state.isAdminMaintenanceScanning ? "Scan en cours..." : "Scanner Firestore"}
+        </button>
+        ${anomalies.length ? `
+          <button type="button" data-admin-action="repair-admin-syncstate" ${state.isAdminMaintenanceScanning || state.isAdminMaintenanceRepairing ? "disabled" : ""}>
+            ${state.isAdminMaintenanceRepairing ? "Correction..." : "Corriger les anomalies"}
+          </button>
+        ` : ""}
+      </div>
+    </article>
+    ${audit ? renderAdminMaintenanceStats(audit) : ""}
+    ${anomalies.length ? renderAdminMaintenanceAnomalies(anomalies) : ""}
+  `;
+}
+
+function renderAdminMaintenanceStats(audit) {
+  return `
+    <div class="admin-section-heading">
+      <h3>Résultat</h3>
+    </div>
+    <article class="admin-card">
+      <div class="admin-form-grid">
+        <label>Consignes totales<input readonly value="${audit.totalCount}"></label>
+        <label>Avec syncState<input readonly value="${audit.withSyncStateCount}"></label>
+        <label>Sans syncState<input readonly value="${audit.missingSyncStateCount}"></label>
+        <label>Actives<input readonly value="${audit.activeCount}"></label>
+        <label>Soldées<input readonly value="${audit.archivedCount}"></label>
+        <label>Supprimées<input readonly value="${audit.deletedCount}"></label>
+        <label>Anomalies<input readonly value="${audit.anomalies.length}"></label>
+        ${audit.otherSyncStateCount ? `<label>syncState inconnu<input readonly value="${audit.otherSyncStateCount}"></label>` : ""}
+      </div>
+    </article>
+  `;
+}
+
+function renderAdminMaintenanceAnomalies(anomalies) {
+  return `
+    <div class="admin-section-heading">
+      <h3>Consignes concernées</h3>
+    </div>
+    <div class="admin-list">
+      ${anomalies.map((anomaly) => `
+        <article class="admin-card">
+          <div class="admin-card-title">
+            <strong>${escapeHtml(anomaly.title || "(Sans titre)")}</strong>
+            <span>${escapeHtml(anomaly.expectedSyncState)}</span>
+          </div>
+          <p class="admin-help-text">${escapeHtml(anomaly.simulatorText)}</p>
+          <div class="admin-activity-meta">
+            <span>Actuel : ${escapeHtml(anomaly.currentSyncState || "manquant")}</span>
+            <span>Attendu : ${escapeHtml(anomaly.expectedSyncState)}</span>
+          </div>
+          <p class="admin-help-text">${escapeHtml(anomaly.reason)}</p>
+        </article>
+      `).join("")}
     </div>
   `;
 }
@@ -3596,6 +3856,125 @@ async function saveAdminAppVersion() {
   setStatus(requiredIOSAppVersion ? "Version iPad requise enregistrée" : "Controle de version iPad désactivé");
 }
 
+async function scanAdminMaintenance() {
+  if (state.currentUser?.role !== "admin") {
+    setStatus("Acces admin requis");
+    return;
+  }
+
+  state.isAdminMaintenanceScanning = true;
+  state.adminMaintenanceStatus = "Lecture Firestore en cours...";
+  renderAdminSettings();
+
+  try {
+    const snapshot = await getDocs(collection(db, "handoverNotes"));
+    const documents = snapshot.docs.map((documentSnapshot) => {
+      const data = documentSnapshot.data();
+      const note = noteFromSnapshot(documentSnapshot.id, data);
+      return {
+        id: documentSnapshot.id,
+        data,
+        note,
+        expectedFields: handoverIndexFields(note)
+      };
+    });
+
+    const states = documents.map((documentInfo) => stringValue(documentInfo.data.syncState));
+    const anomalies = documents
+      .map(syncStateAnomalyFromDocument)
+      .filter(Boolean)
+      .sort((first, second) => first.title.localeCompare(second.title, "fr", { sensitivity: "base" }));
+
+    state.adminMaintenanceAudit = {
+      totalCount: documents.length,
+      withSyncStateCount: states.filter(Boolean).length,
+      missingSyncStateCount: states.filter((syncState) => !syncState).length,
+      activeCount: states.filter((syncState) => syncState === "active").length,
+      archivedCount: states.filter((syncState) => syncState === "archived").length,
+      deletedCount: states.filter((syncState) => syncState === "deleted").length,
+      otherSyncStateCount: states.filter((syncState) => syncState && !["active", "archived", "deleted"].includes(syncState)).length,
+      anomalies
+    };
+    state.adminMaintenanceStatus = anomalies.length
+      ? `${anomalies.length} anomalie${anomalies.length > 1 ? "s" : ""} détectée${anomalies.length > 1 ? "s" : ""}.`
+      : "Aucune anomalie détectée.";
+    setStatus("Scan maintenance terminé");
+  } catch (error) {
+    console.error("Admin maintenance scan failed", error);
+    state.adminMaintenanceStatus = error.message || "Scan impossible.";
+    setStatus(state.adminMaintenanceStatus);
+  } finally {
+    state.isAdminMaintenanceScanning = false;
+    renderAdminSettings();
+  }
+}
+
+function syncStateAnomalyFromDocument(documentInfo) {
+  const currentSyncState = stringValue(documentInfo.data.syncState);
+  const expectedSyncState = documentInfo.expectedFields.syncState;
+  const reasons = [];
+
+  if (currentSyncState !== expectedSyncState) {
+    reasons.push("syncState incorrect");
+  }
+
+  if (!dateValue(documentInfo.data.lastRealtimeRelevantAt)) {
+    reasons.push("lastRealtimeRelevantAt manquant");
+  }
+
+  if (!dateValue(documentInfo.data.realtimeActiveUntil)) {
+    reasons.push("realtimeActiveUntil manquant");
+  }
+
+  if (!reasons.length) {
+    return null;
+  }
+
+  return {
+    id: documentInfo.id,
+    title: documentInfo.note.title,
+    simulatorText: documentInfo.note.isGeneral ? "General" : documentInfo.note.simulatorNames.join(", "),
+    currentSyncState,
+    expectedSyncState,
+    expectedFields: documentInfo.expectedFields,
+    reason: reasons.join(", ")
+  };
+}
+
+async function repairAdminSyncState() {
+  if (state.currentUser?.role !== "admin") {
+    setStatus("Acces admin requis");
+    return;
+  }
+
+  const anomalies = state.adminMaintenanceAudit?.anomalies || [];
+  if (!anomalies.length) {
+    state.adminMaintenanceStatus = "Aucune anomalie à corriger.";
+    renderAdminSettings();
+    return;
+  }
+
+  state.isAdminMaintenanceRepairing = true;
+  state.adminMaintenanceStatus = "Correction Firestore en cours...";
+  renderAdminSettings();
+
+  try {
+    await Promise.all(anomalies.map((anomaly) => {
+      return updateDoc(doc(db, "handoverNotes", anomaly.id), anomaly.expectedFields);
+    }));
+    state.adminMaintenanceStatus = `${anomalies.length} anomalie${anomalies.length > 1 ? "s" : ""} corrigée${anomalies.length > 1 ? "s" : ""}.`;
+    setStatus("Index de synchronisation corrigé");
+    await scanAdminMaintenance();
+  } catch (error) {
+    console.error("Admin maintenance repair failed", error);
+    state.adminMaintenanceStatus = error.message || "Correction impossible.";
+    setStatus(state.adminMaintenanceStatus);
+  } finally {
+    state.isAdminMaintenanceRepairing = false;
+    renderAdminSettings();
+  }
+}
+
 async function sendAdminMessage() {
   if (state.currentUser?.role !== "admin") {
     setStatus("Acces admin requis");
@@ -3915,6 +4294,7 @@ async function toggleDone(note, context) {
   const now = new Date();
   const key = completionStorageKey(context, state.selectedDate);
   const alreadyDone = isDoneInContext(note, context);
+  const completionDate = dateWithTime(state.selectedDate, now);
   const removedCompletions = alreadyDone
     ? activeCompletions(note).filter((completion) => completion.context === context && sameDay(completion.date, state.selectedDate))
     : [];
@@ -3925,7 +4305,7 @@ async function toggleDone(note, context) {
         context,
         author: currentDisplayName(),
         authorIdentifier: state.currentUser.id,
-        date: now,
+        date: completionDate,
         recordedDate: now
       }];
   const completionCancellations = alreadyDone
@@ -4140,6 +4520,18 @@ async function detachContextDeletionIfNeeded(note, now) {
     revisionHistoryData: note.revisions.length ? encodeRecordArray(note.revisions) : "",
     reportHistoryData: note.reports.length ? encodeRecordArray(note.reports) : ""
   };
+  Object.assign(detachedPayload, handoverIndexFields({
+    ...detachedPayload,
+    simulatorNames: [context],
+    priority: note.priority,
+    deletedAt: now,
+    contentModifiedAt: note.contentModifiedAt || null,
+    completedContexts: contextCompletionKeys(note.completedContexts, context),
+    completions: detachedCompletions,
+    completionCancellations: detachedCompletionCancellations,
+    revisions: note.revisions,
+    acknowledgements: detachedAcknowledgements
+  }));
 
   const originalPatch = {
     updatedAt: now,
@@ -4149,6 +4541,7 @@ async function detachContextDeletionIfNeeded(note, now) {
     completionCancellationHistoryData: remainingCompletionCancellations.length ? encodeRecordArray(remainingCompletionCancellations) : deleteField(),
     acknowledgementHistoryData: remainingAcknowledgements.length ? encodeRecordArray(remainingAcknowledgements) : deleteField()
   };
+  Object.assign(originalPatch, handoverIndexFields(noteWithPatchForIndex(note, originalPatch)));
 
   await Promise.all([
     updateDoc(doc(db, "handoverNotes", note.id), originalPatch),
@@ -4170,6 +4563,12 @@ async function permanentlyDeleteNote(noteID) {
     ...dailyTagSnapshot.docs
   ];
 
+  await setDoc(doc(db, "handoverNoteDeletions", noteID), {
+    noteID,
+    deletedAt: new Date(),
+    deletedBy: currentDisplayName(),
+    deletedByIdentifier: state.currentUser?.id || ""
+  }, { merge: true });
   await Promise.all(linkedDocuments.map((document) => deleteDoc(document.ref)));
   await deleteDoc(doc(db, "handoverNotes", noteID));
 }
@@ -4217,6 +4616,18 @@ async function saveNewNote(options = {}) {
     completionHistoryData: "",
     revisionHistoryData: ""
   };
+  Object.assign(payload, handoverIndexFields({
+    ...payload,
+    simulatorNames: destination.simulatorNames,
+    priority,
+    deletedAt: null,
+    contentModifiedAt: null,
+    completedContexts: [],
+    completions: [],
+    completionCancellations: [],
+    revisions: [],
+    acknowledgements: []
+  }));
 
   state.isSaving = true;
   setStatus("Enregistrement...");
@@ -4600,6 +5011,18 @@ async function detachContextModification(note, context, draft) {
     acknowledgementHistoryData: detachedAcknowledgements.length ? encodeRecordArray(detachedAcknowledgements) : "",
     revisionHistoryData: draft.revisions.length ? encodeRecordArray(draft.revisions) : ""
   };
+  Object.assign(detachedPayload, handoverIndexFields({
+    ...detachedPayload,
+    simulatorNames: [context],
+    priority: draft.priority,
+    deletedAt: note.deletedAt || null,
+    contentModifiedAt: draft.contentModifiedAt || null,
+    completedContexts: detachedCompletedKeys,
+    completions: detachedCompletions,
+    completionCancellations: detachedCompletionCancellations,
+    revisions: draft.revisions,
+    acknowledgements: detachedAcknowledgements
+  }));
 
   const originalPatch = {
     updatedAt: draft.now,
@@ -4615,6 +5038,7 @@ async function detachContextModification(note, context, draft) {
       ? encodeRecordArray(withoutContextRecords(note.acknowledgements, context))
       : deleteField()
   };
+  Object.assign(originalPatch, handoverIndexFields(noteWithPatchForIndex(note, originalPatch)));
 
   setStatus("Enregistrement...");
   await Promise.all([
@@ -5011,6 +5435,82 @@ function activeCompletions(note) {
   return note.completions.filter((completion) => !isCompletionCancelled(note, completion));
 }
 
+function handoverIndexFields(note) {
+  const syncState = note.deletedAt
+    ? "deleted"
+    : activeCompletions(note).length > 0 ? "archived" : "active";
+  const relevantDate = lastRealtimeRelevantDate(note);
+  const realtimeActiveUntil = syncState === "active"
+    ? activeRealtimeUntil
+    : addDays(relevantDate, archiveRealtimeRetentionDays);
+
+  return {
+    syncState,
+    lastRealtimeRelevantAt: relevantDate,
+    realtimeActiveUntil
+  };
+}
+
+function noteWithPatchForIndex(note, patch) {
+  const value = (key, fallback, deletedFallback = null) => {
+    if (!Object.prototype.hasOwnProperty.call(patch, key)) {
+      return fallback;
+    }
+
+    return isDeleteFieldSentinel(patch[key]) ? deletedFallback : patch[key];
+  };
+
+  return {
+    ...note,
+    title: value("title", note.title, ""),
+    text: value("text", note.text, ""),
+    author: value("author", note.author, ""),
+    displayDate: value("displayDate", note.displayDate, note.displayDate),
+    firstDisplayDate: value("firstDisplayDate", note.firstDisplayDate, note.firstDisplayDate),
+    deletedAt: value("deletedAt", note.deletedAt, null),
+    contentModifiedAt: value("contentModifiedAt", note.contentModifiedAt, null),
+    priority: value("priorityRawValue", note.priority, ""),
+    simulatorNames: Object.prototype.hasOwnProperty.call(patch, "simulatorNamesStorage")
+      ? stringValue(value("simulatorNamesStorage", note.simulatorNames.join("\n"), "")).split("\n").map((name) => name.trim()).filter(Boolean)
+      : note.simulatorNames,
+    completedContexts: Object.prototype.hasOwnProperty.call(patch, "completedContextsStorage")
+      ? stringValue(value("completedContextsStorage", note.completedContexts.join("\n"), "")).split("\n").map((name) => name.trim()).filter(Boolean)
+      : note.completedContexts,
+    completions: Object.prototype.hasOwnProperty.call(patch, "completionHistoryData")
+      ? decodeRecordArray(isDeleteFieldSentinel(patch.completionHistoryData) ? "" : patch.completionHistoryData)
+      : note.completions,
+    completionCancellations: Object.prototype.hasOwnProperty.call(patch, "completionCancellationHistoryData")
+      ? decodeRecordArray(isDeleteFieldSentinel(patch.completionCancellationHistoryData) ? "" : patch.completionCancellationHistoryData)
+      : note.completionCancellations,
+    revisions: Object.prototype.hasOwnProperty.call(patch, "revisionHistoryData")
+      ? decodeRecordArray(isDeleteFieldSentinel(patch.revisionHistoryData) ? "" : patch.revisionHistoryData)
+      : note.revisions
+  };
+}
+
+function isDeleteFieldSentinel(value) {
+  return Boolean(value)
+    && typeof value === "object"
+    && (
+      value._methodName === "deleteField"
+      || value.constructor?.name === "DeleteFieldValueImpl"
+      || String(value).includes("deleteField")
+    );
+}
+
+function lastRealtimeRelevantDate(note) {
+  const dates = [
+    note.displayDate,
+    latestContentModificationDate(note),
+    note.contentModifiedAt,
+    note.deletedAt,
+    ...activeCompletions(note).flatMap((completion) => [completion.date, completion.recordedDate]),
+    ...note.completionCancellations.map((cancellation) => cancellation.date)
+  ].filter((date) => date instanceof Date && !Number.isNaN(date.getTime()));
+
+  return dates.sort((a, b) => b - a)[0] || note.updatedAt || note.createdAt || new Date();
+}
+
 function timelineCompletions(note) {
   return note.completions.filter((completion) => {
     return !note.completionCancellations.some((cancellation) => {
@@ -5118,7 +5618,18 @@ function updatedAcknowledgementState(note, context, shouldBeAcknowledged, now) {
 
 async function updateNote(noteID, patch) {
   setStatus("Enregistrement...");
-  await updateDoc(doc(db, "handoverNotes", noteID), patch);
+  const existingNote = state.notes.find((note) => note.id === noteID);
+  const indexedPatch = existingNote
+    ? { ...patch, ...handoverIndexFields(noteWithPatchForIndex(existingNote, patch)) }
+    : patch;
+  await updateDoc(doc(db, "handoverNotes", noteID), indexedPatch);
+  if (existingNote) {
+    const updatedNote = noteWithPatchForIndex(existingNote, indexedPatch);
+    state.fetchedNotesByID.set(noteID, updatedNote);
+    state.notes = Array.from(new Map(state.notes.map((note) => [note.id, note])).set(noteID, updatedNote).values());
+    renderSimulators();
+    render();
+  }
   setStatus("Données synchronisées");
 }
 
@@ -5252,6 +5763,24 @@ function compareNotes(a, b) {
     || (b.createdAt?.getTime() || 0) - (a.createdAt?.getTime() || 0);
 }
 
+function compareNotesForContext(a, b, context) {
+  if (state.search) {
+    return compareSearchNotes(a, b);
+  }
+
+  if (isPeriodResultsMode()) {
+    return comparePeriodNotes(a, b);
+  }
+
+  const priorityRankA = displayPriorityRank(a, context);
+  const priorityRankB = displayPriorityRank(b, context);
+  if (priorityRankA !== priorityRankB) {
+    return priorityRankA - priorityRankB;
+  }
+
+  return compareNotes(a, b);
+}
+
 function comparePeriodNotes(a, b) {
   const activityDateA = periodSortingActivityDate(a)?.getTime() || 0;
   const activityDateB = periodSortingActivityDate(b)?.getTime() || 0;
@@ -5342,6 +5871,7 @@ function isDailyTagged(noteID) {
 function matchesTaggedFilter(note, context) {
   return isDailyTagged(note.id)
     || Boolean(note.priority)
+    || isDoneBadgeVisibleInContext(note, context)
     || isNew(note)
     || isModificationNewBadgeVisible(note, context);
 }
@@ -5660,20 +6190,20 @@ function modificationBadgeTitle(note, context, newBadge, carryOver) {
   return `+${Math.max(daysBetween(modificationDay, selectedDay), 1)}`;
 }
 
-function renderAgeBadge(noteID, carryOver, modificationTitle, isTagged) {
+function renderAgeBadge(noteID, carryOver, modificationTitle, isTagged, isUrgentOverdue = false) {
   return `
     <span class="age-badge" title="Appui long pour taguer la consigne">
-      <span class="age-badge-part age-created" data-tag-note-id="${escapeAttribute(noteID)}">J+${carryOver}</span>
+      <span class="age-badge-part age-created${isUrgentOverdue ? " age-created-urgent" : ""}" data-tag-note-id="${escapeAttribute(noteID)}">J+${carryOver}</span>
       ${modificationTitle ? `<span class="age-badge-part age-modified" data-tag-note-id="${escapeAttribute(noteID)}">${modificationTitle}</span>` : ""}
       ${isTagged ? `<span class="age-badge-part age-tagged" data-tag-note-id="${escapeAttribute(noteID)}">⚑</span>` : ""}
     </span>
   `;
 }
 
-function renderNewAgeBadge(noteID, isTagged) {
+function renderNewAgeBadge(noteID, isTagged, isDone = false) {
   return `
-    <span class="age-badge age-badge-new" title="Appui long pour taguer la consigne">
-      <span class="age-badge-part age-new" data-tag-note-id="${escapeAttribute(noteID)}">NEW</span>
+    <span class="age-badge age-badge-new${isDone ? " age-badge-done" : ""}" title="Appui long pour taguer la consigne">
+      <span class="age-badge-part age-new${isDone ? " age-new-done" : ""}" data-tag-note-id="${escapeAttribute(noteID)}">NEW</span>
       ${isTagged ? `<span class="age-badge-part age-tagged" data-tag-note-id="${escapeAttribute(noteID)}">⚑</span>` : ""}
     </span>
   `;
@@ -6376,7 +6906,12 @@ function priorityRank(priority) {
   if (priority === "urgent") return 0;
   if (priority === "soon") return 0;
   if (priority === "whenever") return 2;
-  return 3;
+  return 4;
+}
+
+function displayPriorityRank(note, context) {
+  if (!note.priority) return 4;
+  return isDoneBadgeVisibleInContext(note, context) ? 3 : priorityRank(note.priority);
 }
 
 function priorityLabel(priority) {
@@ -6389,14 +6924,14 @@ function priorityLabel(priority) {
 function priorityColor(priority) {
   if (priority === "urgent") return "#ff4b55";
   if (priority === "soon") return "#ff4b55";
-  if (priority === "whenever") return "#35c759";
+  if (priority === "whenever") return "#ff8a24";
   return "#94a3b8";
 }
 
 function priorityBackground(priority) {
-  if (priority === "urgent") return "rgba(255, 75, 85, 0.12)";
-  if (priority === "soon") return "rgba(255, 75, 85, 0.12)";
-  if (priority === "whenever") return "rgba(53, 199, 89, 0.13)";
+  if (priority === "urgent") return "rgba(255, 75, 85, 0.24)";
+  if (priority === "soon") return "rgba(255, 75, 85, 0.24)";
+  if (priority === "whenever") return "rgba(255, 138, 36, 0.10)";
   return "rgba(148, 163, 184, 0.18)";
 }
 
@@ -6686,7 +7221,16 @@ function mergeTextRanges(ranges) {
 }
 
 function setStatus(message) {
-  elements.syncStatus.textContent = message;
+  if (!elements.syncStatus) {
+    return;
+  }
+
+  elements.syncStatus.title = message ? `Firestore : ${message}` : "Échanges Firestore";
+  elements.syncStatus.classList.add("active");
+  window.clearTimeout(setStatus.activityTimer);
+  setStatus.activityTimer = window.setTimeout(() => {
+    elements.syncStatus.classList.remove("active");
+  }, 900);
 }
 
 function dateValue(value) {
