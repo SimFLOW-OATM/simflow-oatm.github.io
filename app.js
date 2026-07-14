@@ -33,7 +33,7 @@ const WEB_APP_VERSION = "1.84";
 const userGuideURL = "./assets/Guide%20utilisateur%20SimFLOW.pdf";
 const deletedLegacySimulatorNames = new Set(["Simu 1", "Simu 2", "Simu 3", "Simu 4"]);
 const sessionStorageKey = "simflow.web.currentUser";
-const archiveRealtimeRetentionDays = 15;
+const archiveRealtimeRetentionDays = 4;
 const activeRealtimeUntil = new Date("2100-01-01T00:00:00.000Z");
 const webDeviceStorageKey = "simflow.web.deviceIdentifier";
 const sessionDurationMs = 30 * 24 * 60 * 60 * 1000;
@@ -65,6 +65,9 @@ const state = {
   notes: [],
   fetchedNoteDayKeys: new Set(),
   fetchedNotesByID: new Map(),
+  fetchedSearchKeys: new Set(),
+  globalSearchRequestID: 0,
+  globalSearchTimer: null,
   handwritingNotes: [],
   dailyTags: [],
   loginEvents: [],
@@ -372,11 +375,16 @@ elements.showOnlyDeletedToggle.addEventListener("change", () => {
 });
 elements.searchInput.addEventListener("input", () => {
   state.search = elements.searchInput.value.trim();
+  scheduleGlobalSearchFetch();
   render();
 });
 elements.clearSearchButton.addEventListener("click", () => {
   state.search = "";
   elements.searchInput.value = "";
+  if (state.globalSearchTimer) {
+    window.clearTimeout(state.globalSearchTimer);
+    state.globalSearchTimer = null;
+  }
   render();
 });
 elements.simulatorShortcutGrid.addEventListener("click", (event) => {
@@ -1087,6 +1095,59 @@ async function fetchNotesForSelectedDateIfNeeded(date) {
   }
 }
 
+function scheduleGlobalSearchFetch() {
+  if (state.globalSearchTimer) {
+    window.clearTimeout(state.globalSearchTimer);
+  }
+  state.globalSearchTimer = window.setTimeout(() => {
+    state.globalSearchTimer = null;
+    fetchGlobalSearchNotesIfNeeded(state.search);
+  }, 350);
+}
+
+async function fetchGlobalSearchNotesIfNeeded(searchText) {
+  if (!state.currentUser || !state.authReady) {
+    return;
+  }
+
+  const keywords = searchQueryKeywords(searchText);
+  if (!keywords.length) {
+    return;
+  }
+
+  const searchKey = keywords.join("|");
+  if (state.fetchedSearchKeys.has(searchKey)) {
+    return;
+  }
+
+  state.fetchedSearchKeys.add(searchKey);
+  const requestID = ++state.globalSearchRequestID;
+
+  try {
+    const snapshot = await getDocs(query(
+      collection(db, "handoverNotes"),
+      where("searchKeywords", "array-contains-any", keywords)
+    ));
+    if (requestID !== state.globalSearchRequestID && state.search !== searchText) {
+      return;
+    }
+
+    const fetchedNotes = snapshot.docs.map((doc) => noteFromSnapshot(doc.id, doc.data()));
+    const notesByID = new Map(state.notes.map((note) => [note.id, note]));
+    fetchedNotes.forEach((note) => {
+      state.fetchedNotesByID.set(note.id, note);
+      notesByID.set(note.id, note);
+    });
+    state.notes = Array.from(notesByID.values());
+    setStatus("Recherche synchronisée");
+    renderSimulators();
+    render();
+  } catch (error) {
+    state.fetchedSearchKeys.delete(searchKey);
+    setStatus(error.message);
+  }
+}
+
 function restartAdminTabListeners() {
   if (!state.authReady || !isAdminSession()) {
     return;
@@ -1188,12 +1249,12 @@ function restartUserStatsListener(force = false) {
     state.unsubscribeUserStats = null;
   }
 
-  state.userStats = [];
+  state.loginEvents = [];
   state.unsubscribeUserStats = onSnapshot(
-    collection(db, "userStats"),
+    collection(db, "loginEvents"),
     (snapshot) => {
-      state.userStats = snapshot.docs
-        .map((document) => userStatsFromSnapshot(document.id, document.data()))
+      state.loginEvents = snapshot.docs
+        .map((document) => loginEventFromSnapshot(document.id, document.data()))
         .filter(Boolean);
       renderAdminSettings();
     },
@@ -1323,6 +1384,12 @@ function detachAuthenticatedDataSync() {
   state.notes = [];
   state.fetchedNoteDayKeys = new Set();
   state.fetchedNotesByID = new Map();
+  state.fetchedSearchKeys = new Set();
+  state.globalSearchRequestID += 1;
+  if (state.globalSearchTimer) {
+    window.clearTimeout(state.globalSearchTimer);
+    state.globalSearchTimer = null;
+  }
   state.handwritingNotes = [];
   state.dailyTags = [];
   state.loginEvents = [];
@@ -3250,9 +3317,9 @@ function renderAdminUsers() {
 function renderAdminUserCard(user) {
   const codeValue = shouldMaskAdminAccessCode(user) ? "••••••" : user.accessCode;
   const codeInputType = shouldMaskAdminAccessCode(user) ? "password" : "text";
-  const stats = userStatsForUser(user);
-  const version = stringValue(stats?.latestIOSAppVersion);
-  const totalConnections = (stats?.totalWebConnections || 0) + (stats?.totalIOSConnections || 0);
+  const statsSummary = userStatsSummaryForUser(user);
+  const version = statsSummary.latestIOSAppVersion;
+  const totalConnections = statsSummary.totalConnections;
   const requiredVersion = stringValue(state.appSettings?.requiredIOSAppVersion).trim();
   const versionOK = Boolean(version) && (!requiredVersion || version === requiredVersion);
   const versionTitle = requiredVersion
@@ -3675,23 +3742,44 @@ function latestIOSAppVersionForEvents(events) {
 }
 
 function userStatsForUser(user) {
+  const matchingEvents = matchingLoginEventsForUser(user);
+  return [...matchingEvents]
+    .sort((first, second) => {
+      return (second.lastSeenAt?.getTime() || second.createdAt?.getTime() || 0)
+        - (first.lastSeenAt?.getTime() || first.createdAt?.getTime() || 0);
+    })[0];
+}
+
+function userStatsSummaryForUser(user) {
+  const matchingEvents = matchingLoginEventsForUser(user);
+  const latestIOSAppVersion = [...matchingEvents]
+    .filter((event) => event.source === "ipad" && stringValue(event.iosAppVersion).trim())
+    .sort((first, second) => {
+      return (second.lastSeenAt?.getTime() || second.createdAt?.getTime() || 0)
+        - (first.lastSeenAt?.getTime() || first.createdAt?.getTime() || 0);
+    })[0]?.iosAppVersion;
+
+  return {
+    latestIOSAppVersion: stringValue(latestIOSAppVersion).trim(),
+    totalConnections: matchingEvents.reduce((total, event) => {
+      return total + (event.appearanceCount || 0);
+    }, 0)
+  };
+}
+
+function matchingLoginEventsForUser(user) {
   const userKeys = new Set([
     normalizeKey(user.id),
     normalizeKey(user.documentID),
     normalizeKey(user.iCloudIdentifier)
   ].filter(Boolean));
 
-  return [...state.userStats]
-    .filter((stats) => {
-      return [
-        normalizeKey(stats.id),
-        normalizeKey(stats.userIdentifier)
-      ].some((key) => key && userKeys.has(key));
-    })
-    .sort((first, second) => {
-      return (second.lastSeenAt?.getTime() || second.updatedAt?.getTime() || 0)
-        - (first.lastSeenAt?.getTime() || first.updatedAt?.getTime() || 0);
-    })[0];
+  return state.loginEvents.filter((event) => {
+    return [
+      normalizeKey(event.iCloudIdentifier),
+      normalizeKey(event.userIdentifier)
+    ].some((key) => key && userKeys.has(key));
+  });
 }
 
 function latestIOSAppVersionForRows(rows) {
@@ -4626,7 +4714,8 @@ async function detachContextDeletionIfNeeded(note, now) {
     completionCancellationHistoryData: detachedCompletionCancellations.length ? encodeRecordArray(detachedCompletionCancellations) : "",
     acknowledgementHistoryData: detachedAcknowledgements.length ? encodeRecordArray(detachedAcknowledgements) : "",
     revisionHistoryData: note.revisions.length ? encodeRecordArray(note.revisions) : "",
-    reportHistoryData: note.reports.length ? encodeRecordArray(note.reports) : ""
+    reportHistoryData: note.reports.length ? encodeRecordArray(note.reports) : "",
+    searchKeywords: searchKeywordsForNote(note)
   };
   Object.assign(detachedPayload, handoverIndexFields({
     ...detachedPayload,
@@ -4722,7 +4811,8 @@ async function saveNewNote(options = {}) {
     completedContextsStorage: "",
     acknowledgementHistoryData: "",
     completionHistoryData: "",
-    revisionHistoryData: ""
+    revisionHistoryData: "",
+    searchKeywords: searchKeywordsForNote({ title, text })
   };
   Object.assign(payload, handoverIndexFields({
     ...payload,
@@ -5117,7 +5207,8 @@ async function detachContextModification(note, context, draft) {
     completionHistoryData: detachedCompletions.length ? encodeRecordArray(detachedCompletions) : "",
     completionCancellationHistoryData: detachedCompletionCancellations.length ? encodeRecordArray(detachedCompletionCancellations) : "",
     acknowledgementHistoryData: detachedAcknowledgements.length ? encodeRecordArray(detachedAcknowledgements) : "",
-    revisionHistoryData: draft.revisions.length ? encodeRecordArray(draft.revisions) : ""
+    revisionHistoryData: draft.revisions.length ? encodeRecordArray(draft.revisions) : "",
+    searchKeywords: searchKeywordsForNote({ title: draft.title, text: draft.text })
   };
   Object.assign(detachedPayload, handoverIndexFields({
     ...detachedPayload,
@@ -5559,6 +5650,38 @@ function handoverIndexFields(note) {
   };
 }
 
+function searchKeywordsForNote(note) {
+  const normalizedText = normalizeSearchText(`${note.title || ""} ${note.text || ""}`);
+  const tokens = normalizedText
+    .split(/[^\p{L}\p{N}]+/u)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2);
+  const keywords = new Set();
+
+  for (const token of tokens) {
+    keywords.add(token);
+    const prefixLimit = Math.min(token.length, 24);
+    for (let length = 2; length <= prefixLimit; length += 1) {
+      keywords.add(token.slice(0, length));
+    }
+    if (keywords.size >= 500) {
+      break;
+    }
+  }
+
+  return Array.from(keywords).slice(0, 500);
+}
+
+function searchQueryKeywords(searchText) {
+  return uniqueStrings(stringValue(searchText)
+    .split(/\s+/)
+    .map((term) => term.trim())
+    .filter(Boolean)
+    .map((term) => normalizeSearchText(term))
+    .filter((term) => term.length >= 2))
+    .slice(0, 10);
+}
+
 function noteWithPatchForIndex(note, patch) {
   const value = (key, fallback, deletedFallback = null) => {
     if (!Object.prototype.hasOwnProperty.call(patch, key)) {
@@ -5730,6 +5853,9 @@ async function updateNote(noteID, patch) {
   const indexedPatch = existingNote
     ? { ...patch, ...handoverIndexFields(noteWithPatchForIndex(existingNote, patch)) }
     : patch;
+  if (existingNote && (Object.prototype.hasOwnProperty.call(patch, "title") || Object.prototype.hasOwnProperty.call(patch, "text"))) {
+    indexedPatch.searchKeywords = searchKeywordsForNote(noteWithPatchForIndex(existingNote, patch));
+  }
   await updateDoc(doc(db, "handoverNotes", noteID), indexedPatch);
   if (existingNote) {
     const updatedNote = noteWithPatchForIndex(existingNote, indexedPatch);
