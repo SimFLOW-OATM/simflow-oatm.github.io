@@ -29,7 +29,7 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
-const WEB_APP_VERSION = "1.84";
+const WEB_APP_VERSION = "1.85";
 const userGuideURL = "./assets/Guide%20utilisateur%20SimFLOW.pdf";
 const deletedLegacySimulatorNames = new Set(["Simu 1", "Simu 2", "Simu 3", "Simu 4"]);
 const sessionStorageKey = "simflow.web.currentUser";
@@ -39,6 +39,7 @@ const webDeviceStorageKey = "simflow.web.deviceIdentifier";
 const sessionDurationMs = 30 * 24 * 60 * 60 * 1000;
 const activeLoginSessionWindowMs = 90 * 1000;
 const loginPresenceRefreshMs = 2 * 1000;
+const firestoreReadStatsFlushMs = 5 * 1000;
 
 const state = {
   authReady: false,
@@ -72,6 +73,7 @@ const state = {
   dailyTags: [],
   loginEvents: [],
   userStats: [],
+  firestoreReadStats: [],
   activityEvents: [],
   adminMaintenanceAudit: null,
   adminMaintenanceStatus: "",
@@ -96,6 +98,8 @@ const state = {
   unsubscribeLoginEvents: null,
   loginEventsMode: "",
   unsubscribeUserStats: null,
+  unsubscribeFirestoreReadStats: null,
+  firestoreReadStatsMode: "",
   unsubscribeActivityEvents: null,
   unsubscribeAdminMessagesAll: null,
   unsubscribeAdminMessagesTargeted: null,
@@ -103,11 +107,14 @@ const state = {
   unsubscribeUsers: null,
   unsubscribeSimulators: null,
   unsubscribeAppSettings: null,
+  adminUserSearch: "",
   adminActivitySearch: "",
   adminMessageText: "",
   adminMessageSendsToAll: false,
   adminMessageRecipientIDs: new Set(),
-  lastLoginEventAt: 0
+  lastLoginEventAt: 0,
+  firestoreReadStatsBuffer: new Map(),
+  firestoreReadStatsFlushTimer: null
 };
 
 const app = initializeApp(firebaseConfig);
@@ -272,9 +279,14 @@ elements.accessCode.addEventListener("keydown", (event) => {
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     recordLoginAppearance();
+  } else {
+    flushFirestoreReadStats();
   }
 });
 window.addEventListener("focus", recordLoginAppearance);
+window.addEventListener("beforeunload", () => {
+  flushFirestoreReadStats();
+});
 window.setInterval(refreshAdminConnectionsPresence, loginPresenceRefreshMs);
 elements.userSummaryButton.addEventListener("click", () => {
   elements.userMenu.classList.toggle("hidden");
@@ -624,6 +636,9 @@ elements.adminOverlay.addEventListener("change", (event) => {
 elements.adminOverlay.addEventListener("input", (event) => {
   if (event.target.matches("[data-admin-message-text]")) {
     state.adminMessageText = event.target.value;
+  } else if (event.target.matches("[data-admin-user-search]")) {
+    state.adminUserSearch = event.target.value;
+    applyAdminUserSearchFilter();
   }
 });
 elements.adminOverlay.addEventListener("focusin", (event) => {
@@ -823,6 +838,7 @@ function clearSavedSession() {
 }
 
 function logout() {
+  flushFirestoreReadStats();
   state.currentUser = null;
   state.lastLoginEventAt = 0;
   elements.accessCode.value = "";
@@ -855,7 +871,7 @@ function webDeviceName() {
 }
 
 async function recordLoginAppearance() {
-  if (!state.authReady || !state.currentUser || state.currentUser.role === "admin" || document.visibilityState === "hidden") {
+  if (!state.authReady || !state.currentUser || document.visibilityState === "hidden") {
     return;
   }
 
@@ -906,6 +922,93 @@ async function recordLoginAppearance() {
   });
 }
 
+function trackFirestoreRead(collectionName, count, source = "web") {
+  const readCount = Number(count) || 0;
+  const userIdentifier = stringValue(state.currentUser?.id).trim();
+  if (!state.authReady || !userIdentifier || state.currentUser?.role === "admin" || readCount <= 0) {
+    return;
+  }
+
+  const collectionKey = firestoreFieldKey(collectionName);
+  const sourceKey = firestoreFieldKey(source || "web");
+  const key = `${sourceKey}|${collectionKey}`;
+  state.firestoreReadStatsBuffer.set(key, (state.firestoreReadStatsBuffer.get(key) || 0) + readCount);
+
+  if (!state.firestoreReadStatsFlushTimer) {
+    state.firestoreReadStatsFlushTimer = window.setTimeout(() => {
+      flushFirestoreReadStats();
+    }, firestoreReadStatsFlushMs);
+  }
+}
+
+function trackFirestoreSnapshotRead(collectionName, snapshot, source = "web") {
+  if (!snapshot || snapshot.metadata?.fromCache) {
+    return;
+  }
+
+  trackFirestoreRead(collectionName, snapshot.docChanges().length, source);
+}
+
+function trackFirestoreDocumentRead(collectionName, snapshot, source = "web") {
+  if (!snapshot || snapshot.metadata?.fromCache || !snapshot.exists()) {
+    return;
+  }
+
+  trackFirestoreRead(collectionName, 1, source);
+}
+
+function firestoreFieldKey(value) {
+  return stringValue(value, "unknown").replace(/[.[\]*`/]/g, "_") || "unknown";
+}
+
+async function flushFirestoreReadStats() {
+  if (state.firestoreReadStatsFlushTimer) {
+    window.clearTimeout(state.firestoreReadStatsFlushTimer);
+    state.firestoreReadStatsFlushTimer = null;
+  }
+
+  const userIdentifier = stringValue(state.currentUser?.id).trim();
+  if (!state.authReady || !userIdentifier || state.currentUser?.role === "admin" || !state.firestoreReadStatsBuffer.size) {
+    state.firestoreReadStatsBuffer.clear();
+    return;
+  }
+
+  const pendingEntries = [...state.firestoreReadStatsBuffer.entries()];
+  state.firestoreReadStatsBuffer.clear();
+  const now = new Date();
+  const dayIdentifier = isoDate(now);
+  const entriesBySource = groupBy(pendingEntries, ([key]) => key.split("|")[0] || "web");
+
+  try {
+    await Promise.all([...entriesBySource.entries()].map(([source, entries]) => {
+      const id = firestoreDocumentID([dayIdentifier, userIdentifier, source].join("_"));
+      const payload = {
+        id,
+        userIdentifier,
+        userDisplayName: currentDisplayName(),
+        source,
+        dayIdentifier,
+        updatedAt: now
+      };
+
+      let totalReads = 0;
+      entries.forEach(([key, count]) => {
+        const collectionName = key.split("|")[1] || "unknown";
+        totalReads += count;
+        payload[`readsByCollection.${collectionName}`] = increment(count);
+      });
+      payload.totalReads = increment(totalReads);
+
+      return setDoc(doc(db, "firestoreReadStats", id), payload, { merge: true });
+    }));
+  } catch (error) {
+    pendingEntries.forEach(([key, count]) => {
+      state.firestoreReadStatsBuffer.set(key, (state.firestoreReadStatsBuffer.get(key) || 0) + count);
+    });
+    setStatus(error.message);
+  }
+}
+
 function startAuthenticatedDataSync() {
   if (!state.authReady || !state.currentUser) {
     return;
@@ -919,13 +1022,11 @@ function startAuthenticatedDataSync() {
 function attachFirebaseListeners() {
   if (!state.unsubscribeNotes) {
     const activeNotes = new Map();
-    const displayWindowNotes = new Map();
     const recentArchivedNotes = new Map();
     const syncNotes = () => {
       state.notes = Array.from(new Map([
         ...state.fetchedNotesByID,
         ...recentArchivedNotes,
-        ...displayWindowNotes,
         ...activeNotes
       ]).values());
       setStatus("Données synchronisées");
@@ -933,6 +1034,7 @@ function attachFirebaseListeners() {
       render();
     };
     const applyNotesSnapshot = (target, snapshot) => {
+      trackFirestoreSnapshotRead("handoverNotes", snapshot);
       snapshot.docChanges().forEach((change) => {
         if (change.type === "removed") {
           target.delete(change.doc.id);
@@ -942,19 +1044,14 @@ function attachFirebaseListeners() {
       });
       syncNotes();
     };
-    const unsubscribeActive = onSnapshot(
-      query(collection(db, "handoverNotes"), where("syncState", "==", "active")),
-      (snapshot) => applyNotesSnapshot(activeNotes, snapshot),
-      (error) => setStatus(error.message)
-    );
     const displayWindow = realtimeDisplayWindow();
-    const unsubscribeDisplayWindow = onSnapshot(
+    const unsubscribeActive = onSnapshot(
       query(
         collection(db, "handoverNotes"),
-        where("displayDate", ">=", displayWindow.start),
+        where("syncState", "==", "active"),
         where("displayDate", "<", displayWindow.end)
       ),
-      (snapshot) => applyNotesSnapshot(displayWindowNotes, snapshot),
+      (snapshot) => applyNotesSnapshot(activeNotes, snapshot),
       (error) => setStatus(error.message)
     );
     const unsubscribeRecentArchived = onSnapshot(
@@ -968,13 +1065,13 @@ function attachFirebaseListeners() {
     );
     state.unsubscribeNotes = () => {
       unsubscribeActive();
-      unsubscribeDisplayWindow();
       unsubscribeRecentArchived();
     };
   }
 
   if (!state.unsubscribeNoteDeletions) {
     state.unsubscribeNoteDeletions = onSnapshot(collection(db, "handoverNoteDeletions"), (snapshot) => {
+      trackFirestoreSnapshotRead("handoverNoteDeletions", snapshot);
       const deletedIDs = snapshot.docChanges()
         .filter((change) => change.type === "added" || change.type === "modified")
         .map((change) => stringValue(change.doc.data().noteID, change.doc.id))
@@ -995,6 +1092,7 @@ function attachFirebaseListeners() {
 
   if (!state.unsubscribeHandwritingNotes) {
     state.unsubscribeHandwritingNotes = onSnapshot(collection(db, "handwritingNotes"), (snapshot) => {
+      trackFirestoreSnapshotRead("handwritingNotes", snapshot);
       state.handwritingNotes = snapshot.docs
         .map((doc) => handwritingNoteFromSnapshot(doc.id, doc.data()))
         .sort((a, b) => (b.updatedAt?.getTime() || 0) - (a.updatedAt?.getTime() || 0));
@@ -1005,6 +1103,7 @@ function attachFirebaseListeners() {
 
   if (!state.unsubscribeAppSettings) {
     state.unsubscribeAppSettings = onSnapshot(doc(db, "appSettings", "global"), (snapshot) => {
+      trackFirestoreDocumentRead("appSettings", snapshot);
       const data = snapshot.data() || {};
       state.appSettings = {
         requiredIOSAppVersion: stringValue(data.requiredIOSAppVersion)
@@ -1015,6 +1114,7 @@ function attachFirebaseListeners() {
 
   if (isAdminSession() && !state.unsubscribeUsers) {
     state.unsubscribeUsers = onSnapshot(collection(db, "users"), (snapshot) => {
+      trackFirestoreSnapshotRead("users", snapshot);
       state.users = deduplicatedUsers(snapshot.docs
         .map((document) => userFromSnapshot(document.id, document.data())))
         .sort(compareUsersByLastName);
@@ -1028,6 +1128,7 @@ function attachFirebaseListeners() {
 
   if (!state.unsubscribeSimulators) {
     state.unsubscribeSimulators = onSnapshot(collection(db, "simulators"), (snapshot) => {
+      trackFirestoreSnapshotRead("simulators", snapshot);
       state.allSimulators = deduplicatedSimulators(snapshot.docs
         .map((doc) => simulatorFromSnapshot(doc.id, doc.data())))
         .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, "fr"));
@@ -1079,6 +1180,7 @@ async function fetchNotesForSelectedDateIfNeeded(date) {
       where("displayDate", ">=", start),
       where("displayDate", "<", end)
     ));
+    trackFirestoreRead("handoverNotes", snapshot.docs.length);
     const fetchedNotes = snapshot.docs.map((doc) => noteFromSnapshot(doc.id, doc.data()));
     const notesByID = new Map(state.notes.map((note) => [note.id, note]));
     fetchedNotes.forEach((note) => {
@@ -1128,6 +1230,7 @@ async function fetchGlobalSearchNotesIfNeeded(searchText) {
       collection(db, "handoverNotes"),
       where("searchKeywords", "array-contains-any", keywords)
     ));
+    trackFirestoreRead("handoverNotes", snapshot.docs.length);
     if (requestID !== state.globalSearchRequestID && state.search !== searchText) {
       return;
     }
@@ -1164,6 +1267,7 @@ function startActiveAdminTabListener() {
 
   if (state.activeAdminTab === "connections") {
     restartLoginEventsListener();
+    restartFirestoreReadStatsListener();
   }
 
   if (state.activeAdminTab === "activity") {
@@ -1177,6 +1281,13 @@ function stopInactiveAdminTabListeners() {
     state.unsubscribeLoginEvents = null;
     state.loginEventsMode = "";
     state.loginEvents = [];
+  }
+
+  if (state.activeAdminTab !== "connections" && state.unsubscribeFirestoreReadStats) {
+    state.unsubscribeFirestoreReadStats();
+    state.unsubscribeFirestoreReadStats = null;
+    state.firestoreReadStatsMode = "";
+    state.firestoreReadStats = [];
   }
 
   if (state.activeAdminTab !== "users" && state.unsubscribeUserStats) {
@@ -1222,8 +1333,43 @@ function restartLoginEventsListener(force = false) {
   state.unsubscribeLoginEvents = onSnapshot(
     loginQuery,
     (snapshot) => {
+      trackFirestoreSnapshotRead("loginEvents", snapshot);
       state.loginEvents = snapshot.docs
         .map((document) => loginEventFromSnapshot(document.id, document.data()))
+        .filter(Boolean);
+      renderAdminSettings();
+    },
+    (error) => setStatus(error.message)
+  );
+}
+
+function restartFirestoreReadStatsListener(force = false) {
+  if (!state.authReady || !isAdminSession()) {
+    return;
+  }
+
+  if (state.activeAdminTab !== "connections") {
+    return;
+  }
+
+  const dayIdentifier = isoDate(state.adminLoginDate);
+  const mode = `readStats:${dayIdentifier}`;
+  if (state.unsubscribeFirestoreReadStats && state.firestoreReadStatsMode === mode && !force) {
+    return;
+  }
+
+  if (state.unsubscribeFirestoreReadStats) {
+    state.unsubscribeFirestoreReadStats();
+    state.unsubscribeFirestoreReadStats = null;
+  }
+
+  state.firestoreReadStatsMode = mode;
+  state.firestoreReadStats = [];
+  state.unsubscribeFirestoreReadStats = onSnapshot(
+    query(collection(db, "firestoreReadStats"), where("dayIdentifier", "==", dayIdentifier)),
+    (snapshot) => {
+      state.firestoreReadStats = snapshot.docs
+        .map((document) => firestoreReadStatFromSnapshot(document.id, document.data()))
         .filter(Boolean);
       renderAdminSettings();
     },
@@ -1253,6 +1399,7 @@ function restartUserStatsListener(force = false) {
   state.unsubscribeUserStats = onSnapshot(
     collection(db, "loginEvents"),
     (snapshot) => {
+      trackFirestoreSnapshotRead("loginEvents", snapshot);
       state.loginEvents = snapshot.docs
         .map((document) => loginEventFromSnapshot(document.id, document.data()))
         .filter(Boolean);
@@ -1292,6 +1439,7 @@ function restartActivityEventsListener(force = false) {
       limit(500)
     ),
     (snapshot) => {
+      trackFirestoreSnapshotRead("activityEvents", snapshot);
       state.activityEvents = snapshot.docs
         .map((document) => activityEventFromSnapshot(document.id, document.data()))
         .filter(Boolean);
@@ -1327,6 +1475,7 @@ function restartAdminMessageListeners() {
   state.unsubscribeAdminMessagesAll = onSnapshot(
     query(collection(db, "adminMessages"), where("sendsToAll", "==", true)),
     (snapshot) => {
+      trackFirestoreSnapshotRead("adminMessages", snapshot);
       state.adminMessagesAll = snapshot.docs
         .map((document) => adminMessageFromSnapshot(document.id, document.data()))
         .filter(Boolean);
@@ -1338,6 +1487,7 @@ function restartAdminMessageListeners() {
   state.unsubscribeAdminMessagesTargeted = onSnapshot(
     query(collection(db, "adminMessages"), where("recipientUserIDs", "array-contains", userIdentifier)),
     (snapshot) => {
+      trackFirestoreSnapshotRead("adminMessages", snapshot);
       state.adminMessagesTargeted = snapshot.docs
         .map((document) => adminMessageFromSnapshot(document.id, document.data()))
         .filter(Boolean);
@@ -1349,6 +1499,7 @@ function restartAdminMessageListeners() {
   state.unsubscribeAdminMessageDismissals = onSnapshot(
     query(collection(db, "adminMessageDismissals"), where("userIdentifier", "==", userIdentifier)),
     (snapshot) => {
+      trackFirestoreSnapshotRead("adminMessageDismissals", snapshot);
       state.adminMessageDismissals = new Set(snapshot.docs
         .map((document) => stringValue(document.data().messageID))
         .filter(Boolean));
@@ -1365,6 +1516,7 @@ function detachAuthenticatedDataSync() {
     "unsubscribeHandwritingNotes",
     "unsubscribeDailyTags",
     "unsubscribeLoginEvents",
+    "unsubscribeFirestoreReadStats",
     "unsubscribeActivityEvents",
     "unsubscribeAdminMessagesAll",
     "unsubscribeAdminMessagesTargeted",
@@ -1394,6 +1546,8 @@ function detachAuthenticatedDataSync() {
   state.dailyTags = [];
   state.loginEvents = [];
   state.userStats = [];
+  state.firestoreReadStats = [];
+  state.firestoreReadStatsMode = "";
   state.activityEvents = [];
   state.adminMessagesAll = [];
   state.adminMessagesTargeted = [];
@@ -1411,6 +1565,11 @@ function detachAuthenticatedDataSync() {
   state.selectedDetail = null;
   state.selectedCreate = null;
   state.pendingHandwritingClear = null;
+  state.firestoreReadStatsBuffer.clear();
+  if (state.firestoreReadStatsFlushTimer) {
+    window.clearTimeout(state.firestoreReadStatsFlushTimer);
+    state.firestoreReadStatsFlushTimer = null;
+  }
   state.lastLoginEventAt = 0;
 
   elements.noteGroups.innerHTML = "";
@@ -1437,6 +1596,7 @@ function restartDailyTagsListener() {
 
   const tagsQuery = query(collection(db, "dailyTags"), where("userIdentifier", "==", state.currentUser.id));
   state.unsubscribeDailyTags = onSnapshot(tagsQuery, (snapshot) => {
+    trackFirestoreSnapshotRead("dailyTags", snapshot);
     state.dailyTags = snapshot.docs
       .map((document) => dailyTagFromSnapshot(document.id, document.data()))
       .filter(Boolean);
@@ -2023,6 +2183,7 @@ function noteFromSnapshot(id, data) {
     priority: stringValue(data.priorityRawValue),
     handwritingData: stringValue(data.handwritingData),
     handwritingPreviewImageData: stringValue(data.handwritingPreviewImageData),
+    handwritingClearedAt: dateValue(data.handwritingClearedAt),
     richTextData: stringValue(data.richTextData),
     richTextHTML: sanitizeRichTextHTML(stringValue(data.richTextHTML)),
     handwritingAuthorIdentifier: stringValue(data.handwritingAuthorIdentifier),
@@ -2205,11 +2366,15 @@ function renderCreate(context) {
     displayDate: state.selectedDate
   };
 
-  elements.detailTitle.textContent = context;
+  elements.detailTitle.textContent = "";
   elements.detailContext.textContent = "Nouvelle consigne";
   elements.detailBody.innerHTML = `
+    <section class="detail-section simulator-names-section detail-top-pills-section">
+      ${renderSimulatorNamePills(draftNote)}
+    </section>
+
     <section class="detail-section priority-section">
-      <h3>Priorite</h3>
+      ${renderSectionTitle("priority", "Priorité")}
       <div class="priority-picker" role="radiogroup" aria-label="Priorité">
         ${renderPriorityOption("", "Info", true, canWrite)}
         ${renderPriorityOption("urgent", "Urgent", false, canWrite)}
@@ -2222,22 +2387,29 @@ function renderCreate(context) {
       </div>
     </section>
 
-    <input id="detailEditDate" type="hidden" value="${isoDate(state.selectedDate)}">
+    <section class="detail-section date-section">
+      ${renderSectionTitle("calendar", "Date de la consigne")}
+      ${renderDateLine("detailEditDate", state.selectedDate, false)}
+    </section>
 
     <section class="detail-section consigne-section">
-      <div class="detail-section-title-row">
-        <h3>Consigne</h3>
-        ${renderFormatToolbar()}
-      </div>
+      ${renderSectionTitle("text", "Consigne")}
       <div class="consigne-editor create-editor">
+        <div class="detail-subsection">
+          <h4>Titre</h4>
+        </div>
         <input id="detailEditTitle" class="title-input" placeholder="Titre" ${canWrite ? "" : "disabled"}>
+        <div class="detail-subsection text-editor-subsection">
+          <h4>Consigne</h4>
+          ${renderFormatToolbar()}
+        </div>
         ${renderRichTextEditor("", "", canWrite)}
       </div>
     </section>
 
     <section class="detail-section simulator-section">
-      <h3>Simulateur(s) concerné(s)</h3>
-      <div class="simulator-toggle-list">
+      ${renderSectionTitle("sliders", "Simulateur(s) concerné(s)", "(Sélection par appui long)")}
+      <div class="simulator-pill-grid">
         ${renderSimulatorToggles(draftNote, { editable: canWrite })}
       </div>
     </section>
@@ -2263,40 +2435,47 @@ function renderDetail(note, context) {
   const canPermanentlyDelete = state.currentUser?.role === "admin" && Boolean(note.deletedAt);
   const handwriting = visibleHandwritingFor(note);
 
-  elements.detailTitle.textContent = context;
+  elements.detailTitle.textContent = "";
   elements.detailContext.textContent = context;
   elements.detailBody.innerHTML = `
-    <div class="detail-action-row">
-      <button
-        class="secondary action-done${done ? " active-done" : ""}"
-        data-detail-action="toggle-done"
-        data-initial-state="${done ? "true" : "false"}"
-        data-draft-state="${done ? "true" : "false"}"
-        ${canToggleDone ? "" : "disabled"}
-      ><span class="action-icon">✓</span>${done ? "Annuler Soldé" : "SOLDER"}</button>
-      <button
-        class="secondary action-ack${acknowledged ? " active-ack" : ""}"
-        data-detail-action="toggle-ack"
-        data-initial-state="${acknowledged ? "true" : "false"}"
-        data-draft-state="${acknowledged ? "true" : "false"}"
-        data-can-toggle="${canToggleAcknowledgement ? "true" : "false"}"
-        ${canToggleAcknowledgement ? "" : "disabled"}
-      ><span class="action-icon">✧</span>${acknowledged ? "Annuler prise en compte" : "Pris en compte"}</button>
-      ${canDelete ? `
-        <button class="secondary danger action-delete" data-detail-action="delete-note">
-          <span class="action-icon">⌫</span>${note.deletedAt ? "Restaurer" : "Supprimer"}
-        </button>
-      ` : ""}
-      ${canPermanentlyDelete ? `
-        <button class="secondary danger action-permanent-delete" data-detail-action="permanent-delete-note">
-          <span class="action-icon">⌫</span>Supprimer définitivement
-        </button>
-      ` : ""}
-    </div>
+    <section class="detail-section simulator-names-section detail-top-pills-section">
+      ${renderSimulatorNamePills(note)}
+    </section>
+
+    <section class="detail-section action-section">
+      ${renderSectionTitle("actions", "Actions")}
+      <div class="detail-action-row">
+        <button
+          class="secondary action-done${done ? " active-done" : ""}"
+          data-detail-action="toggle-done"
+          data-initial-state="${done ? "true" : "false"}"
+          data-draft-state="${done ? "true" : "false"}"
+          ${canToggleDone ? "" : "disabled"}
+        >${renderIcon("check-circle", "action-icon")}${done ? "Annuler Soldé" : "SOLDER"}</button>
+        <button
+          class="secondary action-ack${acknowledged ? " active-ack" : ""}"
+          data-detail-action="toggle-ack"
+          data-initial-state="${acknowledged ? "true" : "false"}"
+          data-draft-state="${acknowledged ? "true" : "false"}"
+          data-can-toggle="${canToggleAcknowledgement ? "true" : "false"}"
+          ${canToggleAcknowledgement ? "" : "disabled"}
+        >${renderIcon("badge-check", "action-icon")}${acknowledged ? "Annuler prise en compte" : "Pris en compte"}</button>
+        ${canDelete ? `
+          <button class="secondary danger action-delete" data-detail-action="delete-note">
+            ${renderIcon(note.deletedAt ? "undo" : "trash", "action-icon")}${note.deletedAt ? "Restaurer" : "Supprimer"}
+          </button>
+        ` : ""}
+        ${canPermanentlyDelete ? `
+          <button class="secondary danger action-permanent-delete" data-detail-action="permanent-delete-note">
+            ${renderIcon("trash-x", "action-icon")}Supprimer définitivement
+          </button>
+        ` : ""}
+      </div>
+    </section>
     ${detailActionHint(note, done, canWrite, canToggleAcknowledgement)}
 
     <section class="detail-section priority-section">
-      <h3>Priorite</h3>
+      ${renderSectionTitle("priority", "Priorité")}
       <div class="priority-picker" role="radiogroup" aria-label="Priorité">
         ${renderPriorityOption("", "Info", !note.priority, canWrite)}
         ${renderPriorityOption("urgent", "Urgent", note.priority === "urgent", canWrite)}
@@ -2310,34 +2489,36 @@ function renderDetail(note, context) {
     </section>
 
     <section class="detail-section date-section">
-      <h3>Date</h3>
+      ${renderSectionTitle("calendar", "Date de la consigne")}
       ${renderDateLine("detailEditDate", note.displayDate, canEditDate)}
     </section>
 
     <section class="detail-section consigne-section">
-      <div class="detail-section-title-row">
-        <h3>Consigne</h3>
-        ${renderFormatToolbar()}
-      </div>
+      ${renderSectionTitle("text", "Consigne")}
       <div class="consigne-editor">
+        <div class="detail-subsection">
+          <h4>Titre</h4>
+        </div>
         <input id="detailEditTitle" class="title-input" value="${escapeAttribute(note.title)}" placeholder="Titre" ${canWrite ? "" : "disabled"}>
+        <div class="detail-subsection text-editor-subsection">
+          <h4>Consigne</h4>
+          ${renderFormatToolbar()}
+        </div>
         ${renderRichTextEditor(note.text, note.richTextHTML, canWrite)}
-        <div class="handwriting-divider"></div>
-        <h4>Note Manuscrite</h4>
         ${renderHandwritingSection(note, handwriting)}
       </div>
     </section>
 
     <section class="detail-section">
-      <h3>Suivi</h3>
+      ${renderSectionTitle("clock", "Suivi")}
       <div class="timeline">
         ${timeline.map((event, index) => renderTimelineEvent(event, index)).join("") || "<p class=\"detail-text muted\">Aucun suivi.</p>"}
       </div>
     </section>
 
     <section class="detail-section simulator-section">
-      <h3>Simulateur(s) concerné(s)</h3>
-      <div class="simulator-toggle-list">
+      ${renderSectionTitle("sliders", "Simulateur(s) concerné(s)", "(Sélection par appui long)")}
+      <div class="simulator-pill-grid">
         ${renderSimulatorToggles(note, { editable: canWrite })}
       </div>
     </section>
@@ -2358,13 +2539,13 @@ function toggleDraftDoneButton(button) {
   const nextState = button.dataset.draftState !== "true";
   button.dataset.draftState = nextState ? "true" : "false";
   button.classList.toggle("active-done", nextState);
-  button.innerHTML = `<span class="action-icon">✓</span>${nextState ? "Annuler Soldé" : "SOLDER"}`;
+  button.innerHTML = `${renderIcon("check-circle", "action-icon")}${nextState ? "Annuler Soldé" : "SOLDER"}`;
 
   const acknowledgementButton = elements.detailBody.querySelector('[data-detail-action="toggle-ack"]');
   if (nextState && acknowledgementButton) {
     acknowledgementButton.dataset.draftState = "false";
     acknowledgementButton.classList.remove("active-ack");
-    acknowledgementButton.innerHTML = '<span class="action-icon">✧</span>Pris en compte';
+    acknowledgementButton.innerHTML = `${renderIcon("badge-check", "action-icon")}Pris en compte`;
     acknowledgementButton.disabled = true;
   } else if (acknowledgementButton?.dataset.canToggle === "true") {
     acknowledgementButton.disabled = false;
@@ -2379,7 +2560,7 @@ function toggleDraftAcknowledgementButton(button) {
   const nextState = button.dataset.draftState !== "true";
   button.dataset.draftState = nextState ? "true" : "false";
   button.classList.toggle("active-ack", nextState);
-  button.innerHTML = `<span class="action-icon">✧</span>${nextState ? "Annuler prise en compte" : "Pris en compte"}`;
+  button.innerHTML = `${renderIcon("badge-check", "action-icon")}${nextState ? "Annuler prise en compte" : "Pris en compte"}`;
 }
 
 function bindPriorityPicker(canWrite) {
@@ -2396,23 +2577,60 @@ function bindPriorityPicker(canWrite) {
 }
 
 function bindSimulatorToggles() {
-  const toggles = [...elements.detailBody.querySelectorAll("[data-simulator-name]")];
-  const generalToggle = toggles.find((input) => decodeURIComponent(input.dataset.simulatorName) === generalName);
+  const pills = [...elements.detailBody.querySelectorAll("[data-simulator-pill]")];
+  let longPressTimer = null;
 
-  toggles.forEach((input) => {
-    input.addEventListener("change", () => {
-      const name = decodeURIComponent(input.dataset.simulatorName);
-      if (name === generalName && input.checked) {
-        toggles.forEach((candidate) => {
-          if (candidate !== input) {
-            candidate.checked = false;
-          }
-        });
-      } else if (input.checked && generalToggle) {
-        generalToggle.checked = false;
-      }
+  const clearLongPress = () => {
+    if (longPressTimer) {
+      window.clearTimeout(longPressTimer);
+      longPressTimer = null;
+    }
+    pills.forEach((pill) => pill.classList.remove("pressing"));
+  };
+
+  pills.forEach((pill) => {
+    pill.addEventListener("click", (event) => {
+      event.preventDefault();
     });
+
+    pill.addEventListener("pointerdown", (event) => {
+      if (pill.disabled) return;
+      event.preventDefault();
+      clearLongPress();
+      pill.classList.add("pressing");
+      longPressTimer = window.setTimeout(() => {
+        toggleSimulatorPill(pill, pills);
+        longPressTimer = null;
+        pill.classList.remove("pressing");
+      }, 520);
+    });
+
+    pill.addEventListener("pointerup", clearLongPress);
+    pill.addEventListener("pointerleave", clearLongPress);
+    pill.addEventListener("pointercancel", clearLongPress);
   });
+}
+
+function toggleSimulatorPill(pill, pills) {
+  const name = decodeURIComponent(pill.dataset.simulatorName || "");
+  const nextSelected = pill.dataset.selected !== "true";
+
+  if (name === generalName) {
+    pills.forEach((candidate) => setSimulatorPillSelected(candidate, candidate === pill ? true : false));
+    return;
+  }
+
+  setSimulatorPillSelected(pill, nextSelected);
+  const generalPill = pills.find((candidate) => decodeURIComponent(candidate.dataset.simulatorName || "") === generalName);
+  if (nextSelected && generalPill) {
+    setSimulatorPillSelected(generalPill, false);
+  }
+}
+
+function setSimulatorPillSelected(pill, isSelected) {
+  pill.dataset.selected = isSelected ? "true" : "false";
+  pill.classList.toggle("selected", isSelected);
+  pill.setAttribute("aria-pressed", isSelected ? "true" : "false");
 }
 
 function bindRichTextToolbar(canWrite) {
@@ -2535,6 +2753,78 @@ function renderStatusBadge(type, label) {
   `;
 }
 
+function renderSectionTitle(icon, title, suffix = "") {
+  return `
+    <h3 class="detail-section-heading">
+      ${renderIcon(icon, "section-icon")}
+      <span>${escapeHtml(title)}</span>
+      ${suffix ? `<em>${escapeHtml(suffix)}</em>` : ""}
+    </h3>
+  `;
+}
+
+function renderIcon(name, className = "inline-icon") {
+  const icons = {
+    priority: '<path d="M10.3 3.8 2.8 17a2 2 0 0 0 1.7 3h15a2 2 0 0 0 1.7-3L13.7 3.8a2 2 0 0 0-3.4 0Z"></path><path d="M12 9v4"></path><path d="M12 17h.01"></path>',
+    calendar: '<rect x="3" y="4" width="18" height="17" rx="3"></rect><path d="M8 2v4"></path><path d="M16 2v4"></path><path d="M3 9h18"></path><path d="M8 13h2"></path><path d="M14 13h2"></path><path d="M8 17h2"></path>',
+    text: '<path d="M4 7h16"></path><path d="M4 12h12"></path><path d="M4 17h9"></path>',
+    clock: '<circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path>',
+    sliders: '<path d="M4 6h8"></path><path d="M16 6h4"></path><circle cx="14" cy="6" r="2"></circle><path d="M4 12h3"></path><path d="M11 12h9"></path><circle cx="9" cy="12" r="2"></circle><path d="M4 18h11"></path><path d="M19 18h1"></path><circle cx="17" cy="18" r="2"></circle>',
+    actions: '<path d="M4 7h16"></path><path d="M4 12h16"></path><path d="M4 17h16"></path><circle cx="8" cy="7" r="2"></circle><circle cx="16" cy="12" r="2"></circle><circle cx="11" cy="17" r="2"></circle>',
+    "check-circle": '<circle cx="12" cy="12" r="9"></circle><path d="m8.5 12.5 2.2 2.2 4.8-5.1"></path>',
+    "badge-check": '<path d="M9 3.8 12 2l3 1.8 3.4.4.8 3.3L21 10.5 19.2 14l-.8 3.3-3.4.4-3 1.8-3-1.8-3.4-.4L4.8 14 3 10.5l1.8-3 .8-3.3L9 3.8Z"></path><path d="m8.7 11.8 2.1 2.1 4.6-5"></path>',
+    trash: '<path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M6 6l1 15h10l1-15"></path><path d="M10 11v6"></path><path d="M14 11v6"></path>',
+    "trash-x": '<path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M6 6l1 15h10l1-15"></path><path d="m10 11 4 4"></path><path d="m14 11-4 4"></path>',
+    undo: '<path d="M9 14 4 9l5-5"></path><path d="M4 9h9a7 7 0 1 1-6.1 10.4"></path>'
+  };
+  return `
+    <svg class="${escapeAttribute(className)}" viewBox="0 0 24 24" aria-hidden="true">
+      ${icons[name] || icons.text}
+    </svg>
+  `;
+}
+
+function simulatorNamesText(note) {
+  if (note.isGeneral) {
+    return generalName;
+  }
+
+  return note.simulatorNames?.length ? note.simulatorNames.join(", ") : "Aucun simulateur";
+}
+
+function simulatorNamesForPills(note) {
+  if (note.isGeneral) {
+    return [generalName];
+  }
+
+  return note.simulatorNames?.length ? note.simulatorNames : [];
+}
+
+function simulatorColorForName(name) {
+  if (normalizeKey(name) === normalizeKey(generalName)) {
+    return state.allSimulators.find((simulator) => normalizeKey(simulator.name) === normalizeKey(generalName))?.colorHex || "#111827";
+  }
+
+  return visibleSimulatorContexts().find((simulator) => normalizeKey(simulator.name) === normalizeKey(name))?.colorHex || "#6b7280";
+}
+
+function renderSimulatorNamePills(note) {
+  const names = simulatorNamesForPills(note);
+  if (!names.length) {
+    return `<p class="detail-main-value muted">${escapeHtml(simulatorNamesText(note))}</p>`;
+  }
+
+  return `
+    <div class="detail-simulator-pill-row">
+      ${names.map((name) => `
+        <span class="detail-simulator-pill" style="background:${escapeAttribute(simulatorColorForName(name))}">
+          ${escapeHtml(name)}
+        </span>
+      `).join("")}
+    </div>
+  `;
+}
+
 function renderFormatToolbar() {
   return `
     <div class="format-toolbar" aria-label="Mise en forme">
@@ -2611,7 +2901,7 @@ function renderDateLine(inputID, date, editable) {
 function renderSimulatorToggles(note, options = {}) {
   const editable = Boolean(options.editable);
   const simulatorRows = [
-    { name: generalName, label: "Consigne generale" },
+    { name: generalName, label: "General" },
     ...visibleSimulatorContexts()
       .map((simulator) => ({ name: simulator.name, label: simulator.name }))
   ];
@@ -2620,17 +2910,18 @@ function renderSimulatorToggles(note, options = {}) {
     const checked = simulator.name === generalName
       ? note.isGeneral
       : note.simulatorNames.includes(simulator.name);
+    const color = simulatorColorForName(simulator.name);
     return `
-      <label class="simulator-toggle-row">
-        <span>${escapeHtml(simulator.label)}</span>
-        <input
-          type="checkbox"
-          data-simulator-name="${escapeAttribute(encodeURIComponent(simulator.name))}"
-          ${checked ? "checked" : ""}
-          ${editable ? "" : "disabled"}
-        >
-        <span class="ios-switch" aria-hidden="true"></span>
-      </label>
+      <button
+        type="button"
+        class="simulator-select-pill${checked ? " selected" : ""}"
+        style="--simulator-color:${escapeAttribute(color)}"
+        data-simulator-pill
+        data-simulator-name="${escapeAttribute(encodeURIComponent(simulator.name))}"
+        data-selected="${checked ? "true" : "false"}"
+        aria-pressed="${checked ? "true" : "false"}"
+        ${editable ? "" : "disabled"}
+      >${escapeHtml(simulator.label)}</button>
     `;
   }).join("");
 }
@@ -2780,6 +3071,24 @@ function loginEventFromSnapshot(documentID, data) {
     createdAt,
     lastSeenAt: dateValue(data.lastSeenAt) || createdAt,
     appearanceCount: Math.max(1, Number(data.appearanceCount) || 1)
+  };
+}
+
+function firestoreReadStatFromSnapshot(documentID, data) {
+  const readsByCollection = {};
+  Object.entries(data.readsByCollection || {}).forEach(([collectionName, count]) => {
+    readsByCollection[collectionName] = numberValue(count);
+  });
+
+  return {
+    id: stringValue(data.id, documentID),
+    userIdentifier: stringValue(data.userIdentifier),
+    userDisplayName: stringValue(data.userDisplayName),
+    source: stringValue(data.source),
+    dayIdentifier: stringValue(data.dayIdentifier),
+    totalReads: numberValue(data.totalReads),
+    readsByCollection,
+    updatedAt: dateValue(data.updatedAt) || null
   };
 }
 
@@ -3270,6 +3579,7 @@ function renderAdminBackButton() {
 }
 
 function renderAdminUsers() {
+  const visibleUsers = adminFilteredUsers();
   return `
     ${renderAdminBackButton()}
     <div class="admin-section-heading">
@@ -3308,8 +3618,16 @@ function renderAdminUsers() {
       <h3>Droits des utilisateurs</h3>
       <p>Nom, rôle, équipe et réinitialisation des codes utilisateur.</p>
     </div>
+    <div class="admin-card">
+      <div class="admin-form-grid">
+        <label>Rechercher
+          <input data-admin-user-search value="${escapeAttribute(state.adminUserSearch)}" autocomplete="off" placeholder="Nom ou prénom">
+        </label>
+      </div>
+    </div>
     <div class="admin-list">
       ${state.users.map(renderAdminUserCard).join("") || "<p class=\"muted\">Aucun utilisateur.</p>"}
+      ${state.users.length ? `<p class="muted" data-admin-user-empty ${visibleUsers.length ? "hidden" : ""}>Aucun utilisateur trouvé.</p>` : ""}
     </div>
   `;
 }
@@ -3325,8 +3643,15 @@ function renderAdminUserCard(user) {
   const versionTitle = requiredVersion
     ? `Version demandée : ${requiredVersion}`
     : "Aucune version demandée";
+  const isHiddenBySearch = !adminUserMatchesSearch(user);
   return `
-    <article class="admin-card" data-user-id="${escapeAttribute(user.documentID)}">
+    <article
+      class="admin-card"
+      data-user-id="${escapeAttribute(user.documentID)}"
+      data-admin-user-card
+      data-admin-user-search="${escapeAttribute(adminUserSearchText(user))}"
+      ${isHiddenBySearch ? "hidden" : ""}
+    >
       <div class="admin-card-title">
         <strong>${escapeHtml(currentDisplayNameForUser(user))}</strong>
         <span class="admin-user-version ${versionOK ? "is-ok" : "is-ko"}" title="${escapeAttribute(versionTitle)}">
@@ -3370,6 +3695,41 @@ function renderAdminUserCard(user) {
   `;
 }
 
+function adminFilteredUsers() {
+  return state.users.filter(adminUserMatchesSearch);
+}
+
+function adminUserMatchesSearch(user) {
+  const query = normalizeKey(state.adminUserSearch);
+  return !query || normalizeKey(adminUserSearchText(user)).includes(query);
+}
+
+function adminUserSearchText(user) {
+  return [
+    user.firstName,
+    user.lastName,
+    `${user.firstName} ${user.lastName}`,
+    `${user.lastName} ${user.firstName}`
+  ].filter(Boolean).join(" ");
+}
+
+function applyAdminUserSearchFilter() {
+  const query = normalizeKey(state.adminUserSearch);
+  let visibleCount = 0;
+  elements.adminBody.querySelectorAll("[data-admin-user-card]").forEach((card) => {
+    const isVisible = !query || normalizeKey(card.dataset.adminUserSearch).includes(query);
+    card.hidden = !isVisible;
+    if (isVisible) {
+      visibleCount += 1;
+    }
+  });
+
+  const emptyMessage = elements.adminBody.querySelector("[data-admin-user-empty]");
+  if (emptyMessage) {
+    emptyMessage.hidden = visibleCount > 0 || !state.users.length;
+  }
+}
+
 function renderAdminSimulators() {
   return `
     ${renderAdminBackButton()}
@@ -3390,6 +3750,7 @@ function renderAdminConnections() {
   const rows = loginStatsRows();
   const groups = loginStatsGroups(rows);
   const totalCount = rows.reduce((sum, row) => sum + row.totalCount, 0);
+  const totalReads = groups.reduce((sum, group) => sum + group.readCount, 0);
   return `
     ${renderAdminBackButton()}
     <div class="admin-section-heading">
@@ -3403,6 +3764,7 @@ function renderAdminConnections() {
           <label>Date<input type="date" data-admin-login-date value="${escapeAttribute(isoDate(state.adminLoginDate))}"></label>
         </div>
         <label>Total<input value="${totalCount} connexion${totalCount > 1 ? "s" : ""}" readonly></label>
+        <label>Lectures<input value="${formatCompactNumber(totalReads)} lecture${totalReads > 1 ? "s" : ""}" readonly></label>
       </div>
     </div>
     <div class="admin-section-heading">
@@ -3429,6 +3791,7 @@ function renderAdminConnectionGroup(group) {
         <span>▯ ${group.ipadCount} iOS</span>
         ${group.latestIOSAppVersion ? `<span>⇩ iOS v${escapeHtml(group.latestIOSAppVersion)}</span>` : ""}
         <span>◎ ${group.webCount} Web</span>
+        <span title="${escapeAttribute(readStatsTitle(group))}">◫ ${formatCompactNumber(group.readCount)} lectures</span>
         <span>□ ${group.createdCount} créées</span>
         <span>⌁ ${group.modifiedCount} modifiées</span>
         <strong>${escapeHtml(formatConnectionTime(group.lastSeenAt))}</strong>
@@ -3568,7 +3931,6 @@ function loginStatsRows() {
   const createdCounts = createdNoteCountsByUser(dayIdentifier);
   const modifiedCounts = modifiedNoteCountsByUser(dayIdentifier);
   const usersByIdentifier = new Map(state.users
-    .filter((user) => !isAdminIdentifier(user.id))
     .map((user) => [normalizeKey(user.id), user]));
   const activeSessionCutoff = Date.now() - activeLoginSessionWindowMs;
 
@@ -3618,8 +3980,9 @@ function loginStatsRows() {
 
 function loginStatsGroups(rows) {
   const rowsByUser = groupBy(rows, (row) => normalizeKey(row.userIdentifier));
+  const readStats = readStatsByUser(isoDate(state.adminLoginDate));
 
-  return [...rowsByUser.values()].map((groupRows) => {
+  const groups = [...rowsByUser.values()].map((groupRows) => {
     const sortedRows = [...groupRows].sort((first, second) => {
       if (first.isCurrent !== second.isCurrent) {
         return first.isCurrent ? -1 : 1;
@@ -3634,6 +3997,14 @@ function loginStatsGroups(rows) {
       return firstDevice.localeCompare(secondDevice, "fr", { sensitivity: "base" });
     });
 
+    const userIdentifier = sortedRows[0]?.userIdentifier || "";
+    const userReadStats = readStats.get(normalizeKey(userIdentifier)) || {
+      totalReads: 0,
+      webReads: 0,
+      ipadReads: 0,
+      readsByCollection: {}
+    };
+
     return {
       userIdentifier: sortedRows[0]?.userIdentifier || "",
       displayName: sortedRows[0]?.displayName || "Utilisateur",
@@ -3645,9 +4016,40 @@ function loginStatsGroups(rows) {
       latestIOSAppVersion: latestIOSAppVersionForRows(sortedRows),
       createdCount: sortedRows[0]?.createdCount || 0,
       modifiedCount: sortedRows[0]?.modifiedCount || 0,
-      hasCurrentSession: sortedRows.some((row) => row.isCurrent)
+      hasCurrentSession: sortedRows.some((row) => row.isCurrent),
+      readCount: userReadStats.totalReads,
+      webReadCount: userReadStats.webReads,
+      ipadReadCount: userReadStats.ipadReads,
+      readsByCollection: userReadStats.readsByCollection
     };
-  })
+  });
+
+  const groupedUserKeys = new Set(groups.map((group) => normalizeKey(group.userIdentifier)));
+  readStats.forEach((userReadStats, userKey) => {
+    if (groupedUserKeys.has(userKey) || !userReadStats.totalReads) {
+      return;
+    }
+
+    groups.push({
+      userIdentifier: userReadStats.userIdentifier,
+      displayName: userReadStats.userDisplayName || displayNameForIdentifier(userReadStats.userIdentifier) || userReadStats.userIdentifier || "Utilisateur",
+      rows: [],
+      totalCount: 0,
+      lastSeenAt: userReadStats.updatedAt,
+      ipadCount: 0,
+      webCount: 0,
+      latestIOSAppVersion: "",
+      createdCount: 0,
+      modifiedCount: 0,
+      hasCurrentSession: false,
+      readCount: userReadStats.totalReads,
+      webReadCount: userReadStats.webReads,
+      ipadReadCount: userReadStats.ipadReads,
+      readsByCollection: userReadStats.readsByCollection
+    });
+  });
+
+  return groups
     .sort((first, second) => {
       if (first.hasCurrentSession !== second.hasCurrentSession) {
         return first.hasCurrentSession ? -1 : 1;
@@ -3659,6 +4061,62 @@ function loginStatsGroups(rows) {
 
       return first.displayName.localeCompare(second.displayName, "fr", { sensitivity: "base" });
     });
+}
+
+function readStatsByUser(dayIdentifier) {
+  const statsByUser = new Map();
+  state.firestoreReadStats
+    .filter((stat) => stat.dayIdentifier === dayIdentifier)
+    .forEach((stat) => {
+      const userKey = normalizeKey(stat.userIdentifier);
+      if (!userKey) {
+        return;
+      }
+
+      const current = statsByUser.get(userKey) || {
+        userIdentifier: stat.userIdentifier,
+        userDisplayName: stat.userDisplayName,
+        updatedAt: stat.updatedAt,
+        totalReads: 0,
+        webReads: 0,
+        ipadReads: 0,
+        readsByCollection: {}
+      };
+      current.userDisplayName = current.userDisplayName || stat.userDisplayName;
+      if (!current.updatedAt || (stat.updatedAt && stat.updatedAt > current.updatedAt)) {
+        current.updatedAt = stat.updatedAt;
+      }
+      current.totalReads += stat.totalReads;
+      if (stat.source === "ipad") {
+        current.ipadReads += stat.totalReads;
+      } else if (stat.source === "web") {
+        current.webReads += stat.totalReads;
+      }
+
+      Object.entries(stat.readsByCollection).forEach(([collectionName, count]) => {
+        current.readsByCollection[collectionName] = (current.readsByCollection[collectionName] || 0) + count;
+      });
+      statsByUser.set(userKey, current);
+    });
+
+  return statsByUser;
+}
+
+function readStatsTitle(group) {
+  const sourceParts = [];
+  if (group.webReadCount) {
+    sourceParts.push(`${formatCompactNumber(group.webReadCount)} Web`);
+  }
+  if (group.ipadReadCount) {
+    sourceParts.push(`${formatCompactNumber(group.ipadReadCount)} iPad`);
+  }
+
+  const collectionParts = Object.entries(group.readsByCollection || {})
+    .sort((first, second) => second[1] - first[1])
+    .slice(0, 5)
+    .map(([collectionName, count]) => `${collectionName}: ${formatCompactNumber(count)}`);
+
+  return [...sourceParts, ...collectionParts].join(" • ") || "Aucune lecture enregistrée";
 }
 
 function isAnonymousWebLoginEvent(event) {
@@ -3678,7 +4136,7 @@ function createdNoteCountsByUser(dayIdentifier) {
     }
 
     const identifier = normalizeKey(note.authorIdentifier || note.author);
-    if (!identifier || isAdminIdentifier(identifier)) {
+    if (!identifier) {
       continue;
     }
 
@@ -3700,7 +4158,7 @@ function modifiedNoteCountsByUser(dayIdentifier) {
       }
 
       const identifier = normalizeKey(revision.authorIdentifier || revision.author);
-      if (!identifier || isAdminIdentifier(identifier)) {
+      if (!identifier) {
         continue;
       }
 
@@ -4064,6 +4522,7 @@ async function scanAdminMaintenance() {
 
   try {
     const snapshot = await getDocs(collection(db, "handoverNotes"));
+    trackFirestoreRead("handoverNotes", snapshot.docs.length);
     const documents = snapshot.docs.map((documentSnapshot) => {
       const data = documentSnapshot.data();
       const note = noteFromSnapshot(documentSnapshot.id, data);
@@ -4219,7 +4678,11 @@ function visibleHandwritingFor(note) {
     return entry.noteID === note.id && normalizeKey(entry.authorIdentifier) === normalizeKey(state.currentUser.id);
   });
 
-  if (ownNote?.drawingData) {
+  const handwritingWasClearedAfterOwnNote = note.handwritingClearedAt
+    && ownNote?.updatedAt
+    && ownNote.updatedAt <= note.handwritingClearedAt;
+
+  if (ownNote?.drawingData && !handwritingWasClearedAfterOwnNote) {
     return {
       source: "utilisateur",
       documentID: ownNote.id,
@@ -4228,7 +4691,7 @@ function visibleHandwritingFor(note) {
     };
   }
 
-  if (normalizeKey(note.handwritingAuthorIdentifier || note.authorIdentifier || note.author) === normalizeKey(state.currentUser.id) && note.handwritingData) {
+  if (!note.handwritingClearedAt && normalizeKey(note.handwritingAuthorIdentifier || note.authorIdentifier || note.author) === normalizeKey(state.currentUser.id) && note.handwritingData) {
     return { source: "consigne", data: note.handwritingData, previewImageData: note.handwritingPreviewImageData };
   }
 
@@ -4249,8 +4712,12 @@ function renderHandwritingNotice(handwriting) {
     : "";
   return `
     <div class="handwriting-notice">
-      <div class="handwriting-tools">
-        <div class="handwriting-tool-buttons">
+      <div class="handwriting-layout">
+        <div class="handwriting-canvas-slot">
+          ${image}
+          ${image ? "" : "<p>Cette note n'a pas encore d'aperçu web. Elle sera visible après ouverture/enregistrement depuis l'app iPad mise à jour.</p>"}
+        </div>
+        <div class="handwriting-tools" aria-label="Actions note manuscrite">
           <button type="button" class="handwriting-tool-button danger" data-detail-action="clear-handwriting" title="Effacer la note manuscrite" aria-label="Effacer la note manuscrite">
             ${trashIconSVG()}
           </button>
@@ -4259,18 +4726,30 @@ function renderHandwritingNotice(handwriting) {
           </button>
         </div>
       </div>
-      ${image}
-      ${image ? "" : "<p>Cette note n'a pas encore d'aperçu web. Elle sera visible après ouverture/enregistrement depuis l'app iPad mise à jour.</p>"}
     </div>
   `;
 }
 
 function renderHandwritingSection(note, handwriting) {
   if (state.pendingHandwritingClear?.noteID === note.id) {
-    return `<div class="handwriting-empty pending-clear">${escapeHtml(state.pendingHandwritingClear.message)}</div>`;
+    return `
+      <div class="detail-subsection handwriting-subsection">
+        <h4>Note manuscrite</h4>
+        <div class="handwriting-empty pending-clear">${escapeHtml(state.pendingHandwritingClear.message)}</div>
+      </div>
+    `;
   }
 
-  return handwriting ? renderHandwritingNotice(handwriting) : "<div class=\"handwriting-empty\"></div>";
+  if (!handwriting) {
+    return "";
+  }
+
+  return `
+    <div class="detail-subsection handwriting-subsection">
+      <h4>Note manuscrite</h4>
+      ${renderHandwritingNotice(handwriting)}
+    </div>
+  `;
 }
 
 function renderHandwritingCardPreview(handwriting) {
@@ -4754,6 +5233,8 @@ async function permanentlyDeleteNote(noteID) {
     getDocs(query(collection(db, "handwritingNotes"), where("noteID", "==", noteID))),
     getDocs(query(collection(db, "dailyTags"), where("noteID", "==", noteID)))
   ]);
+  trackFirestoreRead("handwritingNotes", handwritingSnapshot.docs.length);
+  trackFirestoreRead("dailyTags", dailyTagSnapshot.docs.length);
 
   const linkedDocuments = [
     ...handwritingSnapshot.docs,
@@ -4768,6 +5249,29 @@ async function permanentlyDeleteNote(noteID) {
   }, { merge: true });
   await Promise.all(linkedDocuments.map((document) => deleteDoc(document.ref)));
   await deleteDoc(doc(db, "handoverNotes", noteID));
+}
+
+async function deleteHandwritingNotesForNote(noteID, preferredDocumentID = "") {
+  const linkedSnapshot = await getDocs(query(collection(db, "handwritingNotes"), where("noteID", "==", noteID)));
+  trackFirestoreRead("handwritingNotes", linkedSnapshot.docs.length);
+  const documentIDs = new Set(linkedSnapshot.docs.map((document) => document.id));
+  if (preferredDocumentID) {
+    documentIDs.add(preferredDocumentID);
+  }
+
+  await Promise.all(
+    [...documentIDs]
+      .filter(Boolean)
+      .map((documentID) => deleteDoc(doc(db, "handwritingNotes", documentID)))
+  );
+}
+
+function removeLocalHandwritingNotesForNote(noteID, preferredDocumentID = "") {
+  state.handwritingNotes = state.handwritingNotes.filter((handwritingNote) => {
+    return handwritingNote.noteID !== noteID && handwritingNote.id !== preferredDocumentID;
+  });
+  renderSimulators();
+  render();
 }
 
 async function saveNewNote(options = {}) {
@@ -5089,10 +5593,11 @@ async function saveDetailEdit(note, options = {}) {
 
   patch.revisionHistoryData = revisions.length ? encodeRecordArray(revisions) : deleteField();
 
-  if (handwritingClearChanged && state.pendingHandwritingClear.source !== "utilisateur") {
+  if (handwritingClearChanged) {
     patch.handwritingData = deleteField();
     patch.handwritingPreviewImageData = deleteField();
     patch.handwritingAuthorIdentifier = deleteField();
+    patch.handwritingClearedAt = now;
   }
 
   state.isSaving = true;
@@ -5116,6 +5621,7 @@ async function saveDetailEdit(note, options = {}) {
         acknowledgementChanged,
         draftAcknowledged,
         announcesContentModification,
+        handwritingClearChanged,
         now
       });
     } else {
@@ -5132,8 +5638,9 @@ async function saveDetailEdit(note, options = {}) {
         draftAcknowledged
       });
     }
-    if (handwritingClearChanged && state.pendingHandwritingClear.source === "utilisateur" && state.pendingHandwritingClear.documentID) {
-      await deleteDoc(doc(db, "handwritingNotes", state.pendingHandwritingClear.documentID));
+    if (handwritingClearChanged) {
+      await deleteHandwritingNotesForNote(note.id, state.pendingHandwritingClear.documentID);
+      removeLocalHandwritingNotesForNote(note.id, state.pendingHandwritingClear.documentID);
     }
     state.pendingHandwritingClear = null;
     closeDetail();
@@ -5200,9 +5707,10 @@ async function detachContextModification(note, context, draft) {
     richTextHTML: draft.richTextHTML || "",
     richTextData: note.richTextData || "",
     priorityRawValue: draft.priority || "",
-    handwritingData: note.handwritingData || "",
-    handwritingPreviewImageData: note.handwritingPreviewImageData || "",
-    handwritingAuthorIdentifier: note.handwritingAuthorIdentifier || "",
+    handwritingData: draft.handwritingClearChanged ? "" : note.handwritingData || "",
+    handwritingPreviewImageData: draft.handwritingClearChanged ? "" : note.handwritingPreviewImageData || "",
+    handwritingAuthorIdentifier: draft.handwritingClearChanged ? "" : note.handwritingAuthorIdentifier || "",
+    handwritingClearedAt: draft.handwritingClearChanged ? draft.now : note.handwritingClearedAt || null,
     completedContextsStorage: detachedCompletedKeys.join("\n"),
     completionHistoryData: detachedCompletions.length ? encodeRecordArray(detachedCompletions) : "",
     completionCancellationHistoryData: detachedCompletionCancellations.length ? encodeRecordArray(detachedCompletionCancellations) : "",
@@ -5392,9 +5900,13 @@ function restoredRevisionText(revisionText, currentNote) {
 }
 
 function collectDetailDestination(fallbackContext) {
-  const checkedNames = [...elements.detailBody.querySelectorAll("[data-simulator-name]:checked")]
+  const selectedPillNames = [...elements.detailBody.querySelectorAll("[data-simulator-pill][data-selected='true']")]
+    .map((pill) => decodeURIComponent(pill.dataset.simulatorName))
+    .filter(Boolean);
+  const checkedInputNames = [...elements.detailBody.querySelectorAll("[data-simulator-name]:checked")]
     .map((input) => decodeURIComponent(input.dataset.simulatorName))
     .filter(Boolean);
+  const checkedNames = selectedPillNames.length ? selectedPillNames : checkedInputNames;
   let isGeneral = checkedNames.includes(generalName);
   let simulatorNames = checkedNames.filter((name) => name !== generalName);
 
@@ -5523,16 +6035,35 @@ function parseCssColor(value) {
     return null;
   }
 
-  const channels = rgb[1].split(",").map((part) => Number.parseFloat(part.trim()));
+  const channels = rgb[1]
+    .replace(/\s*\/\s*/g, " ")
+    .trim()
+    .split(/[\s,]+/)
+    .filter(Boolean)
+    .slice(0, 3)
+    .map(parseCssColorChannel);
   if (channels.length < 3 || channels.slice(0, 3).some((channel) => Number.isNaN(channel))) {
     return null;
   }
 
   return {
-    r: Math.max(0, Math.min(255, Math.round(channels[0]))),
-    g: Math.max(0, Math.min(255, Math.round(channels[1]))),
-    b: Math.max(0, Math.min(255, Math.round(channels[2])))
+    r: clampColorChannel(channels[0]),
+    g: clampColorChannel(channels[1]),
+    b: clampColorChannel(channels[2])
   };
+}
+
+function parseCssColorChannel(value) {
+  const channel = String(value).trim();
+  if (channel.endsWith("%")) {
+    return Number.parseFloat(channel) * 2.55;
+  }
+
+  return Number.parseFloat(channel);
+}
+
+function clampColorChannel(value) {
+  return Math.max(0, Math.min(255, Math.round(value)));
 }
 
 function ensureInitialRevision(revisions, note) {
@@ -5695,6 +6226,8 @@ function noteWithPatchForIndex(note, patch) {
     ...note,
     title: value("title", note.title, ""),
     text: value("text", note.text, ""),
+    richTextHTML: value("richTextHTML", note.richTextHTML, ""),
+    richTextData: value("richTextData", note.richTextData, ""),
     author: value("author", note.author, ""),
     displayDate: value("displayDate", note.displayDate, note.displayDate),
     firstDisplayDate: value("firstDisplayDate", note.firstDisplayDate, note.firstDisplayDate),
@@ -5715,7 +6248,11 @@ function noteWithPatchForIndex(note, patch) {
       : note.completionCancellations,
     revisions: Object.prototype.hasOwnProperty.call(patch, "revisionHistoryData")
       ? decodeRecordArray(isDeleteFieldSentinel(patch.revisionHistoryData) ? "" : patch.revisionHistoryData)
-      : note.revisions
+      : note.revisions,
+    handwritingData: value("handwritingData", note.handwritingData, ""),
+    handwritingPreviewImageData: value("handwritingPreviewImageData", note.handwritingPreviewImageData, ""),
+    handwritingAuthorIdentifier: value("handwritingAuthorIdentifier", note.handwritingAuthorIdentifier, ""),
+    handwritingClearedAt: value("handwritingClearedAt", note.handwritingClearedAt, null)
   };
 }
 
@@ -6601,6 +7138,7 @@ function normalizeRevisionAuthor(revision) {
 function renderTimelineEvent(event, index) {
   const meta = timelineMeta(event);
   const isCreation = event.kind === "creation";
+  const dotClass = timelineDotClass(event);
   const rowAttributes = isCreation
     ? " data-creation-text"
     : event.hasDisclosure
@@ -6610,6 +7148,7 @@ function renderTimelineEvent(event, index) {
 
   return `
     <button class="timeline-event${event.hasDisclosure || isCreation ? " has-detail" : ""}" type="button"${rowAttributes}>
+      <span class="timeline-dot ${escapeAttribute(dotClass)}" aria-hidden="true"></span>
       <strong>${escapeHtml(event.title)}</strong>
       <div class="timeline-meta">
         <span>${escapeHtml(meta)}</span>
@@ -6617,6 +7156,14 @@ function renderTimelineEvent(event, index) {
       </div>
     </button>
   `;
+}
+
+function timelineDotClass(event) {
+  if (event.kind === "creation") return "creation";
+  if (event.kind === "acknowledgement") return "acknowledgement";
+  if (event.kind === "completion") return "done";
+  if (event.kind === "deletion" || event.kind === "completion-cancellation") return "deletion";
+  return "modification";
 }
 
 function timelineMeta(event) {
@@ -6820,8 +7367,11 @@ function renderAnnotatedDiffTokens(tokens, note) {
     }
     const escaped = escapeHtml(currentText);
     if (currentHighlighted) {
-      const highlightStyle = "background:#dcfce7;color:#15803d;";
-      const styleAttribute = ` style="${escapeAttribute(`${currentManualStyle || ""}${highlightStyle}`)}"`;
+      const hasManualBackground = /\bbackground(?:-color)?\s*:/i.test(currentManualStyle || "");
+      const hasManualColor = /\bcolor\s*:/i.test(currentManualStyle || "");
+      const highlightStyle = `${hasManualBackground ? "" : "background:#dcfce7;"}${hasManualColor ? "" : "color:#15803d;"}`;
+      const combinedStyle = [currentManualStyle, highlightStyle].filter(Boolean).join("; ");
+      const styleAttribute = combinedStyle ? ` style="${escapeAttribute(combinedStyle)}"` : "";
       output.push(`<span class="diff-added"${styleAttribute}>${escaped}</span>`);
     } else if (currentManualStyle) {
       output.push(`<span style="${escapeAttribute(currentManualStyle)}">${escaped}</span>`);
@@ -6908,15 +7458,25 @@ function manualRichTextStylesByCharacter(note, expectedText = "") {
 
     const backgroundColor = normalizeRichTextColor(node.style?.backgroundColor, true);
     const color = normalizeRichTextColor(node.style?.color, false);
-    const styleParts = [];
+    const styleParts = [inheritedStyle].filter(Boolean);
+    if (node.tagName === "B" || node.tagName === "STRONG") {
+      styleParts.push("font-weight: 700");
+    }
+    if (node.tagName === "I" || node.tagName === "EM") {
+      styleParts.push("font-style: italic");
+    }
+    if (node.tagName === "U") {
+      styleParts.push("text-decoration-line: underline");
+      styleParts.push("text-decoration-thickness: 1.5px");
+      styleParts.push("text-underline-offset: 2px");
+    }
     if (backgroundColor) {
       styleParts.push(`background-color: ${backgroundColor}`);
     }
     if (color) {
       styleParts.push(`color: ${color}`);
     }
-    const ownStyle = styleParts.join("; ");
-    const nextStyle = ownStyle || inheritedStyle;
+    const nextStyle = styleParts.join("; ");
     node.childNodes.forEach((child) => walk(child, nextStyle));
   };
 
@@ -7535,6 +8095,18 @@ function numberValue(value, fallback = 0) {
   return typeof value === "number" ? value : fallback;
 }
 
+function formatCompactNumber(value) {
+  const number = Number(value) || 0;
+  if (Math.abs(number) < 1000) {
+    return String(number);
+  }
+
+  return new Intl.NumberFormat("fr-FR", {
+    notation: "compact",
+    maximumFractionDigits: 1
+  }).format(number);
+}
+
 function startOfDay(date) {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 }
@@ -7851,6 +8423,7 @@ function formatConnectionTime(date) {
 function formatTimelineDate(date) {
   if (!date) return "";
   const datePart = new Intl.DateTimeFormat("fr-FR", {
+    weekday: "short",
     day: "numeric",
     month: "long",
     year: "numeric"

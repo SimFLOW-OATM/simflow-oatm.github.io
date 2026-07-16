@@ -2067,22 +2067,20 @@ mark {
 .handwriting-tools {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 12px;
-}
-
-.handwriting-tool-buttons {
-  display: flex;
-  align-items: center;
+  justify-content: center;
+  align-self: start;
   gap: 8px;
+  min-width: 118px;
+  min-height: 64px;
+  padding-top: 2px;
 }
 
 .handwriting-tool-button {
   display: inline-grid;
   place-items: center;
   width: 40px;
-  height: 34px;
-  min-height: 34px;
+  height: 40px;
+  min-height: 40px;
   border-radius: 999px;
   padding: 0;
   color: var(--blue);
@@ -2108,21 +2106,43 @@ mark {
 .handwriting-preview {
   display: block;
   width: 100%;
-  max-width: 800px;
   height: auto;
   box-sizing: border-box;
   object-fit: contain;
-  margin-top: 10px;
+  margin: 0;
   border: 1px solid rgba(47, 128, 237, 0.22);
   border-radius: 10px;
   padding: 10px;
   background: rgba(219, 235, 255, 0.48);
 }
 
+.handwriting-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 118px;
+  align-items: start;
+  gap: 10px;
+}
+
+.handwriting-canvas-slot {
+  min-width: 0;
+}
+
+.handwriting-canvas-slot p {
+  margin: 0;
+  min-height: 180px;
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  border-radius: 12px;
+  padding: 16px;
+  color: var(--muted);
+  background: #f7f8fb;
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .detail-overlay {
   place-items: stretch;
   padding: 0;
-  background: rgba(240, 240, 246, 0.98);
+  background: #38383d;
   backdrop-filter: none;
 }
 
@@ -2132,7 +2152,7 @@ mark {
   max-height: 100vh;
   border: 0;
   border-radius: 0;
-  background: #f0f0f6;
+  background: #38383d;
   box-shadow: none;
 }
 
@@ -2147,13 +2167,14 @@ mark {
   min-height: 52px;
   padding: 8px 14px;
   border-bottom: 0;
-  background: #f0f0f6;
+  background: #38383d;
 }
 
 .detail-header h2 {
   justify-self: start;
   overflow: hidden;
   margin: 0;
+  color: #ffffff;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 30px;
@@ -2177,6 +2198,7 @@ mark {
   align-content: start;
   gap: 20px;
   padding: 0 14px 34px;
+  background: #38383d;
 }
 
 .creation-text-overlay {
@@ -2202,7 +2224,7 @@ mark {
   min-height: min(560px, calc(100vh - 56px));
   max-height: calc(100vh - 56px);
   border-radius: 28px;
-  padding: 54px 28px 32px;
+  padding: 64px 28px 32px;
   background: rgba(255, 255, 255, 0.96);
   box-shadow: 0 26px 70px rgba(15, 23, 42, 0.22);
   overflow: hidden;
@@ -2327,12 +2349,16 @@ mark {
 }
 
 .detail-action-row {
-  min-height: 50px;
+  min-height: 36px;
   align-items: center;
   justify-content: flex-start;
-  padding: 8px 24px;
-  border-radius: 18px;
-  background: white;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.action-section .detail-section-heading {
+  margin-bottom: 6px;
 }
 
 .detail-action-row .action-done,
@@ -2367,32 +2393,30 @@ mark {
 }
 
 .detail-action-row .action-done.active-done {
-  color: #34c759;
-  background: #e6f7ec;
+  color: white;
+  background: #34c759;
 }
 
 .detail-action-row .action-ack.active-ack {
-  color: #2487ff;
-  background: #e6f0ff;
+  color: white;
+  background: #2487ff;
 }
 
 .detail-action-row .action-icon {
   display: inline-grid;
-  width: 18px;
-  height: 18px;
-  place-items: center;
-  border: 1.8px solid var(--action-color, currentColor);
-  border-radius: 50%;
+  width: 17px;
+  height: 17px;
   color: var(--action-color, currentColor);
-  font-size: 12px;
-  line-height: 1;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .detail-action-row .active-done .action-icon,
 .detail-action-row .active-ack .action-icon {
-  border-color: var(--action-color, currentColor);
   color: white;
-  background: var(--action-color, currentColor);
 }
 
 .detail-action-hint {
@@ -2400,27 +2424,134 @@ mark {
 }
 
 .detail-section {
-  border-radius: 0;
-  padding: 0;
-  background: transparent;
-  box-shadow: none;
+  border-radius: 18px;
+  padding: 16px;
+  background: #ffffff;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.05);
 }
 
 .detail-section h3 {
-  margin: 0 0 8px 18px;
+  margin: 0 0 12px;
   color: rgba(16, 21, 31, 0.48);
   font-size: 15px;
+  font-weight: 850;
   text-transform: none;
+}
+
+.detail-section-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.detail-section-heading em {
+  color: rgba(16, 21, 31, 0.54);
+  font-style: normal;
+  font-weight: 500;
+}
+
+.section-icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  color: #111827;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.detail-section-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.detail-section-title-row .detail-section-heading {
+  margin: 0;
+}
+
+.detail-subsection.text-editor-subsection {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.detail-subsection.text-editor-subsection h4 {
+  flex: 0 0 auto;
+}
+
+.detail-subsection.text-editor-subsection .format-toolbar {
+  margin-left: auto;
+}
+
+.detail-top-pills-section {
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+
+.detail-main-value {
+  margin: 0;
+  color: #111827;
+  font-size: 22px;
+  font-weight: 850;
+  line-height: 1.18;
+}
+
+.detail-simulator-pill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.detail-simulator-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 38px;
+  border-radius: 999px;
+  padding: 0 16px;
+  color: #ffffff;
+  font-size: 20px;
+  font-weight: 850;
+  line-height: 1;
+}
+
+.detail-top-pills-section .detail-simulator-pill {
+  min-height: 40px;
+  font-size: 22px;
+}
+
+.detail-subsection {
+  display: grid;
+  gap: 10px;
+}
+
+.detail-subsection + .detail-subsection {
+  margin-top: 16px;
+}
+
+.detail-subsection h4 {
+  margin: 0;
+  color: rgba(16, 21, 31, 0.48);
+  font-size: 12px;
+  font-weight: 900;
 }
 
 .priority-picker {
   position: relative;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
   border-radius: 18px;
-  padding: 12px 14px;
-  background: white;
+  padding: 0;
+  background: transparent;
+  width: 100%;
 }
 
 .priority-picker select {
@@ -2476,21 +2607,40 @@ mark {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  min-height: 50px;
+  min-height: 0;
   margin: 0;
   border-radius: 18px;
-  padding: 0 16px;
+  padding: 0;
   color: #111827;
-  background: white;
+  background: transparent;
   font-size: 15px;
   font-weight: 500;
   text-transform: none;
+}
+
+.date-line > span {
+  display: none;
 }
 
 .date-line strong {
   color: rgba(17, 24, 39, 0.58);
   font-weight: 600;
   text-align: right;
+}
+
+.date-section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.date-section .detail-section-heading {
+  margin: 0;
+}
+
+.date-section .date-line {
+  justify-self: end;
 }
 
 .date-picker-button {
@@ -2684,13 +2834,15 @@ mark {
   position: relative;
   display: flex;
   gap: 7px;
-  margin-right: 16px;
+  margin-right: 0;
 }
 
 .format-toolbar button {
   display: grid;
-  min-width: 32px;
-  height: 28px;
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  min-height: 40px;
   place-items: center;
   border: 0;
   border-radius: 999px;
@@ -2720,8 +2872,8 @@ mark {
 }
 
 .toolbar-svg-icon {
-  width: 17px;
-  height: 17px;
+  width: 18px;
+  height: 18px;
   fill: none;
   stroke: currentColor;
   stroke-width: 2.25;
@@ -2735,8 +2887,8 @@ mark {
 }
 
 .toolbar-svg-icon.highlighter {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
 }
 
 .highlight-menu {
@@ -2806,27 +2958,38 @@ mark {
 
 .consigne-editor {
   border-radius: 18px;
-  padding: 14px 16px;
-  background: white;
+  padding: 0;
+  background: transparent;
 }
 
 .consigne-editor .title-input {
   min-height: 34px;
-  border: 0;
-  border-bottom: 1px solid var(--line);
-  border-radius: 0;
-  padding: 0;
-  background: transparent;
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  border-radius: 12px;
+  padding: 0 12px;
+  background: #f7f8fb;
   box-shadow: none;
   font-weight: 650;
 }
 
+.consigne-editor > .detail-subsection {
+  margin-bottom: 10px;
+}
+
+.consigne-editor .title-input + .detail-subsection {
+  margin-top: 18px;
+}
+
+.consigne-editor .rich-text-editor + .handwriting-subsection {
+  margin-top: 24px;
+}
+
 .rich-text-editor {
   min-height: 210px;
-  border: 0;
-  border-radius: 0;
-  padding: 12px 0;
-  background: transparent;
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  border-radius: 12px;
+  padding: 12px;
+  background: #f7f8fb;
   box-shadow: none;
   outline: none;
   white-space: pre-wrap;
@@ -2857,18 +3020,11 @@ mark {
   background: var(--line);
 }
 
-.consigne-editor h4 {
-  margin: 0 0 8px;
-  color: rgba(16, 21, 31, 0.48);
-  font-size: 12px;
-  font-weight: 900;
-}
-
 .handwriting-empty {
   min-height: 180px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: rgba(248, 250, 252, 0.7);
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  border-radius: 12px;
+  background: #f7f8fb;
 }
 
 .handwriting-empty.pending-clear {
@@ -2899,18 +3055,43 @@ mark {
 .timeline-event {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
+  column-gap: 8px;
   width: 100%;
-  min-height: 52px;
+  min-height: 34px;
   border: 0;
-  border-bottom: 1px solid rgba(17, 24, 39, 0.08);
+  border-bottom: 0;
   border-radius: 0;
   padding: 0 16px;
   color: #111827;
   background: white;
   box-shadow: none;
   text-align: left;
+}
+
+.timeline-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #8e8e93;
+}
+
+.timeline-dot.creation {
+  background: #facc15;
+}
+
+.timeline-dot.modification {
+  background: #22c55e;
+}
+
+.timeline-dot.acknowledgement,
+.timeline-dot.done {
+  background: #2487ff;
+}
+
+.timeline-dot.deletion {
+  background: #ef4444;
 }
 
 .timeline-event:last-child {
@@ -2921,6 +3102,7 @@ mark {
   min-width: 0;
   font-size: 14px;
   font-weight: 850;
+  line-height: 1.15;
 }
 
 .timeline-meta {
@@ -2940,7 +3122,7 @@ mark {
 }
 
 .timeline-detail {
-  grid-column: 1 / -1;
+  grid-column: 2 / -1;
   display: none;
   margin: -2px 0 12px;
   color: rgba(17, 24, 39, 0.62);
@@ -3003,7 +3185,45 @@ mark {
 .simulator-toggle-list {
   overflow: hidden;
   border-radius: 18px;
-  background: white;
+  background: #f7f8fb;
+}
+
+.simulator-pill-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.simulator-select-pill {
+  min-width: 0;
+  min-height: 34px;
+  border: 0;
+  border-radius: 7px;
+  padding: 0 10px;
+  color: #111827;
+  background: #e5e7eb;
+  box-shadow: none;
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  touch-action: none;
+  transition: transform 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+
+.simulator-select-pill.selected {
+  color: #ffffff;
+  background: var(--simulator-color, #6b7280);
+}
+
+.simulator-select-pill.pressing {
+  transform: scale(0.96);
+}
+
+.simulator-select-pill:disabled {
+  opacity: 0.65;
 }
 
 .simulator-toggle-row {
