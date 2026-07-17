@@ -946,7 +946,8 @@ function trackFirestoreSnapshotRead(collectionName, snapshot, source = "web") {
     return;
   }
 
-  trackFirestoreRead(collectionName, snapshot.docChanges().length, source);
+  const changeCount = snapshot.docChanges().length;
+  trackFirestoreRead(collectionName, changeCount || snapshot.docs.length, source);
 }
 
 function trackFirestoreDocumentRead(collectionName, snapshot, source = "web") {
