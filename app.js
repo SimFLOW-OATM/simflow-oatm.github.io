@@ -925,7 +925,7 @@ async function recordLoginAppearance() {
 function trackFirestoreRead(collectionName, count, source = "web") {
   const readCount = Number(count) || 0;
   const userIdentifier = stringValue(state.currentUser?.id).trim();
-  if (!state.authReady || !userIdentifier || state.currentUser?.role === "admin" || readCount <= 0) {
+  if (!state.authReady || !userIdentifier || readCount <= 0) {
     return;
   }
 
@@ -969,7 +969,7 @@ async function flushFirestoreReadStats() {
   }
 
   const userIdentifier = stringValue(state.currentUser?.id).trim();
-  if (!state.authReady || !userIdentifier || state.currentUser?.role === "admin" || !state.firestoreReadStatsBuffer.size) {
+  if (!state.authReady || !userIdentifier || !state.firestoreReadStatsBuffer.size) {
     state.firestoreReadStatsBuffer.clear();
     return;
   }
