@@ -5,6 +5,7 @@ import {
   deleteField,
   deleteDoc,
   doc,
+  getDoc,
   getFirestore,
   getDocs,
   increment,
@@ -29,14 +30,16 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
-const WEB_APP_VERSION = "1.85";
+const WEB_APP_VERSION = "1.86";
 const userGuideURL = "./assets/Guide%20utilisateur%20SimFLOW.pdf";
-const deletedLegacySimulatorNames = new Set(["Simu 1", "Simu 2", "Simu 3", "Simu 4"]);
+const deletedLegacySimulatorNames = new Set(["Simu", "Simu 1", "Simu 2", "Simu 3", "Simu 4", "Simu Tes", "Simu test 2", "Simu Test 2"]);
 const sessionStorageKey = "simflow.web.currentUser";
+const lastActiveStorageKey = "simflow.web.lastActiveAt";
 const archiveRealtimeRetentionDays = 4;
 const activeRealtimeUntil = new Date("2100-01-01T00:00:00.000Z");
 const webDeviceStorageKey = "simflow.web.deviceIdentifier";
 const sessionDurationMs = 30 * 24 * 60 * 60 * 1000;
+const staleDataRefreshThresholdMs = 24 * 60 * 60 * 1000;
 const activeLoginSessionWindowMs = 90 * 1000;
 const loginPresenceRefreshMs = 2 * 1000;
 const firestoreReadStatsFlushMs = 5 * 1000;
@@ -84,6 +87,8 @@ const state = {
   adminMessageDismissals: new Set(),
   acknowledgedAdminMessageIDs: new Set(),
   activeAdminMessage: null,
+  passwordResetRequests: [],
+  didShowPasswordResetAdminAlert: false,
   users: [],
   allSimulators: [],
   simulators: [],
@@ -104,6 +109,7 @@ const state = {
   unsubscribeAdminMessagesAll: null,
   unsubscribeAdminMessagesTargeted: null,
   unsubscribeAdminMessageDismissals: null,
+  unsubscribePasswordResetRequests: null,
   unsubscribeUsers: null,
   unsubscribeSimulators: null,
   unsubscribeAppSettings: null,
@@ -113,6 +119,8 @@ const state = {
   adminMessageSendsToAll: false,
   adminMessageRecipientIDs: new Set(),
   lastLoginEventAt: 0,
+  initialDataRefreshVisible: false,
+  pendingInitialDataRefreshResources: new Set(),
   firestoreReadStatsBuffer: new Map(),
   firestoreReadStatsFlushTimer: null
 };
@@ -123,6 +131,7 @@ const db = getFirestore(app);
 const functions = getFunctions(app, "us-central1");
 const loginWithAccessCode = httpsCallable(functions, "loginWithAccessCode");
 const changeOwnAccessCode = httpsCallable(functions, "changeOwnAccessCode");
+const requestPasswordReset = httpsCallable(functions, "requestPasswordReset");
 const activityActionTitles = {
   created: "Creation",
   modified: "Modification",
@@ -151,6 +160,8 @@ const elements = {
   codeModalMessage: document.querySelector("#codeModalMessage"),
   loginLoading: document.querySelector("#loginLoading"),
   accessCode: document.querySelector("#accessCode"),
+  passwordResetEmail: document.querySelector("#passwordResetEmail"),
+  forgotCodeButton: document.querySelector("#forgotCodeButton"),
   loginButton: document.querySelector("#loginButton"),
   cancelLoginButton: document.querySelector("#cancelLoginButton"),
   changeCodeOverlay: document.querySelector("#changeCodeOverlay"),
@@ -206,6 +217,7 @@ const elements = {
   adminMessageText: document.querySelector("#adminMessageText"),
   adminMessageOkButton: document.querySelector("#adminMessageOkButton"),
   adminMessageDeleteButton: document.querySelector("#adminMessageDeleteButton"),
+  initialSyncOverlay: document.querySelector("#initialSyncOverlay"),
   adminOverlay: document.querySelector("#adminOverlay"),
   adminCloseButton: document.querySelector("#adminCloseButton"),
   adminBody: document.querySelector("#adminBody")
@@ -261,6 +273,13 @@ elements.brandResetButton.addEventListener("click", resetDisplayState);
 elements.openLoginButton.addEventListener("click", () => openCodeModal("login"));
 elements.loginButton.addEventListener("click", submitCodeModal);
 elements.cancelLoginButton.addEventListener("click", closeCodeModal);
+elements.forgotCodeButton.addEventListener("click", () => {
+  if (state.codeModalMode === "passwordReset") {
+    openCodeModal("login");
+  } else {
+    openCodeModal("passwordReset");
+  }
+});
 elements.codeModal.addEventListener("click", (event) => {
   if (event.target === elements.codeModal) {
     closeCodeModal();
@@ -276,15 +295,24 @@ elements.accessCode.addEventListener("keydown", (event) => {
     closeCodeModal();
   }
 });
+elements.passwordResetEmail.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    submitCodeModal();
+  } else if (event.key === "Escape") {
+    closeCodeModal();
+  }
+});
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
-    recordLoginAppearance();
+    handleAppBecameVisible();
   } else {
+    saveLastActiveTimestamp();
     flushFirestoreReadStats();
   }
 });
-window.addEventListener("focus", recordLoginAppearance);
+window.addEventListener("focus", handleAppBecameVisible);
 window.addEventListener("beforeunload", () => {
+  saveLastActiveTimestamp();
   flushFirestoreReadStats();
 });
 window.setInterval(refreshAdminConnectionsPresence, loginPresenceRefreshMs);
@@ -576,6 +604,9 @@ elements.adminOverlay.addEventListener("click", (event) => {
     state.activeAdminTab = "messages";
     resetAdminMessageComposer();
     renderAdminSettings();
+  } else if (action === "open-admin-password-resets") {
+    state.activeAdminTab = "passwordResets";
+    renderAdminSettings();
   } else if (action === "open-activity-note") {
     openActivityNote(actionButton.closest(".admin-card"));
   } else if (action === "admin-login-previous-day") {
@@ -606,6 +637,10 @@ elements.adminOverlay.addEventListener("click", (event) => {
     repairAdminSyncState();
   } else if (action === "send-admin-message") {
     sendAdminMessage();
+  } else if (action === "reset-password-request-code") {
+    resetPasswordRequestCode(actionButton.closest(".admin-card")?.dataset.resetRequestId);
+  } else if (action === "complete-password-reset-request") {
+    completePasswordResetRequest(actionButton.closest(".admin-card")?.dataset.resetRequestId);
   }
 });
 elements.adminOverlay.addEventListener("change", (event) => {
@@ -679,21 +714,61 @@ render();
 function openCodeModal(mode = "login") {
   state.codeModalMode = mode;
   elements.accessCode.value = "";
-  elements.loginHint.textContent = "Entre ton code utilisateur a 6 chiffres.";
-  elements.codeModalTitle.textContent = "Se connecter";
-  elements.codeModalMessage.textContent = "Entrer votre code utilisateur a 6 chiffres.";
+  elements.passwordResetEmail.value = "";
+  const isPasswordReset = mode === "passwordReset";
+  elements.loginHint.textContent = isPasswordReset
+    ? "Entre ton adresse mail pour prévenir l'admin."
+    : "Entre ton code utilisateur a 6 chiffres.";
+  elements.codeModalTitle.textContent = isPasswordReset ? "Code oublié" : "Se connecter";
+  elements.codeModalMessage.textContent = isPasswordReset
+    ? "Entrer votre adresse mail."
+    : "Entrer votre code utilisateur a 6 chiffres.";
+  elements.accessCode.classList.toggle("hidden", isPasswordReset);
+  elements.passwordResetEmail.classList.toggle("hidden", !isPasswordReset);
+  elements.loginButton.textContent = isPasswordReset ? "Envoyer" : "Valider";
+  elements.forgotCodeButton.textContent = isPasswordReset ? "Retour connexion" : "Code oublié";
 
   elements.codeModal.classList.remove("hidden");
-  window.setTimeout(() => elements.accessCode.focus(), 20);
+  window.setTimeout(() => (isPasswordReset ? elements.passwordResetEmail : elements.accessCode).focus(), 20);
 }
 
 function closeCodeModal() {
   elements.codeModal.classList.add("hidden");
   elements.accessCode.value = "";
+  elements.passwordResetEmail.value = "";
+  elements.accessCode.classList.remove("hidden");
+  elements.passwordResetEmail.classList.add("hidden");
+  setLoginLoading(false);
 }
 
 function submitCodeModal() {
-  login();
+  if (state.codeModalMode === "passwordReset") {
+    submitPasswordResetRequest();
+  } else {
+    login();
+  }
+}
+
+async function submitPasswordResetRequest() {
+  const email = elements.passwordResetEmail.value.trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    elements.codeModalMessage.textContent = "Adresse mail non valide.";
+    return;
+  }
+
+  setLoginLoading(true);
+  const response = await requestPasswordReset({ email }).catch((error) => {
+    elements.codeModalMessage.textContent = error.message || "Demande impossible.";
+    return null;
+  });
+  setLoginLoading(false);
+  if (!response?.data?.ok) {
+    return;
+  }
+
+  closeCodeModal();
+  state.codeModalMode = "login";
+  setStatus("Demande de réinitialisation envoyée");
 }
 
 function openChangeCodePanel() {
@@ -792,6 +867,8 @@ function setLoginLoading(isLoading) {
   elements.loginButton.disabled = isLoading;
   elements.cancelLoginButton.disabled = isLoading;
   elements.accessCode.disabled = isLoading;
+  elements.passwordResetEmail.disabled = isLoading;
+  elements.forgotCodeButton.disabled = isLoading;
 }
 
 function restoreSavedSession() {
@@ -1015,9 +1092,79 @@ function startAuthenticatedDataSync() {
     return;
   }
 
+  prepareInitialDataRefreshIfNeeded();
   attachFirebaseListeners();
   restartDailyTagsListener();
   recordLoginAppearance();
+}
+
+function handleAppBecameVisible() {
+  recordLoginAppearance();
+  if (!state.authReady || !state.currentUser || !shouldShowStaleDataRefresh()) {
+    return;
+  }
+
+  beginInitialDataRefresh(waitingForInitialDataRefreshResources());
+  detachAuthenticatedDataSync({ keepsInitialDataRefresh: true });
+  attachFirebaseListeners();
+  restartDailyTagsListener();
+}
+
+function saveLastActiveTimestamp() {
+  localStorage.setItem(lastActiveStorageKey, String(Date.now()));
+}
+
+function shouldShowStaleDataRefresh() {
+  const lastActiveAt = Number(localStorage.getItem(lastActiveStorageKey) || 0);
+  return lastActiveAt > 0 && Date.now() - lastActiveAt >= staleDataRefreshThresholdMs;
+}
+
+function prepareInitialDataRefreshIfNeeded() {
+  if (!shouldShowStaleDataRefresh()) {
+    return;
+  }
+  beginInitialDataRefresh(waitingForInitialDataRefreshResources());
+}
+
+function waitingForInitialDataRefreshResources() {
+  const resources = new Set(["notesActive", "notesArchived", "handwritingNotes", "simulators"]);
+  if (state.currentUser?.id) {
+    resources.add("dailyTags");
+  }
+  return resources;
+}
+
+function beginInitialDataRefresh(resources) {
+  if (!resources?.size) {
+    return;
+  }
+
+  saveLastActiveTimestamp();
+  state.pendingInitialDataRefreshResources = new Set(resources);
+  state.initialDataRefreshVisible = true;
+  updateInitialDataRefreshOverlay();
+}
+
+function completeInitialDataRefreshResource(resource) {
+  if (!state.initialDataRefreshVisible) {
+    return;
+  }
+
+  state.pendingInitialDataRefreshResources.delete(resource);
+  if (!state.pendingInitialDataRefreshResources.size) {
+    finishInitialDataRefresh();
+  }
+}
+
+function finishInitialDataRefresh() {
+  state.pendingInitialDataRefreshResources.clear();
+  state.initialDataRefreshVisible = false;
+  updateInitialDataRefreshOverlay();
+}
+
+function updateInitialDataRefreshOverlay() {
+  elements.initialSyncOverlay?.classList.toggle("hidden", !state.initialDataRefreshVisible);
+  elements.initialSyncOverlay?.setAttribute("aria-hidden", state.initialDataRefreshVisible ? "false" : "true");
 }
 
 function attachFirebaseListeners() {
@@ -1034,7 +1181,7 @@ function attachFirebaseListeners() {
       renderSimulators();
       render();
     };
-    const applyNotesSnapshot = (target, snapshot) => {
+    const applyNotesSnapshot = (target, snapshot, refreshResource) => {
       trackFirestoreSnapshotRead("handoverNotes", snapshot);
       snapshot.docChanges().forEach((change) => {
         if (change.type === "removed") {
@@ -1044,6 +1191,9 @@ function attachFirebaseListeners() {
         }
       });
       syncNotes();
+      if (!snapshot.metadata.fromCache) {
+        completeInitialDataRefreshResource(refreshResource);
+      }
     };
     const displayWindow = realtimeDisplayWindow();
     const unsubscribeActive = onSnapshot(
@@ -1052,7 +1202,7 @@ function attachFirebaseListeners() {
         where("syncState", "==", "active"),
         where("displayDate", "<", displayWindow.end)
       ),
-      (snapshot) => applyNotesSnapshot(activeNotes, snapshot),
+      (snapshot) => applyNotesSnapshot(activeNotes, snapshot, "notesActive"),
       (error) => setStatus(error.message)
     );
     const unsubscribeRecentArchived = onSnapshot(
@@ -1061,7 +1211,7 @@ function attachFirebaseListeners() {
         where("syncState", "==", "archived"),
         where("realtimeActiveUntil", ">=", displayWindow.start)
       ),
-      (snapshot) => applyNotesSnapshot(recentArchivedNotes, snapshot),
+      (snapshot) => applyNotesSnapshot(recentArchivedNotes, snapshot, "notesArchived"),
       (error) => setStatus(error.message)
     );
     state.unsubscribeNotes = () => {
@@ -1099,6 +1249,9 @@ function attachFirebaseListeners() {
         .sort((a, b) => (b.updatedAt?.getTime() || 0) - (a.updatedAt?.getTime() || 0));
       setStatus("Données synchronisées");
       render();
+      if (!snapshot.metadata.fromCache) {
+        completeInitialDataRefreshResource("handwritingNotes");
+      }
     }, (error) => setStatus(error.message));
   }
 
@@ -1123,6 +1276,22 @@ function attachFirebaseListeners() {
     }, (error) => setStatus(error.message));
   }
 
+  if (isAdminSession() && !state.unsubscribePasswordResetRequests) {
+    state.unsubscribePasswordResetRequests = onSnapshot(
+      query(collection(db, "passwordResetRequests"), where("status", "==", "pending")),
+      (snapshot) => {
+        trackFirestoreSnapshotRead("passwordResetRequests", snapshot);
+        state.passwordResetRequests = snapshot.docs
+          .map((document) => passwordResetRequestFromSnapshot(document.id, document.data()))
+          .filter(Boolean)
+          .sort((a, b) => (b.lastRequestedAt?.getTime() || 0) - (a.lastRequestedAt?.getTime() || 0));
+        maybeShowPasswordResetAdminAlert();
+        renderAdminSettings();
+      },
+      (error) => setStatus(error.message)
+    );
+  }
+
   restartAdminTabListeners();
 
   restartAdminMessageListeners();
@@ -1138,6 +1307,9 @@ function attachFirebaseListeners() {
       renderSimulators();
       renderAdminSettings();
       render();
+      if (!snapshot.metadata.fromCache) {
+        completeInitialDataRefreshResource("simulators");
+      }
     }, (error) => setStatus(error.message));
   }
 }
@@ -1510,7 +1682,7 @@ function restartAdminMessageListeners() {
   );
 }
 
-function detachAuthenticatedDataSync() {
+function detachAuthenticatedDataSync({ keepsInitialDataRefresh = false } = {}) {
   const unsubscribeKeys = [
     "unsubscribeNotes",
     "unsubscribeNoteDeletions",
@@ -1522,6 +1694,7 @@ function detachAuthenticatedDataSync() {
     "unsubscribeAdminMessagesAll",
     "unsubscribeAdminMessagesTargeted",
     "unsubscribeAdminMessageDismissals",
+    "unsubscribePasswordResetRequests",
     "unsubscribeUsers",
     "unsubscribeSimulators",
     "unsubscribeAppSettings"
@@ -1534,6 +1707,9 @@ function detachAuthenticatedDataSync() {
     }
   });
 
+  if (!keepsInitialDataRefresh) {
+    finishInitialDataRefresh();
+  }
   state.notes = [];
   state.fetchedNoteDayKeys = new Set();
   state.fetchedNotesByID = new Map();
@@ -1555,6 +1731,8 @@ function detachAuthenticatedDataSync() {
   state.adminMessageDismissals = new Set();
   state.acknowledgedAdminMessageIDs = new Set();
   state.activeAdminMessage = null;
+  state.passwordResetRequests = [];
+  state.didShowPasswordResetAdminAlert = false;
   renderAdminMessageOverlay();
   state.users = [];
   state.allSimulators = [];
@@ -1602,6 +1780,9 @@ function restartDailyTagsListener() {
       .map((document) => dailyTagFromSnapshot(document.id, document.data()))
       .filter(Boolean);
     render();
+    if (!snapshot.metadata.fromCache) {
+      completeInitialDataRefreshResource("dailyTags");
+    }
   }, (error) => setStatus(error.message));
 }
 
@@ -2995,7 +3176,13 @@ function visibleSimulatorContexts() {
     for (const rawName of note.simulatorNames || []) {
       const name = stringValue(rawName).trim();
       const key = normalizeKey(name);
-      if (!name || key === normalizeKey(generalName) || configuredKeys.has(key) || missingNamesByKey.has(key)) {
+      if (
+        !name
+        || key === normalizeKey(generalName)
+        || deletedLegacySimulatorNames.has(name)
+        || configuredKeys.has(key)
+        || missingNamesByKey.has(key)
+      ) {
         continue;
       }
 
@@ -3027,6 +3214,7 @@ function userFromSnapshot(documentID, data) {
     id: stringValue(data.iCloudIdentifier, documentID),
     firstName: stringValue(data.firstName),
     lastName: stringValue(data.lastName),
+    email: stringValue(data.email).toLowerCase(),
     accessCode: stringValue(data.accessCode),
     isAccessCodeUserDefined: Boolean(data.isAccessCodeUserDefined),
     role: migratedSupportRole,
@@ -3041,6 +3229,7 @@ function userFromAuthClaims(uid, claims) {
     documentID: stringValue(claims.documentID, uid),
     firstName: stringValue(claims.firstName),
     lastName: stringValue(claims.lastName),
+    email: stringValue(claims.email).toLowerCase(),
     role: stringValue(claims.role, "consultation"),
     team: stringValue(claims.team)
   });
@@ -3052,9 +3241,44 @@ function normalizedSessionUser(user) {
     documentID: stringValue(user?.documentID, user?.id),
     firstName: stringValue(user?.firstName),
     lastName: stringValue(user?.lastName),
+    email: stringValue(user?.email).toLowerCase(),
     role: stringValue(user?.role, "consultation"),
     team: stringValue(user?.team)
   };
+}
+
+function passwordResetRequestFromSnapshot(documentID, data) {
+  const email = stringValue(data.email).toLowerCase();
+  if (!email) {
+    return null;
+  }
+
+  return {
+    id: stringValue(data.id, documentID),
+    email,
+    status: stringValue(data.status, "pending"),
+    matchedUserID: stringValue(data.matchedUserID),
+    matchedUserDocumentID: stringValue(data.matchedUserDocumentID),
+    matchedUserDisplayName: stringValue(data.matchedUserDisplayName),
+    requestCount: Number(data.requestCount || 1),
+    firstRequestedAt: dateValue(data.firstRequestedAt),
+    lastRequestedAt: dateValue(data.lastRequestedAt),
+    completedAt: dateValue(data.completedAt),
+    completedBy: stringValue(data.completedBy),
+    generatedCode: stringValue(data.generatedCode),
+    updatedAt: dateValue(data.updatedAt)
+  };
+}
+
+function maybeShowPasswordResetAdminAlert() {
+  if (!isAdminSession() || state.didShowPasswordResetAdminAlert || !state.passwordResetRequests.length) {
+    return;
+  }
+
+  state.didShowPasswordResetAdminAlert = true;
+  window.setTimeout(() => {
+    window.alert(`${state.passwordResetRequests.length} compte${state.passwordResetRequests.length > 1 ? "s" : ""} à réinitialiser.`);
+  }, 100);
 }
 
 function loginEventFromSnapshot(documentID, data) {
@@ -3229,6 +3453,8 @@ function renderAdminSettings(options = {}) {
                 ? "Maintenance des données"
                 : state.activeAdminTab === "messages"
                   ? "Messages"
+                  : state.activeAdminTab === "passwordResets"
+                    ? "Mots de passe oubliés"
                   : "Administration";
     elements.adminOverlay.querySelector("#adminTitle").textContent = title;
 
@@ -3246,6 +3472,8 @@ function renderAdminSettings(options = {}) {
       elements.adminBody.innerHTML = renderAdminMaintenance();
     } else if (state.activeAdminTab === "messages") {
       elements.adminBody.innerHTML = renderAdminMessages();
+    } else if (state.activeAdminTab === "passwordResets") {
+      elements.adminBody.innerHTML = renderAdminPasswordResets();
     } else {
       elements.adminBody.innerHTML = renderAdminHome();
     }
@@ -3366,6 +3594,7 @@ function isAdminDateInteractionActive() {
 
 function renderAdminHome() {
   const requiredIOSAppVersion = stringValue(state.appSettings?.requiredIOSAppVersion);
+  const pendingResetCount = state.passwordResetRequests.length;
   return `
     <div class="admin-menu-list">
       <button class="admin-menu-row" type="button" data-admin-action="open-admin-users">
@@ -3374,6 +3603,14 @@ function renderAdminHome() {
           <strong>Droits et utilisateurs</strong>
           <small>${state.users.length} compte${state.users.length > 1 ? "s" : ""} utilisateur</small>
         </span>
+      </button>
+      <button class="admin-menu-row" type="button" data-admin-action="open-admin-password-resets">
+        <span class="admin-menu-icon">⌁</span>
+        <span>
+          <strong>Mots de passe oubliés</strong>
+          <small>${pendingResetCount ? `${pendingResetCount} demande${pendingResetCount > 1 ? "s" : ""} en attente` : "Aucune demande en attente"}</small>
+        </span>
+        ${pendingResetCount ? `<span class="admin-menu-badge">${pendingResetCount}</span>` : ""}
       </button>
       <button class="admin-menu-row" type="button" data-admin-action="open-admin-simulators">
         <span class="admin-menu-icon">▦</span>
@@ -3565,6 +3802,59 @@ function renderAdminMessages() {
   `;
 }
 
+function renderAdminPasswordResets() {
+  const requests = state.passwordResetRequests;
+  return `
+    ${renderAdminBackButton()}
+    <div class="admin-section-heading">
+      <h3>Demandes en attente</h3>
+      <p>Réinitialise le code utilisateur, puis communique le nouveau code à la personne.</p>
+    </div>
+    <div class="admin-list">
+      ${requests.map(renderAdminPasswordResetRequest).join("") || "<p class=\"muted\">Aucune demande en attente.</p>"}
+    </div>
+  `;
+}
+
+function renderAdminPasswordResetRequest(request) {
+  const matchedUser = matchedPasswordResetUser(request);
+  const displayName = matchedUser
+    ? currentDisplayNameForUser(matchedUser)
+    : request.matchedUserDisplayName || "Compte non relié";
+  const userMeta = matchedUser
+    ? `${userRoleLabel(matchedUser.role, matchedUser.team)} · ${matchedUser.id}`
+    : "Ajoute l'email sur la fiche utilisateur pour relier automatiquement ce compte.";
+  return `
+    <article class="admin-card" data-reset-request-id="${escapeAttribute(request.id)}">
+      <div class="admin-card-title">
+        <strong>${escapeHtml(displayName)}</strong>
+        <span class="admin-reset-status">En attente</span>
+      </div>
+      <div class="admin-activity-meta">
+        <span>Mail : ${escapeHtml(request.email)}</span>
+        <span>${escapeHtml(userMeta)}</span>
+        <span>${escapeHtml(formatDateTime(request.lastRequestedAt))}</span>
+        ${request.requestCount > 1 ? `<span>${request.requestCount} demandes</span>` : ""}
+      </div>
+      <div class="admin-actions">
+        <button type="button" class="secondary" data-admin-action="complete-password-reset-request">Clôturer</button>
+        <button type="button" data-admin-action="reset-password-request-code" ${matchedUser ? "" : "disabled"}>Réinitialiser code</button>
+      </div>
+    </article>
+  `;
+}
+
+function matchedPasswordResetUser(request) {
+  const documentKey = normalizeKey(request.matchedUserDocumentID);
+  const userKey = normalizeKey(request.matchedUserID);
+  const emailKey = normalizeKey(request.email);
+  return state.users.find((user) => {
+    return (documentKey && normalizeKey(user.documentID) === documentKey)
+      || (userKey && normalizeKey(user.id) === userKey)
+      || (emailKey && normalizeKey(user.email) === emailKey);
+  }) || null;
+}
+
 function resetAdminMessageComposer() {
   state.adminMessageText = "";
   state.adminMessageSendsToAll = false;
@@ -3590,6 +3880,7 @@ function renderAdminUsers() {
       <div class="admin-form-grid create-user-grid">
         <label>Prénom<input id="newUserFirstName" autocomplete="off" placeholder="Prénom"></label>
         <label>Nom<input id="newUserLastName" autocomplete="off" placeholder="Nom"></label>
+        <label>Email<input id="newUserEmail" type="email" autocomplete="off" placeholder="prenom.nom@example.com"></label>
         <label>Code à 6 chiffres<input id="newUserAccessCode" maxlength="6" inputmode="numeric" autocomplete="off" placeholder="Code"></label>
         <label>Rôle
           <select id="newUserRole">
@@ -3666,6 +3957,7 @@ function renderAdminUserCard(user) {
       <div class="admin-form-grid">
         <label>Prénom<input data-field="firstName" value="${escapeAttribute(user.firstName)}"></label>
         <label>Nom<input data-field="lastName" value="${escapeAttribute(user.lastName)}"></label>
+        <label>Email<input data-field="email" type="email" value="${escapeAttribute(user.email || "")}"></label>
         <label>Code<input data-field="accessCode" type="${codeInputType}" value="${escapeAttribute(codeValue)}" maxlength="6" inputmode="numeric" autocomplete="off"></label>
         <label>Rôle
           <select data-field="role">
@@ -3709,6 +4001,7 @@ function adminUserSearchText(user) {
   return [
     user.firstName,
     user.lastName,
+    user.email,
     `${user.firstName} ${user.lastName}`,
     `${user.lastName} ${user.firstName}`
   ].filter(Boolean).join(" ");
@@ -3854,7 +4147,7 @@ function renderAdminActivityEvent(event) {
       </div>
       <div class="admin-activity-note-row">
         <span>${escapeHtml(noteTitle)}</span>
-        <button type="button" class="secondary" data-admin-action="open-activity-note" ${note ? "" : "disabled"}>Ouvrir</button>
+        <button type="button" class="secondary" data-admin-action="open-activity-note" ${event.noteID ? "" : "disabled"}>Ouvrir</button>
       </div>
     </article>
   `;
@@ -3881,9 +4174,9 @@ function filteredActivityEvents() {
   });
 }
 
-function openActivityNote(card) {
+async function openActivityNote(card) {
   const noteID = card?.dataset.noteId || "";
-  const note = state.notes.find((candidate) => candidate.id === noteID);
+  const note = state.notes.find((candidate) => candidate.id === noteID) || await fetchNoteByID(noteID);
   if (!note) {
     setStatus("Consigne introuvable");
     return;
@@ -3891,6 +4184,28 @@ function openActivityNote(card) {
 
   const context = card?.dataset.context || (note.isGeneral ? generalName : note.simulatorNames[0] || generalName);
   openDetail(note.id, context, { overAdmin: true });
+}
+
+async function fetchNoteByID(noteID) {
+  if (!noteID || !state.authReady || !state.currentUser) {
+    return null;
+  }
+
+  try {
+    const snapshot = await getDoc(doc(db, "handoverNotes", noteID));
+    trackFirestoreDocumentRead("handoverNotes", snapshot);
+    if (!snapshot.exists()) {
+      return null;
+    }
+
+    const note = noteFromSnapshot(snapshot.id, snapshot.data());
+    state.fetchedNotesByID.set(note.id, note);
+    state.notes = Array.from(new Map(state.notes.map((candidate) => [candidate.id, candidate])).set(note.id, note).values());
+    return note;
+  } catch (error) {
+    setStatus(error.message);
+    return null;
+  }
 }
 
 function renderAdminSimulatorCard(simulator) {
@@ -4282,6 +4597,7 @@ async function createAdminUser() {
 
   const firstName = elements.adminBody.querySelector("#newUserFirstName")?.value.trim() || "";
   const lastName = elements.adminBody.querySelector("#newUserLastName")?.value.trim() || "";
+  const email = (elements.adminBody.querySelector("#newUserEmail")?.value.trim() || "").toLowerCase();
   const accessCode = (elements.adminBody.querySelector("#newUserAccessCode")?.value || "")
     .replace(/\D/g, "")
     .slice(0, 6);
@@ -4306,6 +4622,7 @@ async function createAdminUser() {
       iCloudIdentifier: identifier,
       firstName,
       lastName,
+      email,
       accessCode,
       isAccessCodeUserDefined: false,
       roleRawValue: role,
@@ -4344,6 +4661,7 @@ async function saveAdminUser(documentID) {
   const patch = {
     firstName: card.querySelector('[data-field="firstName"]').value.trim(),
     lastName: card.querySelector('[data-field="lastName"]').value.trim(),
+    email: card.querySelector('[data-field="email"]').value.trim().toLowerCase(),
     roleRawValue: nextRole,
     teamRawValue: nullableString(card.querySelector('[data-field="team"]').value),
     updatedAt: new Date()
@@ -4375,6 +4693,61 @@ async function resetAdminUserCode(documentID) {
     updatedAt: new Date()
   });
   setStatus(`Code réinitialisé : ${code}`);
+}
+
+async function resetPasswordRequestCode(requestID) {
+  if (!isAdminSession()) {
+    setStatus("Acces admin requis");
+    return;
+  }
+
+  const request = state.passwordResetRequests.find((candidate) => candidate.id === requestID);
+  const user = request ? matchedPasswordResetUser(request) : null;
+  if (!request || !user) {
+    setStatus("Compte utilisateur introuvable");
+    return;
+  }
+
+  const code = generateAccessCode();
+  const now = new Date();
+  await updateDoc(doc(db, "users", user.documentID), {
+    accessCode: code,
+    isAccessCodeUserDefined: false,
+    updatedAt: now
+  });
+  await updateDoc(doc(db, "passwordResetRequests", request.id), {
+    status: "completed",
+    completedAt: now,
+    completedBy: currentDisplayName(),
+    generatedCode: code,
+    updatedAt: now
+  });
+  state.passwordResetRequests = state.passwordResetRequests.filter((candidate) => candidate.id !== request.id);
+  renderAdminSettings();
+  setStatus(`Code réinitialisé pour ${currentDisplayNameForUser(user)} : ${code}`);
+}
+
+async function completePasswordResetRequest(requestID) {
+  if (!isAdminSession()) {
+    setStatus("Acces admin requis");
+    return;
+  }
+
+  const request = state.passwordResetRequests.find((candidate) => candidate.id === requestID);
+  if (!request) {
+    return;
+  }
+
+  const now = new Date();
+  await updateDoc(doc(db, "passwordResetRequests", request.id), {
+    status: "completed",
+    completedAt: now,
+    completedBy: currentDisplayName(),
+    updatedAt: now
+  });
+  state.passwordResetRequests = state.passwordResetRequests.filter((candidate) => candidate.id !== request.id);
+  renderAdminSettings();
+  setStatus("Demande clôturée");
 }
 
 function requestDeleteAdminUser(documentID, anchorButton) {
@@ -4460,6 +4833,11 @@ async function saveAdminSimulator(simulatorID) {
     return;
   }
 
+  const previousName = stringValue(simulator?.name).trim();
+  if (previousName && normalizeKey(previousName) !== normalizeKey(name)) {
+    await renameSimulatorReferences(previousName, name);
+  }
+
   await updateDoc(doc(db, "simulators", simulatorID), {
     id: simulator?.id || simulatorID,
     name,
@@ -4469,6 +4847,93 @@ async function saveAdminSimulator(simulatorID) {
     updatedAt: new Date()
   });
   setStatus("Simulateur enregistré");
+}
+
+async function renameSimulatorReferences(previousName, nextName) {
+  const previousKey = normalizeKey(previousName);
+  const nextKey = normalizeKey(nextName);
+  if (!previousKey || !nextKey || previousKey === nextKey) {
+    return;
+  }
+
+  const renamedContext = (context) => {
+    const text = stringValue(context).trim();
+    if (normalizeKey(text) === previousKey) {
+      return nextName;
+    }
+
+    const separatorIndex = text.indexOf("#");
+    if (separatorIndex > 0 && normalizeKey(text.slice(0, separatorIndex)) === previousKey) {
+      return `${nextName}${text.slice(separatorIndex)}`;
+    }
+
+    return context;
+  };
+
+  const renamedDestinationStorage = (storage) => {
+    return stringValue(storage)
+      .split("\n")
+      .map((entry) => renamedContext(entry))
+      .join("\n");
+  };
+
+  const updates = [];
+  for (const note of state.notes) {
+    const simulatorNames = uniqueStrings((note.simulatorNames || []).map((simulatorName) => {
+      return normalizeKey(simulatorName) === previousKey ? nextName : simulatorName;
+    }));
+    const completedContexts = uniqueStrings((note.completedContexts || []).map(renamedContext));
+    const completions = (note.completions || []).map((completion) => ({
+      ...completion,
+      context: renamedContext(completion.context)
+    }));
+    const completionCancellations = (note.completionCancellations || []).map((cancellation) => ({
+      ...cancellation,
+      context: renamedContext(cancellation.context)
+    }));
+    const acknowledgements = (note.acknowledgements || []).map((acknowledgement) => ({
+      ...acknowledgement,
+      context: renamedContext(acknowledgement.context)
+    }));
+    const revisions = (note.revisions || []).map((revision) => ({
+      ...revision,
+      previousDestinationStorage: revision.previousDestinationStorage
+        ? renamedDestinationStorage(revision.previousDestinationStorage)
+        : revision.previousDestinationStorage,
+      newDestinationStorage: revision.newDestinationStorage
+        ? renamedDestinationStorage(revision.newDestinationStorage)
+        : revision.newDestinationStorage
+    }));
+
+    const hasChanges =
+      simulatorNames.join("\n") !== (note.simulatorNames || []).join("\n")
+      || completedContexts.join("\n") !== (note.completedContexts || []).join("\n")
+      || JSON.stringify(completions) !== JSON.stringify(note.completions || [])
+      || JSON.stringify(completionCancellations) !== JSON.stringify(note.completionCancellations || [])
+      || JSON.stringify(acknowledgements) !== JSON.stringify(note.acknowledgements || [])
+      || JSON.stringify(revisions) !== JSON.stringify(note.revisions || []);
+
+    if (!hasChanges) {
+      continue;
+    }
+
+    const patch = {
+      simulatorNamesStorage: simulatorNames.join("\n"),
+      completedContextsStorage: completedContexts.join("\n"),
+      completionHistoryData: completions.length ? encodeRecordArray(completions) : deleteField(),
+      completionCancellationHistoryData: completionCancellations.length ? encodeRecordArray(completionCancellations) : deleteField(),
+      acknowledgementHistoryData: acknowledgements.length ? encodeRecordArray(acknowledgements) : deleteField(),
+      revisionHistoryData: revisions.length ? encodeRecordArray(revisions) : deleteField(),
+      updatedAt: new Date()
+    };
+    const indexedPatch = {
+      ...patch,
+      ...handoverIndexFields(noteWithPatchForIndex(note, patch))
+    };
+    updates.push(updateDoc(doc(db, "handoverNotes", note.id), indexedPatch));
+  }
+
+  await Promise.all(updates);
 }
 
 async function createAdminSimulator() {
@@ -6230,6 +6695,10 @@ function noteWithPatchForIndex(note, patch) {
     richTextHTML: value("richTextHTML", note.richTextHTML, ""),
     richTextData: value("richTextData", note.richTextData, ""),
     author: value("author", note.author, ""),
+    updatedAt: value("updatedAt", note.updatedAt, null),
+    syncState: value("syncState", note.syncState, ""),
+    lastRealtimeRelevantAt: value("lastRealtimeRelevantAt", note.lastRealtimeRelevantAt, null),
+    realtimeActiveUntil: value("realtimeActiveUntil", note.realtimeActiveUntil, null),
     displayDate: value("displayDate", note.displayDate, note.displayDate),
     firstDisplayDate: value("firstDisplayDate", note.firstDisplayDate, note.firstDisplayDate),
     deletedAt: value("deletedAt", note.deletedAt, null),
@@ -6247,6 +6716,9 @@ function noteWithPatchForIndex(note, patch) {
     completionCancellations: Object.prototype.hasOwnProperty.call(patch, "completionCancellationHistoryData")
       ? decodeRecordArray(isDeleteFieldSentinel(patch.completionCancellationHistoryData) ? "" : patch.completionCancellationHistoryData)
       : note.completionCancellations,
+    acknowledgements: Object.prototype.hasOwnProperty.call(patch, "acknowledgementHistoryData")
+      ? decodeRecordArray(isDeleteFieldSentinel(patch.acknowledgementHistoryData) ? "" : patch.acknowledgementHistoryData)
+      : note.acknowledgements,
     revisions: Object.prototype.hasOwnProperty.call(patch, "revisionHistoryData")
       ? decodeRecordArray(isDeleteFieldSentinel(patch.revisionHistoryData) ? "" : patch.revisionHistoryData)
       : note.revisions,

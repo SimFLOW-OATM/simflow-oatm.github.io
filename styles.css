@@ -1694,6 +1694,40 @@ mark {
   font-variant-numeric: tabular-nums;
 }
 
+.forgot-code-button {
+  width: 100%;
+  min-height: 34px;
+  margin-top: 10px;
+  border: 1px solid rgba(190, 90, 48, 0.18);
+  border-radius: 17px;
+  padding: 0 12px;
+  color: #9a3412;
+  background: rgba(251, 146, 60, 0.18);
+  box-shadow: none;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.admin-menu-badge,
+.admin-reset-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  min-height: 24px;
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: white;
+  background: #dc2626;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.admin-reset-status.done {
+  background: #34c759;
+  color: #050505;
+}
+
 .admin-card-title .admin-connection-total {
   color: var(--ink);
   font-size: 20px;
@@ -3328,6 +3362,55 @@ mark {
   flex-wrap: wrap;
 }
 
+.initial-sync-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 130;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.32);
+  backdrop-filter: blur(8px);
+}
+
+.initial-sync-overlay.hidden {
+  display: none;
+}
+
+.initial-sync-panel {
+  display: grid;
+  justify-items: center;
+  width: min(360px, 100%);
+  padding: 26px 28px 24px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.30);
+  text-align: center;
+}
+
+.initial-sync-spinner {
+  width: 34px;
+  height: 34px;
+  margin-bottom: 14px;
+  border: 3px solid rgba(47, 128, 237, 0.20);
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: simflow-spin 0.75s linear infinite;
+}
+
+.initial-sync-panel h2 {
+  margin: 0 0 8px;
+  font-size: 20px;
+}
+
+.initial-sync-panel p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
 .admin-message-composer textarea {
   min-height: 150px;
   resize: vertical;
@@ -3449,6 +3532,15 @@ mark {
   .admin-message-panel {
     border-radius: 14px;
     padding: 22px;
+  }
+
+  .initial-sync-overlay {
+    padding: 18px;
+  }
+
+  .initial-sync-panel {
+    border-radius: 14px;
+    padding: 24px 20px;
   }
 
   .admin-form-grid,

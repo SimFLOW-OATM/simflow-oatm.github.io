@@ -160,10 +160,12 @@
           <span>Connexion en cours...</span>
         </div>
         <input id="accessCode" type="password" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="Code">
+        <input class="hidden" id="passwordResetEmail" type="email" inputmode="email" autocomplete="email" placeholder="Adresse mail">
         <div class="code-dialog-actions">
           <button class="secondary" id="cancelLoginButton" type="button">Annuler</button>
           <button class="secondary" id="loginButton" type="button">Valider</button>
         </div>
+        <button class="forgot-code-button" id="forgotCodeButton" type="button">Code oublié</button>
       </div>
     </div>
 
@@ -213,6 +215,14 @@
     </section>
   </div>
 
+  <div class="initial-sync-overlay hidden" id="initialSyncOverlay" aria-hidden="true">
+    <section class="initial-sync-panel" role="dialog" aria-modal="true" aria-labelledby="initialSyncTitle">
+      <span class="initial-sync-spinner" aria-hidden="true"></span>
+      <h2 id="initialSyncTitle">Mise a jour des données...</h2>
+      <p>Merci de patienter pendant la synchronisation.</p>
+    </section>
+  </div>
+
   <div class="detail-overlay hidden" id="detailOverlay" aria-hidden="true">
     <section class="detail-panel" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
       <div class="detail-header">
@@ -252,6 +262,6 @@
     </section>
   </div>
 
-  <script type="module" src="./app.js?v=20260715-active-until-today"></script>
+  <script type="module" src="./app.js?v=20260818-password-reset"></script>
 </body>
 </html>
