@@ -30,16 +30,18 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
-const WEB_APP_VERSION = "1.86";
+const WEB_APP_VERSION = "1.87";
 const userGuideURL = "./assets/Guide%20utilisateur%20SimFLOW.pdf";
 const deletedLegacySimulatorNames = new Set(["Simu", "Simu 1", "Simu 2", "Simu 3", "Simu 4", "Simu Tes", "Simu test 2", "Simu Test 2"]);
 const sessionStorageKey = "simflow.web.currentUser";
 const lastActiveStorageKey = "simflow.web.lastActiveAt";
+const lastSuccessfulDataRefreshStorageKey = "simflow.web.lastSuccessfulDataRefreshAt";
 const archiveRealtimeRetentionDays = 4;
 const activeRealtimeUntil = new Date("2100-01-01T00:00:00.000Z");
 const webDeviceStorageKey = "simflow.web.deviceIdentifier";
 const sessionDurationMs = 30 * 24 * 60 * 60 * 1000;
 const staleDataRefreshThresholdMs = 24 * 60 * 60 * 1000;
+const staleDataRefreshWarningThresholdMs = 30 * 60 * 1000;
 const activeLoginSessionWindowMs = 90 * 1000;
 const loginPresenceRefreshMs = 2 * 1000;
 const firestoreReadStatsFlushMs = 5 * 1000;
@@ -70,6 +72,9 @@ const state = {
   fetchedNoteDayKeys: new Set(),
   fetchedNotesByID: new Map(),
   fetchedSearchKeys: new Set(),
+  fetchedDeletedNotes: false,
+  fetchedAdminConnectionNotes: false,
+  isFetchingAdminConnectionNotes: false,
   globalSearchRequestID: 0,
   globalSearchTimer: null,
   handwritingNotes: [],
@@ -121,6 +126,8 @@ const state = {
   lastLoginEventAt: 0,
   initialDataRefreshVisible: false,
   pendingInitialDataRefreshResources: new Set(),
+  lastSuccessfulDataRefreshAt: readStoredDataRefreshDate(),
+  isManualDataRefreshRunning: false,
   firestoreReadStatsBuffer: new Map(),
   firestoreReadStatsFlushTimer: null
 };
@@ -152,6 +159,8 @@ const elements = {
   content: document.querySelector(".content"),
   loginPanel: document.querySelector("#loginPanel"),
   brandResetButton: document.querySelector("#brandResetButton"),
+  dataRefreshIndicator: document.querySelector("#dataRefreshIndicator"),
+  dataRefreshIndicatorText: document.querySelector("#dataRefreshIndicatorText"),
   webVersionBadge: document.querySelector("#webVersionBadge"),
   userPanel: document.querySelector("#userPanel"),
   openLoginButton: document.querySelector("#openLoginButton"),
@@ -227,6 +236,7 @@ let pendingCenteredSimulatorBandAnchor = null;
 
 elements.webVersionBadge.textContent = `v${WEB_APP_VERSION}`;
 elements.webVersionBadge.title = `Version web ${WEB_APP_VERSION}`;
+renderDataRefreshIndicator();
 elements.selectedDate.value = isoDate(state.selectedDate);
 restoreSavedSession();
 if (window.location.protocol === "file:") {
@@ -270,6 +280,7 @@ onAuthStateChanged(auth, async (user) => {
 });
 
 elements.brandResetButton.addEventListener("click", resetDisplayState);
+elements.dataRefreshIndicator.addEventListener("click", refreshDataFromIndicator);
 elements.openLoginButton.addEventListener("click", () => openCodeModal("login"));
 elements.loginButton.addEventListener("click", submitCodeModal);
 elements.cancelLoginButton.addEventListener("click", closeCodeModal);
@@ -315,6 +326,7 @@ window.addEventListener("beforeunload", () => {
   saveLastActiveTimestamp();
   flushFirestoreReadStats();
 });
+window.setInterval(renderDataRefreshIndicator, 60 * 1000);
 window.setInterval(refreshAdminConnectionsPresence, loginPresenceRefreshMs);
 elements.userSummaryButton.addEventListener("click", () => {
   elements.userMenu.classList.toggle("hidden");
@@ -401,6 +413,9 @@ elements.showAcknowledgedToggle.addEventListener("change", () => {
 });
 elements.showDeletedToggle.addEventListener("change", () => {
   state.showDeleted = elements.showDeletedToggle.checked;
+  if (state.showDeleted) {
+    fetchDeletedNotesIfNeeded();
+  }
   if (!state.showDeleted) {
     state.showOnlyDeleted = false;
   }
@@ -410,6 +425,7 @@ elements.showOnlyDeletedToggle.addEventListener("change", () => {
   state.showOnlyDeleted = elements.showOnlyDeletedToggle.checked;
   if (state.showOnlyDeleted) {
     state.showDeleted = true;
+    fetchDeletedNotesIfNeeded();
   }
   renderPreservingCenteredSimulatorBand(takePendingCenteredSimulatorBandAnchor());
 });
@@ -1127,7 +1143,7 @@ function prepareInitialDataRefreshIfNeeded() {
 }
 
 function waitingForInitialDataRefreshResources() {
-  const resources = new Set(["notesActive", "notesArchived", "handwritingNotes", "simulators"]);
+  const resources = new Set(["notesActive", "notesArchived", "notesDeleted", "handwritingNotes", "simulators"]);
   if (state.currentUser?.id) {
     resources.add("dailyTags");
   }
@@ -1167,13 +1183,162 @@ function updateInitialDataRefreshOverlay() {
   elements.initialSyncOverlay?.setAttribute("aria-hidden", state.initialDataRefreshVisible ? "false" : "true");
 }
 
+function recordSuccessfulDataRefresh(date = new Date()) {
+  state.lastSuccessfulDataRefreshAt = date;
+  localStorage.setItem(lastSuccessfulDataRefreshStorageKey, date.toISOString());
+  renderDataRefreshIndicator();
+}
+
+function readStoredDataRefreshDate() {
+  const storedValue = localStorage.getItem(lastSuccessfulDataRefreshStorageKey);
+  const storedDate = storedValue ? new Date(storedValue) : null;
+  return storedDate && !Number.isNaN(storedDate.getTime()) ? storedDate : null;
+}
+
+function renderDataRefreshIndicator() {
+  if (!elements.dataRefreshIndicator || !elements.dataRefreshIndicatorText) {
+    return;
+  }
+
+  const isStale = !state.lastSuccessfulDataRefreshAt
+    || Date.now() - state.lastSuccessfulDataRefreshAt.getTime() > staleDataRefreshWarningThresholdMs;
+  elements.dataRefreshIndicator.classList.toggle("stale", isStale);
+  elements.dataRefreshIndicator.classList.toggle("syncing", state.isManualDataRefreshRunning);
+  elements.dataRefreshIndicator.disabled = !state.currentUser || state.isManualDataRefreshRunning;
+  elements.dataRefreshIndicatorText.textContent = `MAJ ${lastSuccessfulDataRefreshText()} - ${activeCurrentDayNoteCount()} (${activeCurrentDayAverageCreationAgeText()})`;
+}
+
+function lastSuccessfulDataRefreshText() {
+  return state.lastSuccessfulDataRefreshAt
+    ? formatDateTime(state.lastSuccessfulDataRefreshAt)
+    : "jamais vérifiée";
+}
+
+function activeCurrentDayNoteEntries() {
+  if (!state.currentUser) {
+    return [];
+  }
+
+  const today = startOfDay(new Date());
+  const contexts = [generalName, ...visibleSimulatorContexts().map((simulator) => simulator.name)];
+  const entries = [];
+
+  for (const context of contexts) {
+    state.notes
+      .filter((note) => noteBelongsToContext(note, context))
+      .filter((note) => isActiveCurrentDayNote(note, context, today))
+      .forEach((note) => entries.push(note));
+  }
+
+  return entries;
+}
+
+function activeCurrentDayNoteCount() {
+  return activeCurrentDayNoteEntries().length;
+}
+
+function activeCurrentDayAverageCreationAgeText() {
+  const entries = activeCurrentDayNoteEntries();
+  if (!entries.length) {
+    return "0 j";
+  }
+
+  const averageDays = entries
+    .map((note) => Math.max(0, (Date.now() - (note.createdAt || new Date()).getTime()) / 86400000))
+    .reduce((sum, value) => sum + value, 0) / entries.length;
+  const roundedAverageDays = Math.round(averageDays * 10) / 10;
+
+  if (Number.isInteger(roundedAverageDays)) {
+    return `${roundedAverageDays} j`;
+  }
+
+  return `${roundedAverageDays.toFixed(1).replace(".", ",")} j`;
+}
+
+function isActiveCurrentDayNote(note, context, day) {
+  const noteDay = startOfDay(note.displayDate);
+  return !note.deletedAt
+    && canCurrentUserSeeNote(note)
+    && noteDay <= day
+    && !isCompletedBefore(note, day, context);
+}
+
+async function refreshDataFromIndicator() {
+  if (!state.currentUser || !state.authReady || state.isManualDataRefreshRunning) {
+    return;
+  }
+
+  state.isManualDataRefreshRunning = true;
+  renderDataRefreshIndicator();
+  setStatus("Synchronisation des données...");
+
+  try {
+    await Promise.all([
+      fetchRealtimeNotesFromServer(),
+      fetchHandwritingNotesFromServer()
+    ]);
+    recordSuccessfulDataRefresh();
+    setStatus("Données synchronisées");
+    renderSimulators();
+    render();
+  } catch (error) {
+    setStatus(error.message);
+  } finally {
+    state.isManualDataRefreshRunning = false;
+    renderDataRefreshIndicator();
+  }
+}
+
+async function fetchRealtimeNotesFromServer() {
+  const displayWindow = realtimeDisplayWindow();
+  const snapshots = await Promise.all([
+    getDocs(query(
+      collection(db, "handoverNotes"),
+      where("syncState", "==", "active"),
+      where("displayDate", "<", displayWindow.end)
+    )),
+    getDocs(query(
+      collection(db, "handoverNotes"),
+      where("syncState", "==", "archived"),
+      where("realtimeActiveUntil", ">=", displayWindow.start)
+    )),
+    getDocs(query(
+      collection(db, "handoverNotes"),
+      where("syncState", "==", "deleted"),
+      where("realtimeActiveUntil", ">=", displayWindow.start)
+    ))
+  ]);
+
+  const notesByID = new Map(state.notes.map((note) => [note.id, note]));
+  snapshots.forEach((snapshot) => {
+    trackFirestoreRead("handoverNotes", snapshot.docs.length);
+    snapshot.docs
+      .map((document) => noteFromSnapshot(document.id, document.data()))
+      .forEach((note) => {
+        state.fetchedNotesByID.set(note.id, note);
+        notesByID.set(note.id, note);
+      });
+  });
+  state.notes = Array.from(notesByID.values());
+}
+
+async function fetchHandwritingNotesFromServer() {
+  const snapshot = await getDocs(collection(db, "handwritingNotes"));
+  trackFirestoreRead("handwritingNotes", snapshot.docs.length);
+  state.handwritingNotes = snapshot.docs
+    .map((document) => handwritingNoteFromSnapshot(document.id, document.data()))
+    .sort((a, b) => (b.updatedAt?.getTime() || 0) - (a.updatedAt?.getTime() || 0));
+}
+
 function attachFirebaseListeners() {
   if (!state.unsubscribeNotes) {
     const activeNotes = new Map();
     const recentArchivedNotes = new Map();
+    const recentDeletedNotes = new Map();
     const syncNotes = () => {
       state.notes = Array.from(new Map([
         ...state.fetchedNotesByID,
+        ...recentDeletedNotes,
         ...recentArchivedNotes,
         ...activeNotes
       ]).values());
@@ -1192,6 +1357,7 @@ function attachFirebaseListeners() {
       });
       syncNotes();
       if (!snapshot.metadata.fromCache) {
+        recordSuccessfulDataRefresh();
         completeInitialDataRefreshResource(refreshResource);
       }
     };
@@ -1214,9 +1380,19 @@ function attachFirebaseListeners() {
       (snapshot) => applyNotesSnapshot(recentArchivedNotes, snapshot, "notesArchived"),
       (error) => setStatus(error.message)
     );
+    const unsubscribeRecentDeleted = onSnapshot(
+      query(
+        collection(db, "handoverNotes"),
+        where("syncState", "==", "deleted"),
+        where("realtimeActiveUntil", ">=", displayWindow.start)
+      ),
+      (snapshot) => applyNotesSnapshot(recentDeletedNotes, snapshot, "notesDeleted"),
+      (error) => setStatus(error.message)
+    );
     state.unsubscribeNotes = () => {
       unsubscribeActive();
       unsubscribeRecentArchived();
+      unsubscribeRecentDeleted();
     };
   }
 
@@ -1250,6 +1426,7 @@ function attachFirebaseListeners() {
       setStatus("Données synchronisées");
       render();
       if (!snapshot.metadata.fromCache) {
+        recordSuccessfulDataRefresh();
         completeInitialDataRefreshResource("handwritingNotes");
       }
     }, (error) => setStatus(error.message));
@@ -1361,12 +1538,73 @@ async function fetchNotesForSelectedDateIfNeeded(date) {
       notesByID.set(note.id, note);
     });
     state.notes = Array.from(notesByID.values());
+    recordSuccessfulDataRefresh();
     setStatus("Données synchronisées");
     renderSimulators();
     render();
   } catch (error) {
     state.fetchedNoteDayKeys.delete(dayKey);
     setStatus(error.message);
+  }
+}
+
+async function fetchDeletedNotesIfNeeded() {
+  if (!state.currentUser || !state.authReady || !canCurrentUserViewDeletedNotes() || state.fetchedDeletedNotes) {
+    return;
+  }
+
+  state.fetchedDeletedNotes = true;
+
+  try {
+    const snapshot = await getDocs(query(
+      collection(db, "handoverNotes"),
+      where("syncState", "==", "deleted")
+    ));
+    trackFirestoreRead("handoverNotes", snapshot.docs.length);
+    const fetchedNotes = snapshot.docs.map((doc) => noteFromSnapshot(doc.id, doc.data()));
+    const notesByID = new Map(state.notes.map((note) => [note.id, note]));
+    fetchedNotes.forEach((note) => {
+      state.fetchedNotesByID.set(note.id, note);
+      notesByID.set(note.id, note);
+    });
+    state.notes = Array.from(notesByID.values());
+    recordSuccessfulDataRefresh();
+    setStatus("Consignes supprimées synchronisées");
+    renderSimulators();
+    render();
+  } catch (error) {
+    state.fetchedDeletedNotes = false;
+    setStatus(error.message);
+  }
+}
+
+async function fetchAdminConnectionNotesIfNeeded() {
+  if (!state.currentUser || !state.authReady || !isAdminSession() || state.fetchedAdminConnectionNotes || state.isFetchingAdminConnectionNotes) {
+    return;
+  }
+
+  state.isFetchingAdminConnectionNotes = true;
+
+  try {
+    const snapshot = await getDocs(collection(db, "handoverNotes"));
+    trackFirestoreRead("handoverNotes", snapshot.docs.length);
+    const fetchedNotes = snapshot.docs.map((doc) => noteFromSnapshot(doc.id, doc.data()));
+    const notesByID = new Map(state.notes.map((note) => [note.id, note]));
+    fetchedNotes.forEach((note) => {
+      state.fetchedNotesByID.set(note.id, note);
+      notesByID.set(note.id, note);
+    });
+    state.notes = Array.from(notesByID.values());
+    state.fetchedAdminConnectionNotes = true;
+    recordSuccessfulDataRefresh();
+    setStatus("Statistiques connexions synchronisées");
+    renderSimulators();
+    renderAdminSettings();
+    render();
+  } catch (error) {
+    setStatus(error.message);
+  } finally {
+    state.isFetchingAdminConnectionNotes = false;
   }
 }
 
@@ -1415,6 +1653,7 @@ async function fetchGlobalSearchNotesIfNeeded(searchText) {
       notesByID.set(note.id, note);
     });
     state.notes = Array.from(notesByID.values());
+    recordSuccessfulDataRefresh();
     setStatus("Recherche synchronisée");
     renderSimulators();
     render();
@@ -1441,6 +1680,7 @@ function startActiveAdminTabListener() {
   if (state.activeAdminTab === "connections") {
     restartLoginEventsListener();
     restartFirestoreReadStatsListener();
+    fetchAdminConnectionNotesIfNeeded();
   }
 
   if (state.activeAdminTab === "activity") {
@@ -1714,6 +1954,7 @@ function detachAuthenticatedDataSync({ keepsInitialDataRefresh = false } = {}) {
   state.fetchedNoteDayKeys = new Set();
   state.fetchedNotesByID = new Map();
   state.fetchedSearchKeys = new Set();
+  state.fetchedDeletedNotes = false;
   state.globalSearchRequestID += 1;
   if (state.globalSearchTimer) {
     window.clearTimeout(state.globalSearchTimer);
@@ -1834,6 +2075,7 @@ function updateLoginLockState(requiresLogin) {
 
 function render() {
   renderSession();
+  renderDataRefreshIndicator();
   const filtersDisabled = Boolean(state.periodStartDate);
   elements.showTaggedToggle.checked = state.showTagged;
   elements.showAcknowledgedToggle.checked = state.showAcknowledged;
@@ -2604,7 +2846,7 @@ function renderCreate(context) {
 }
 
 function renderDetail(note, context) {
-  const done = isDoneInContext(note, context);
+  const done = isDoneBadgeVisibleInContext(note, context);
   const acknowledged = !done && isAcknowledgedInContext(note, context) && !hasContentModificationAfterAcknowledgement(note, context);
   const title = note.title.trim() || "Consigne";
   const timeline = timelineEvents(note, context);
@@ -5157,8 +5399,37 @@ function visibleHandwritingFor(note) {
     };
   }
 
-  if (!note.handwritingClearedAt && normalizeKey(note.handwritingAuthorIdentifier || note.authorIdentifier || note.author) === normalizeKey(state.currentUser.id) && note.handwritingData) {
+  const currentUserOwnsEmbeddedHandwriting = normalizeKey(note.handwritingAuthorIdentifier || note.authorIdentifier || note.author) === normalizeKey(state.currentUser.id);
+  if (!note.handwritingClearedAt && currentUserOwnsEmbeddedHandwriting && note.handwritingData) {
     return { source: "consigne", data: note.handwritingData, previewImageData: note.handwritingPreviewImageData };
+  }
+
+  if (note.deletedAt && canCurrentUserViewDeletedNote(note)) {
+    const sharedDeletedNote = state.handwritingNotes.find((entry) => {
+      const handwritingWasClearedAfterEntry = note.handwritingClearedAt
+        && entry.updatedAt
+        && entry.updatedAt <= note.handwritingClearedAt;
+      return entry.noteID === note.id && entry.drawingData && !handwritingWasClearedAfterEntry;
+    });
+
+    if (sharedDeletedNote) {
+      return {
+        source: "utilisateur",
+        documentID: sharedDeletedNote.id,
+        data: sharedDeletedNote.drawingData,
+        previewImageData: sharedDeletedNote.previewImageData,
+        readOnly: normalizeKey(sharedDeletedNote.authorIdentifier) !== normalizeKey(state.currentUser.id)
+      };
+    }
+
+    if (!note.handwritingClearedAt && note.handwritingData) {
+      return {
+        source: "consigne",
+        data: note.handwritingData,
+        previewImageData: note.handwritingPreviewImageData,
+        readOnly: !currentUserOwnsEmbeddedHandwriting
+      };
+    }
   }
 
   return null;
@@ -5176,13 +5447,7 @@ function renderHandwritingNotice(handwriting) {
   const image = handwriting.previewImageData
     ? `<img class="handwriting-preview" src="data:image/png;base64,${escapeHtml(handwriting.previewImageData)}" alt="Note manuscrite">`
     : "";
-  return `
-    <div class="handwriting-notice">
-      <div class="handwriting-layout">
-        <div class="handwriting-canvas-slot">
-          ${image}
-          ${image ? "" : "<p>Cette note n'a pas encore d'aperçu web. Elle sera visible après ouverture/enregistrement depuis l'app iPad mise à jour.</p>"}
-        </div>
+  const tools = handwriting.readOnly ? "" : `
         <div class="handwriting-tools" aria-label="Actions note manuscrite">
           <button type="button" class="handwriting-tool-button danger" data-detail-action="clear-handwriting" title="Effacer la note manuscrite" aria-label="Effacer la note manuscrite">
             ${trashIconSVG()}
@@ -5191,6 +5456,15 @@ function renderHandwritingNotice(handwriting) {
             ${ocrIconSVG()}
           </button>
         </div>
+  `;
+  return `
+    <div class="handwriting-notice">
+      <div class="handwriting-layout">
+        <div class="handwriting-canvas-slot">
+          ${image}
+          ${image ? "" : "<p>Cette note n'a pas encore d'aperçu web. Elle sera visible après ouverture/enregistrement depuis l'app iPad mise à jour.</p>"}
+        </div>
+        ${tools}
       </div>
     </div>
   `;
@@ -5919,7 +6193,6 @@ async function saveDetailEdit(note, options = {}) {
   const displayDate = startOfDay(parseDateInput(document.querySelector("#detailEditDate").value));
   const selectedModificationDate = startOfDay(state.selectedDate);
   const modificationDay = options.modificationDate ? startOfDay(options.modificationDate) : selectedModificationDate;
-  const selectedDoneDate = options.doneDate ? startOfDay(options.doneDate) : selectedModificationDate;
   const priority = document.querySelector("#detailEditPriority").value;
   const destination = collectDetailDestination(state.selectedDetail?.context || generalName);
   const context = state.selectedDetail?.context || generalName;
@@ -5929,6 +6202,11 @@ async function saveDetailEdit(note, options = {}) {
   const draftDone = doneButton?.dataset.draftState === "true";
   const initialAcknowledged = ackButton?.dataset.initialState === "true";
   const draftAcknowledged = ackButton?.dataset.draftState === "true";
+  const selectedDoneDate = options.doneDate
+    ? startOfDay(options.doneDate)
+    : initialDone
+      ? visibleCompletionDayInContext(note, context, selectedModificationDate)
+      : selectedModificationDate;
   const now = new Date();
   const modificationDate = dateWithTime(modificationDay, now);
   const revisions = [...note.revisions];
@@ -6923,6 +7201,10 @@ function matchesSelection(note, context, options = {}) {
     return false;
   }
 
+  if (state.showOnlyDeleted && state.currentUser?.role === "admin") {
+    return Boolean(note.deletedAt) && state.showDeleted && canCurrentUserViewDeletedNote(note);
+  }
+
   if (isPeriodResultsMode()) {
     return matchesPeriodSelection(note, context);
   }
@@ -7229,7 +7511,48 @@ function isDoneInContext(note, context) {
 function isDoneBadgeVisibleInContext(note, context) {
   return activeCompletions(note).some((completion) => {
     return completion.context === context && isEventActiveForCurrentView(completion.date);
+  }) || note.completedContexts.some((key) => {
+    const completionDate = completionStorageKeyDate(key, context);
+    return completionDate && isEventActiveForCurrentView(completionDate);
   }) || isDoneInContext(note, context);
+}
+
+function visibleCompletionDayInContext(note, context, fallbackDay = state.selectedDate) {
+  const selectedDayCompletion = activeCompletions(note).find((completion) => {
+    return completion.context === context && sameDay(completion.date, state.selectedDate);
+  });
+  if (selectedDayCompletion?.date) {
+    return startOfDay(selectedDayCompletion.date);
+  }
+
+  const visibleCompletion = activeCompletions(note)
+    .filter((completion) => completion.context === context && isEventActiveForCurrentView(completion.date))
+    .sort((left, right) => (right.date || 0) - (left.date || 0))
+    [0];
+  if (visibleCompletion?.date) {
+    return startOfDay(visibleCompletion.date);
+  }
+
+  const visibleCompletionKeyDate = note.completedContexts
+    .map((key) => completionStorageKeyDate(key, context))
+    .filter((date) => date && isEventActiveForCurrentView(date))
+    .sort((left, right) => right - left)
+    [0];
+  return startOfDay(visibleCompletionKeyDate || fallbackDay);
+}
+
+function completionStorageKeyDate(key, context) {
+  const prefix = `${context}#`;
+  if (!stringValue(key).startsWith(prefix)) {
+    return null;
+  }
+
+  const [year, month, day] = stringValue(key).slice(prefix.length).split("-").map(Number);
+  if (!year || !month || !day) {
+    return null;
+  }
+
+  return startOfDay(new Date(year, month - 1, day));
 }
 
 function isCompletedBefore(note, day, context) {
@@ -8104,34 +8427,7 @@ function canCurrentUserViewDeletedNote(note) {
     return true;
   }
 
-  if (!canCurrentUserViewDeletedNotes()) {
-    return false;
-  }
-
-  if (state.currentUser?.role === "admin") {
-    return true;
-  }
-
-  if (state.currentUser?.role === "teamLeader" && wasDeletedByOriginalAuthorTodayUnmodified(note)) {
-    return false;
-  }
-
-  return true;
-}
-
-function wasDeletedByOriginalAuthorTodayUnmodified(note) {
-  if (!note.deletedAt || !note.createdAt || !sameDay(note.createdAt, note.deletedAt)) {
-    return false;
-  }
-
-  const originalAuthorKey = normalizeKey(note.authorIdentifier || note.author);
-  if (!originalAuthorKey || normalizeKey(note.deletedByIdentifier || note.deletedBy) !== originalAuthorKey) {
-    return false;
-  }
-
-  return note.revisions.slice(1).every((revision) => {
-    return normalizeRevisionAuthor(revision) === originalAuthorKey;
-  });
+  return canCurrentUserViewDeletedNotes();
 }
 
 function canCurrentUserDeleteNote(note) {
