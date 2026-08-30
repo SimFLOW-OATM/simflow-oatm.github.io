@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>SimFLOW Web</title>
-  <link rel="stylesheet" href="./styles.css?v=20260830-web-187a">
+  <link rel="stylesheet" href="./styles.css?v=20260830-web-187a-search-placeholder">
   <script>
     if (window.location.protocol === "file:") {
       window.location.replace("http://127.0.0.1:8765/");
@@ -74,7 +74,6 @@
         <div class="sidebar-separator"></div>
 
         <section class="sidebar-section">
-          <button class="sidebar-nav-button active" id="openNotesViewButton" type="button">Consignes</button>
           <button class="sidebar-nav-button" id="openPlanningViewButton" type="button">Planning réglementaire</button>
         </section>
 
@@ -126,9 +125,8 @@
         <div class="sidebar-separator"></div>
 
         <section class="sidebar-section">
-          <label for="searchInput">Recherche</label>
           <div class="search-row">
-            <input id="searchInput" placeholder="Mot(s) de consigne">
+            <input id="searchInput" placeholder="Recherche Mot dans Consignes">
             <button id="clearSearchButton" class="danger icon-button" title="Effacer la recherche">×</button>
           </div>
           <div class="section-shortcut-separator"></div>
@@ -282,6 +280,6 @@
     </section>
   </div>
 
-  <script type="module" src="./app.js?v=20260830-web-187a"></script>
+  <script type="module" src="./app.js?v=20260830-web-187a-search-placeholder"></script>
 </body>
 </html>

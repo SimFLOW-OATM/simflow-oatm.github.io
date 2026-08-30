@@ -423,15 +423,7 @@ onAuthStateChanged(auth, async (user) => {
 });
 
 elements.brandResetButton.addEventListener("click", resetDisplayState);
-elements.openNotesViewButton.addEventListener("click", () => {
-  state.activeView = "notes";
-  state.isPlanningEditMode = false;
-  state.planningEditor = null;
-  closePlanningDateWheel();
-  closePlanningTimeWheel();
-  closePlanningTechnicianMenu();
-  render();
-});
+elements.openNotesViewButton?.addEventListener("click", showNotesView);
 elements.openPlanningViewButton.addEventListener("click", () => {
   if (!canCurrentUserAccessPlanning()) {
     state.activeView = "notes";
@@ -445,6 +437,17 @@ elements.openPlanningViewButton.addEventListener("click", () => {
   loadPlanningRowsFromFirestore({ force: true });
   requestAnimationFrame(() => window.scrollTo(0, 0));
 });
+
+function showNotesView() {
+  state.activeView = "notes";
+  state.isPlanningEditMode = false;
+  state.planningEditor = null;
+  closePlanningDateWheel();
+  closePlanningTimeWheel();
+  closePlanningTechnicianMenu();
+  render();
+  requestAnimationFrame(() => window.scrollTo(0, 0));
+}
 elements.dataRefreshIndicator.addEventListener("click", refreshDataFromIndicator);
 elements.openLoginButton.addEventListener("click", () => openCodeModal("login"));
 elements.loginButton.addEventListener("click", submitCodeModal);
@@ -2699,6 +2702,7 @@ function renderPlanningTable() {
 
 function planningEditActionsHTML() {
   const canEditPlanning = canCurrentUserEditPlanning();
+  const returnButton = `<button class="planning-return-button" type="button" data-planning-action="return-notes">Retour Consignes</button>`;
   const historyButton = `
     <button
       class="planning-history-button${state.showsPlanningHistory ? " active" : ""}"
@@ -2712,6 +2716,7 @@ function planningEditActionsHTML() {
   if (!state.isPlanningEditMode) {
     return `
       <div class="planning-edit-actions">
+        ${returnButton}
         ${canEditPlanning ? `<button class="planning-edit-button" type="button" data-planning-action="enter-edit">Modifier</button>` : ""}
         ${historyButton}
       </div>
@@ -2720,8 +2725,9 @@ function planningEditActionsHTML() {
 
   return `
     <div class="planning-edit-actions">
+      ${returnButton}
       <button class="planning-add-button" type="button" data-planning-action="add-row">+ Ajouter</button>
-      <button class="planning-exit-button" type="button" data-planning-action="exit-edit">Quitter</button>
+      <button class="planning-exit-button" type="button" data-planning-action="exit-edit">Quitter Modification</button>
       ${historyButton}
     </div>
   `;
@@ -3126,6 +3132,11 @@ function planningMonthWheelHTML(value) {
 
 function handlePlanningTableClick(event) {
   const action = event.target.closest("[data-planning-action]")?.dataset.planningAction;
+
+  if (action === "return-notes") {
+    showNotesView();
+    return;
+  }
 
   if (action === "enter-edit") {
     if (!canCurrentUserEditPlanning()) {

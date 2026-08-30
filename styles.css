@@ -966,14 +966,15 @@ body.requires-login .login-panel > :not(.sidebar-login-button) {
 
 .sidebar-nav-button {
   width: 100%;
-  min-height: 38px;
+  min-height: 30px;
+  padding: 7px 16px;
   margin-bottom: 8px;
   border: 1px solid rgba(47, 128, 237, 0.18);
   border-radius: 8px;
   color: var(--blue-dark);
   background: rgba(255, 255, 255, 0.62);
   text-align: left;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 850;
 }
 
@@ -1145,6 +1146,7 @@ h1:empty + p {
 .planning-add-button,
 .planning-edit-button,
 .planning-exit-button,
+.planning-return-button,
 .planning-history-button {
   min-width: 118px;
   min-height: 36px;
@@ -1153,6 +1155,12 @@ h1:empty + p {
 }
 
 .planning-edit-button {
+  background: #ffffff;
+  color: #0f4ea8;
+}
+
+.planning-return-button {
+  min-width: 142px;
   background: #ffffff;
   color: #0f4ea8;
 }
