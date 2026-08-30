@@ -30,10 +30,15 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
-const WEB_APP_VERSION = "1.87";
+const WEB_APP_VERSION = "1.87a";
 const userGuideURL = "./assets/Guide%20utilisateur%20SimFLOW.pdf";
 const deletedLegacySimulatorNames = new Set(["Simu", "Simu 1", "Simu 2", "Simu 3", "Simu 4", "Simu Tes", "Simu test 2", "Simu Test 2"]);
 const sessionStorageKey = "simflow.web.currentUser";
+const planningStorageKey = "simflow.web.mandatoryPlanningRows";
+const planningImportVersionStorageKey = "simflow.web.mandatoryPlanningImportVersion";
+const planningFirestoreSyncStorageKey = "simflow.web.regulatoryPlanningLastSyncAt";
+const regulatoryPlanningImportVersion = "2026-regulatory-table-v2";
+const firestoreSyncSuspendedStorageKey = "simflow.web.firestoreSyncSuspended";
 const lastActiveStorageKey = "simflow.web.lastActiveAt";
 const lastSuccessfulDataRefreshStorageKey = "simflow.web.lastSuccessfulDataRefreshAt";
 const archiveRealtimeRetentionDays = 4;
@@ -45,6 +50,120 @@ const staleDataRefreshWarningThresholdMs = 30 * 60 * 1000;
 const activeLoginSessionWindowMs = 90 * 1000;
 const loginPresenceRefreshMs = 2 * 1000;
 const firestoreReadStatsFlushMs = 5 * 1000;
+const planningFirestoreSyncIntervalMs = 60 * 60 * 1000;
+const planningTypes = [
+  { value: "fly-out-part-a", label: "Fly Out Part A" },
+  { value: "fly-out-part-b", label: "Fly Out Part B" },
+  { value: "fly-out-part-c", label: "Fly Out Part C" },
+  { value: "fly-out-part-d", label: "Fly Out Part D" },
+  { value: "dgac", label: "DGAC" },
+  { value: "auto-eval", label: "Auto-Eval" },
+  { value: "reunion-technique", label: "Réunion technique" }
+];
+const defaultPlanningType = planningTypes[0].value;
+const planningFreeTechnicianValue = "__free_technician__";
+const planningMonthNames = [
+  "janvier",
+  "février",
+  "mars",
+  "avril",
+  "mai",
+  "juin",
+  "juillet",
+  "août",
+  "septembre",
+  "octobre",
+  "novembre",
+  "décembre"
+];
+const importedRegulatoryPlanningRows = [
+  importedPlanningRow("A350FF3", "fly-out-part-d", "2026-01-05", "14:00", "18:00", "G. Millet", "Frederic Corbalan"),
+  importedPlanningRow("B777FF4", "dgac", "2026-01-07", "08:00", "16:00", "JP. Holowczak", "Francois Emaille", "GED: x"),
+  importedPlanningRow("A220FF3", "fly-out-part-d", "2026-01-12", "18:00", "22:00", "F. Mansuis", "Magand", "IT CARL: X\nGED: x"),
+  importedPlanningRow("B777FF3", "fly-out-part-b", "2026-01-21", "06:00", "10:00", "J. Ferreira", "Francois Emaille", "IT CARL: x\nGED: x"),
+  importedPlanningRow("A350FF3", "dgac", "2026-01-22", "08:00", "16:00", "S. Alibhay", ""),
+  importedPlanningRow("A350FF2", "fly-out-part-a", "2026-01-27", "18:00", "22:00", "M. Ocipski", "Frederic Corbalan", "IT CARL: x\nGED: x"),
+  importedPlanningRow("A330", "fly-out-part-c", "2026-01-30", "10:00", "14:00", "M. Ichalalen", "Hocquet"),
+  importedPlanningRow("B777FF4", "fly-out-part-c", "2026-02-01", "17:00", "21:00", "F. Theodose", "Francois Emaille", "IT CARL: Pas sorti\nGED: OK"),
+  importedPlanningRow("A320FF7", "fly-out-part-d", "2026-02-02", "06:00", "10:00", "Y. Sene", "Gabriel Akkaoui", "IT CARL: IT076432\nGED: OK"),
+  importedPlanningRow("B787", "fly-out-part-c", "2026-02-05", "06:00", "10:00", "V. Esnault", "Guyon + Parrain"),
+  importedPlanningRow("A220FF2", "fly-out-part-c", "2026-02-16", "06:00", "10:00", "M. Ocipski", "Plaire", "IT CARL: X\nGED: X"),
+  importedPlanningRow("A220FF1", "fly-out-part-d", "2026-02-18", "06:00", "10:00", "S. Bignon", "Plaire"),
+  importedPlanningRow("A220FF3", "dgac", "2026-02-19", "", "", "M. Ocipski", "Magand"),
+  importedPlanningRow("A350TD", "fly-out-part-a", "2026-02-25", "14:00", "18:00", "M. Gantois", "Valtin"),
+  importedPlanningRow("B777FF4", "fly-out-part-d", "2026-03-01", "06:00", "09:30", "O. Sicourmat", "Jeandenand"),
+  importedPlanningRow("B777TD", "fly-out-part-d", "2026-03-02", "14:00", "18:00", "S. Lempereur", "Emaille + Jeandenand", "IT CARL: IT076440\nGED: B777_FTD1 FR-2107_FO_PART D_Mars_2026"),
+  importedPlanningRow("B777FF2", "fly-out-part-c", "2026-03-03", "10:00", "14:00", "JJ. Marie", "Jeandenand"),
+  importedPlanningRow("A220FF1", "auto-eval", "2026-03-04", "", "", "S. Bignon", "Magand"),
+  importedPlanningRow("A330", "fly-out-part-d", "2026-03-05", "14:30", "18:30", "V. Esnault", "Leroux"),
+  importedPlanningRow("A320FF6", "fly-out-part-c", "2026-03-18", "06:00", "10:00", "M. Ichalalen", "Akkaoui"),
+  importedPlanningRow("A320TD", "fly-out-part-c", "2026-03-25", "10:00", "12:00", "S. Bignon", "Akkaoui", "IT CARL: OK\nGED: OK"),
+  importedPlanningRow("A320FF7", "dgac", "2026-03-26", "", "", "S. Lempereur", "Fernandes"),
+  importedPlanningRow("A220TD", "fly-out-part-d", "2026-03-27", "07:00", "11:00", "M. Gantois", "Plaire"),
+  importedPlanningRow("A350FF1", "fly-out-part-c", "2026-04-01", "06:00", "10:00", "R. Aragon", "Valtin", "IT CARL: x\nGED: x"),
+  importedPlanningRow("A330", "dgac", "2026-04-02", "", "", "M. Ichalalen", ""),
+  importedPlanningRow("B787", "fly-out-part-d", "2026-04-05", "13:10", "17:10", "O. Sicourmat", "Guyon", "IT CARL: X\nGED: X"),
+  importedPlanningRow("B777FF2", "fly-out-part-d", "2026-04-06", "16:00", "20:00", "M. Le Roux", "Emaille", "IT CARL: X\nGED: X"),
+  importedPlanningRow("B777FF4", "auto-eval", "2026-04-10", "", "", "G. Guinde", "Jeandenand"),
+  importedPlanningRow("A350FF3", "fly-out-part-a", "2026-04-19", "16:40", "19:40", "S. Alibhay", "Corbalan"),
+  importedPlanningRow("A220FF3", "fly-out-part-a", "2026-05-05", "18:00", "22:00", "D. Solente", "Plaire"),
+  importedPlanningRow("A220TD", "auto-eval", "2026-05-05", "06:00", "10:00", "N. Simon", "", "FLY OUT"),
+  importedPlanningRow("B787", "dgac", "2026-05-06", "", "", "L. Bicocchi", ""),
+  importedPlanningRow("A320FF7", "fly-out-part-a", "2026-05-07", "06:00", "10:00", "C. De Sa", "Fernandes"),
+  importedPlanningRow("B777FF3", "fly-out-part-d", "2026-05-08", "06:00", "10:00", "O. Sicourmat", "Jeandenand"),
+  importedPlanningRow("B777TD", "fly-out-part-a", "2026-05-10", "14:00", "18:00", "F. Mansuis", "Emaille"),
+  importedPlanningRow("A350TD", "fly-out-part-b", "2026-05-12", "12:00", "16:00", "S. Lempereur", "Valtin", "IT CARL: X\nGED: X"),
+  importedPlanningRow("A350FF1", "fly-out-part-d", "2026-05-21", "06:00", "10:00", "V. Esnault", "Hocquet"),
+  importedPlanningRow("A220FF2", "auto-eval", "2026-05-22", "", "", "P. Luzurier", ""),
+  importedPlanningRow("A320TD", "fly-out-part-d", "2026-05-26", "10:00", "14:00", "G. Guinde", "Akkaoui"),
+  importedPlanningRow("A220TD", "fly-out-part-a", "2026-06-15", "10:00", "14:00", "M. Gantois", "Magand"),
+  importedPlanningRow("A320FF6", "fly-out-part-d", "2026-06-15", "14:00", "18:00", "Dechaume", "Fernandes", "IT CARL: X\nGED: X\nFly Out imprimé"),
+  importedPlanningRow("A320TD", "dgac", "2026-06-18", "", "", "Jorge", ""),
+  importedPlanningRow("B777FF3", "auto-eval", "2026-06-29", "10:00", "14:00", "JP. Holowczak", "Plaire"),
+  importedPlanningRow("A350FF2", "fly-out-part-c", "2026-07-01", "16:00", "20:00", "M. Le Roux", "M. Valtin", "IT CARL: x\nGED: x"),
+  importedPlanningRow("A350FF1", "dgac", "2026-07-02", "", "", "G. Guinde", "Valtin", "DGAC récurrent"),
+  importedPlanningRow("A350FF3", "fly-out-part-b", "2026-07-05", "16:45", "20:45", "S. Alibhay", "Corbalan"),
+  importedPlanningRow("A320FF6", "dgac", "2026-07-09", "", "", "Dechaume", "Akkaoui"),
+  importedPlanningRow("A330", "fly-out-part-a", "2026-07-10", "06:00", "10:00", "L. Bicocchi", "Corbalan"),
+  importedPlanningRow("A220FF2", "dgac", "2026-07-20", "", "", "", "", "DGAC STD 1.0"),
+  importedPlanningRow("A220FF1", "fly-out-part-a", "2026-07-21", "06:00", "10:00", "G. Millet", "Plaire"),
+  importedPlanningRow("B777FF1", "fly-out-part-b", "2026-07-23", "06:00", "10:00", "JJ. Marie", "Emaille"),
+  importedPlanningRow("A320FF7", "fly-out-part-b", "2026-08-12", "06:00", "10:00", "S. Bignon", "Akkaoui"),
+  importedPlanningRow("B777TD", "fly-out-part-b", "2026-08-23", "16:00", "20:00", "O. Sicourmat / G. Guinde", "Emaille", "Equipe 2/1"),
+  importedPlanningRow("A220FF3", "fly-out-part-b", "2026-08-26", "06:00", "10:00", "M. Gantois", "Plaire"),
+  importedPlanningRow("A220FF2", "fly-out-part-a", "2026-08-28", "18:00", "22:00", "V. Esnault", "Magand"),
+  importedPlanningRow("B787", "fly-out-part-a", "2026-08-29", "14:00", "18:00", "M. Ichalalen", "Parrain"),
+  importedPlanningRow("B777FF2", "fly-out-part-a", "2026-08-31", "14:00", "18:00", "J. Ferreira", "Jeandenand"),
+  importedPlanningRow("B777FF4", "fly-out-part-a", "2026-09-01", "18:00", "22:00", "G. Imbert", "Jeandenand"),
+  importedPlanningRow("A350FF2", "fly-out-part-d", "2026-09-01", "06:00", "10:00", "S. Dupire", "Valtin"),
+  importedPlanningRow("A220TD", "fly-out-part-b", "2026-09-07", "14:00", "18:00", "JP. Cavaciuti", "Plaire"),
+  importedPlanningRow("B777FF3", "fly-out-part-a", "2026-09-11", "06:00", "10:00", "S. Alibhay", "Jeandenand"),
+  importedPlanningRow("A320FF6", "fly-out-part-a", "2026-09-16", "14:00", "18:00", "C. De Sa", "Akkaoui"),
+  importedPlanningRow("A220FF1", "fly-out-part-b", "2026-09-24", "06:00", "10:00", "", "Plaire"),
+  importedPlanningRow("A320TD", "fly-out-part-a", "2026-09-30", "14:00", "18:00", "", "Fernandes"),
+  importedPlanningRow("A350FF1", "fly-out-part-a", "2026-10-05", "18:00", "22:00", "R. Aragon", "Corbaland"),
+  importedPlanningRow("A330", "fly-out-part-b", "2026-10-05", "06:00", "10:00", "", "Leroux"),
+  importedPlanningRow("A350FF2", "dgac", "2026-10-08", "", "", "", ""),
+  importedPlanningRow("B777FF1", "fly-out-part-c", "2026-10-11", "12:00", "16:00", "F. Theodose", "Jeandenand"),
+  importedPlanningRow("A350FF3", "fly-out-part-c", "2026-11-03", "18:00", "22:00", "S. Lempereur", "Corbaland"),
+  importedPlanningRow("A350TD", "dgac", "2026-12-10", "", "", "", "")
+];
+
+function importedPlanningRow(simulatorName, type, date, startTime, endTime, participants, tri, notes = "") {
+  return {
+    id: `import-2026-${simulatorName}-${type}-${date}-${startTime || "day"}`.toLocaleLowerCase("fr").replace(/[^a-z0-9]+/g, "-"),
+    simulatorName,
+    type,
+    dateMode: "date",
+    date,
+    month: date.slice(0, 7),
+    startTime,
+    endTime,
+    participants,
+    tri,
+    notes
+  };
+}
 
 const state = {
   authReady: false,
@@ -55,6 +174,8 @@ const state = {
   periodEndDate: null,
   isSelectingPeriodEnd: false,
   search: "",
+  activeView: "notes",
+  isFirestoreSyncSuspended: readFirestoreSyncSuspendedPreference(),
   showTagged: false,
   showAcknowledged: false,
   showDeleted: false,
@@ -69,6 +190,16 @@ const state = {
   codeModalMode: "login",
   isSaving: false,
   notes: [],
+  planningRows: loadPlanningRows(),
+  activePlanningSort: "",
+  isPlanningEditMode: false,
+  planningEditor: null,
+  showsPlanningHistory: false,
+  isPlanningFirestoreLoaded: false,
+  isPlanningFirestoreLoading: false,
+  planningFirestoreSyncTimer: null,
+  planningActivityByRowID: new Map(),
+  planningActivityLoadingIDs: new Set(),
   fetchedNoteDayKeys: new Set(),
   fetchedNotesByID: new Map(),
   fetchedSearchKeys: new Set(),
@@ -115,6 +246,7 @@ const state = {
   unsubscribeAdminMessagesTargeted: null,
   unsubscribeAdminMessageDismissals: null,
   unsubscribePasswordResetRequests: null,
+  unsubscribeCurrentUserProfile: null,
   unsubscribeUsers: null,
   unsubscribeSimulators: null,
   unsubscribeAppSettings: null,
@@ -129,7 +261,9 @@ const state = {
   lastSuccessfulDataRefreshAt: readStoredDataRefreshDate(),
   isManualDataRefreshRunning: false,
   firestoreReadStatsBuffer: new Map(),
-  firestoreReadStatsFlushTimer: null
+  firestoreReadStatsFlushTimer: null,
+  hasFetchedPlanningTechnicians: false,
+  isFetchingPlanningTechnicians: false
 };
 
 const app = initializeApp(firebaseConfig);
@@ -139,6 +273,12 @@ const functions = getFunctions(app, "us-central1");
 const loginWithAccessCode = httpsCallable(functions, "loginWithAccessCode");
 const changeOwnAccessCode = httpsCallable(functions, "changeOwnAccessCode");
 const requestPasswordReset = httpsCallable(functions, "requestPasswordReset");
+const getPlanningTechnicians = httpsCallable(functions, "getPlanningTechnicians");
+const getRegulatoryPlanningEvents = httpsCallable(functions, "getRegulatoryPlanningEvents");
+const saveRegulatoryPlanningEvent = httpsCallable(functions, "saveRegulatoryPlanningEvent");
+const deleteRegulatoryPlanningEvent = httpsCallable(functions, "deleteRegulatoryPlanningEvent");
+const getRegulatoryPlanningActivity = httpsCallable(functions, "getRegulatoryPlanningActivity");
+const syncRegulatoryPlanningNotesFromMirrorNote = httpsCallable(functions, "syncRegulatoryPlanningNotesFromMirrorNote");
 const activityActionTitles = {
   created: "Creation",
   modified: "Modification",
@@ -159,6 +299,8 @@ const elements = {
   content: document.querySelector(".content"),
   loginPanel: document.querySelector("#loginPanel"),
   brandResetButton: document.querySelector("#brandResetButton"),
+  openNotesViewButton: document.querySelector("#openNotesViewButton"),
+  openPlanningViewButton: document.querySelector("#openPlanningViewButton"),
   dataRefreshIndicator: document.querySelector("#dataRefreshIndicator"),
   dataRefreshIndicatorText: document.querySelector("#dataRefreshIndicatorText"),
   webVersionBadge: document.querySelector("#webVersionBadge"),
@@ -183,6 +325,7 @@ const elements = {
   loginHint: document.querySelector("#loginHint"),
   fileWarning: document.querySelector("#fileWarning"),
   adminSettingsButton: document.querySelector("#adminSettingsButton"),
+  adminFirestoreSyncButton: document.querySelector("#adminFirestoreSyncButton"),
   userGuideButton: document.querySelector("#userGuideButton"),
   logoutButton: document.querySelector("#logoutButton"),
   changeCodeButton: document.querySelector("#changeCodeButton"),
@@ -280,6 +423,28 @@ onAuthStateChanged(auth, async (user) => {
 });
 
 elements.brandResetButton.addEventListener("click", resetDisplayState);
+elements.openNotesViewButton.addEventListener("click", () => {
+  state.activeView = "notes";
+  state.isPlanningEditMode = false;
+  state.planningEditor = null;
+  closePlanningDateWheel();
+  closePlanningTimeWheel();
+  closePlanningTechnicianMenu();
+  render();
+});
+elements.openPlanningViewButton.addEventListener("click", () => {
+  if (!canCurrentUserAccessPlanning()) {
+    state.activeView = "notes";
+    render();
+    return;
+  }
+
+  state.activeView = "planning";
+  clearPeriodMode();
+  render();
+  loadPlanningRowsFromFirestore({ force: true });
+  requestAnimationFrame(() => window.scrollTo(0, 0));
+});
 elements.dataRefreshIndicator.addEventListener("click", refreshDataFromIndicator);
 elements.openLoginButton.addEventListener("click", () => openCodeModal("login"));
 elements.loginButton.addEventListener("click", submitCodeModal);
@@ -332,8 +497,35 @@ elements.userSummaryButton.addEventListener("click", () => {
   elements.userMenu.classList.toggle("hidden");
 });
 document.addEventListener("click", (event) => {
+  const technicianOption = event.target.closest("[data-planning-technician-menu] [data-planning-editor-action='pick-technician']");
+  if (technicianOption) {
+    event.preventDefault();
+    pickPlanningTechnician(technicianOption);
+    return;
+  }
+
   if (!elements.userPanel.contains(event.target)) {
     elements.userMenu.classList.add("hidden");
+  }
+  if (!event.target.closest(".planning-date-wheel-popover") && !event.target.closest("[data-planning-date-open]")) {
+    closePlanningDateWheel();
+  }
+  if (!event.target.closest(".planning-time-wheel-popover") && !event.target.closest("[data-planning-time-open]")) {
+    closePlanningTimeWheel();
+  }
+  if (!event.target.closest("[data-planning-technician-combobox]") && !event.target.closest("[data-planning-technician-menu]")) {
+    closePlanningTechnicianMenu();
+  }
+});
+document.addEventListener("focusin", (event) => {
+  if (!event.target.closest(".planning-date-wheel-popover") && !event.target.closest("[data-planning-date-open]")) {
+    closePlanningDateWheel();
+  }
+  if (!event.target.closest(".planning-time-wheel-popover") && !event.target.closest("[data-planning-time-open]")) {
+    closePlanningTimeWheel();
+  }
+  if (!event.target.closest("[data-planning-technician-combobox]") && !event.target.closest("[data-planning-technician-menu]")) {
+    closePlanningTechnicianMenu();
   }
 });
 elements.logoutButton.addEventListener("click", () => {
@@ -368,6 +560,7 @@ elements.adminSettingsButton.addEventListener("click", () => {
   elements.userMenu.classList.add("hidden");
   openAdminSettings();
 });
+elements.adminFirestoreSyncButton.addEventListener("click", toggleFirestoreSyncSuspension);
 elements.selectedDate.addEventListener("change", () => {
   state.selectedDate = startOfDay(parseDateInput(elements.selectedDate.value));
   state.visibleMonth = startOfMonth(state.selectedDate);
@@ -452,6 +645,16 @@ elements.simulatorShortcutGrid.addEventListener("click", (event) => {
   scrollToSimulator(decodeURIComponent(button.dataset.scrollSimulator));
 });
 elements.noteGroups.addEventListener("click", (event) => {
+  if (state.activeView === "planning") {
+    openPlanningTimeWheel(event);
+    openPlanningDateWheel(event);
+    if (handlePlanningEditorClick(event)) {
+      return;
+    }
+    handlePlanningTableClick(event);
+    return;
+  }
+
   if (event.target.closest("[data-tag-note-id]")) {
     event.preventDefault();
     event.stopPropagation();
@@ -471,6 +674,42 @@ elements.noteGroups.addEventListener("click", (event) => {
   }
 
   openDetail(card.dataset.noteId, decodeURIComponent(card.dataset.context));
+});
+
+elements.noteGroups.addEventListener("input", (event) => {
+  if (state.activeView !== "planning") {
+    return;
+  }
+
+  if (event.target.closest("[data-planning-editor]")) {
+    handlePlanningEditorFieldEdit(event);
+    return;
+  }
+  handlePlanningFieldEdit(event);
+});
+
+elements.noteGroups.addEventListener("change", (event) => {
+  if (state.activeView !== "planning") {
+    return;
+  }
+
+  if (event.target.closest("[data-planning-editor]")) {
+    handlePlanningEditorFieldEdit(event);
+    return;
+  }
+  handlePlanningFieldEdit(event);
+});
+
+elements.noteGroups.addEventListener("focusin", (event) => {
+  if (state.activeView !== "planning") {
+    return;
+  }
+
+  if (event.target.closest("[data-planning-editor]")) {
+    preparePlanningEditorTimeInput(event);
+    return;
+  }
+  preparePlanningTimeInput(event);
 });
 
 let noteTagLongPressTimer = null;
@@ -930,6 +1169,39 @@ function clearSavedSession() {
   localStorage.removeItem(sessionStorageKey);
 }
 
+function readFirestoreSyncSuspendedPreference() {
+  return localStorage.getItem(firestoreSyncSuspendedStorageKey) === "true";
+}
+
+function saveFirestoreSyncSuspendedPreference() {
+  localStorage.setItem(firestoreSyncSuspendedStorageKey, state.isFirestoreSyncSuspended ? "true" : "false");
+}
+
+function shouldSuspendFirestoreSync() {
+  return isAdminSession() && state.isFirestoreSyncSuspended;
+}
+
+function toggleFirestoreSyncSuspension() {
+  if (!isAdminSession()) {
+    return;
+  }
+
+  state.isFirestoreSyncSuspended = !state.isFirestoreSyncSuspended;
+  saveFirestoreSyncSuspendedPreference();
+  elements.userMenu.classList.add("hidden");
+
+  if (state.isFirestoreSyncSuspended) {
+    detachAuthenticatedDataSync({ keepsInitialDataRefresh: true, keepsData: true });
+    setStatus("Synchro Firestore suspendue");
+  } else {
+    startAuthenticatedDataSync();
+    setStatus("Synchro Firestore reprise");
+  }
+
+  renderSession();
+  renderDataRefreshIndicator();
+}
+
 function logout() {
   flushFirestoreReadStats();
   state.currentUser = null;
@@ -964,7 +1236,7 @@ function webDeviceName() {
 }
 
 async function recordLoginAppearance() {
-  if (!state.authReady || !state.currentUser || document.visibilityState === "hidden") {
+  if (!state.authReady || !state.currentUser || shouldSuspendFirestoreSync() || document.visibilityState === "hidden") {
     return;
   }
 
@@ -1060,6 +1332,15 @@ async function flushFirestoreReadStats() {
     window.clearTimeout(state.firestoreReadStatsFlushTimer);
     state.firestoreReadStatsFlushTimer = null;
   }
+  if (state.planningFirestoreSyncTimer) {
+    window.clearInterval(state.planningFirestoreSyncTimer);
+    state.planningFirestoreSyncTimer = null;
+  }
+
+  if (shouldSuspendFirestoreSync()) {
+    state.firestoreReadStatsBuffer.clear();
+    return;
+  }
 
   const userIdentifier = stringValue(state.currentUser?.id).trim();
   if (!state.authReady || !userIdentifier || !state.firestoreReadStatsBuffer.size) {
@@ -1108,15 +1389,29 @@ function startAuthenticatedDataSync() {
     return;
   }
 
+  if (shouldSuspendFirestoreSync()) {
+    detachAuthenticatedDataSync({ keepsInitialDataRefresh: true, keepsData: true });
+    setStatus("Synchro Firestore suspendue");
+    render();
+    return;
+  }
+
   prepareInitialDataRefreshIfNeeded();
   attachFirebaseListeners();
   restartDailyTagsListener();
+  fetchPlanningTechniciansIfNeeded();
+  startPlanningFirestoreSyncTimer();
+  loadPlanningRowsFromFirestore();
   recordLoginAppearance();
 }
 
 function handleAppBecameVisible() {
+  if (!state.authReady || !state.currentUser || shouldSuspendFirestoreSync()) {
+    return;
+  }
+
   recordLoginAppearance();
-  if (!state.authReady || !state.currentUser || !shouldShowStaleDataRefresh()) {
+  if (!shouldShowStaleDataRefresh()) {
     return;
   }
 
@@ -1200,8 +1495,17 @@ function renderDataRefreshIndicator() {
     return;
   }
 
+  if (shouldSuspendFirestoreSync()) {
+    elements.dataRefreshIndicator.classList.remove("stale", "syncing");
+    elements.dataRefreshIndicator.classList.add("suspended");
+    elements.dataRefreshIndicator.disabled = true;
+    elements.dataRefreshIndicatorText.textContent = "Firestore suspendu";
+    return;
+  }
+
   const isStale = !state.lastSuccessfulDataRefreshAt
     || Date.now() - state.lastSuccessfulDataRefreshAt.getTime() > staleDataRefreshWarningThresholdMs;
+  elements.dataRefreshIndicator.classList.remove("suspended");
   elements.dataRefreshIndicator.classList.toggle("stale", isStale);
   elements.dataRefreshIndicator.classList.toggle("syncing", state.isManualDataRefreshRunning);
   elements.dataRefreshIndicator.disabled = !state.currentUser || state.isManualDataRefreshRunning;
@@ -1227,6 +1531,7 @@ function activeCurrentDayNoteEntries() {
     state.notes
       .filter((note) => noteBelongsToContext(note, context))
       .filter((note) => isActiveCurrentDayNote(note, context, today))
+      .filter((note) => !isOnlyHandwrittenNoteForCurrentUser(note))
       .forEach((note) => entries.push(note));
   }
 
@@ -1235,6 +1540,15 @@ function activeCurrentDayNoteEntries() {
 
 function activeCurrentDayNoteCount() {
   return activeCurrentDayNoteEntries().length;
+}
+
+function isOnlyHandwrittenNoteForCurrentUser(note) {
+  const hasTypedContent = Boolean(note.title.trim() || note.text.trim());
+  if (hasTypedContent) {
+    return false;
+  }
+
+  return Boolean(visibleHandwritingFor(note));
 }
 
 function activeCurrentDayAverageCreationAgeText() {
@@ -1265,6 +1579,12 @@ function isActiveCurrentDayNote(note, context, day) {
 
 async function refreshDataFromIndicator() {
   if (!state.currentUser || !state.authReady || state.isManualDataRefreshRunning) {
+    return;
+  }
+
+  if (shouldSuspendFirestoreSync()) {
+    setStatus("Synchro Firestore suspendue");
+    renderDataRefreshIndicator();
     return;
   }
 
@@ -1331,6 +1651,10 @@ async function fetchHandwritingNotesFromServer() {
 }
 
 function attachFirebaseListeners() {
+  if (shouldSuspendFirestoreSync()) {
+    return;
+  }
+
   if (!state.unsubscribeNotes) {
     const activeNotes = new Map();
     const recentArchivedNotes = new Map();
@@ -1443,13 +1767,32 @@ function attachFirebaseListeners() {
     }, (error) => setStatus(error.message));
   }
 
+  if (!isAdminSession() && !state.unsubscribeCurrentUserProfile) {
+    const documentID = currentUserDocumentID();
+    if (documentID) {
+      state.unsubscribeCurrentUserProfile = onSnapshot(doc(db, "users", documentID), (snapshot) => {
+        trackFirestoreDocumentRead("users", snapshot);
+        if (snapshot.exists()) {
+          const user = userFromSnapshot(snapshot.id, snapshot.data());
+          state.users = deduplicatedUsers([user, ...state.users]).sort(compareUsersByLastName);
+          syncCurrentUserFromUsersList();
+          renderSession();
+          render();
+          fetchPlanningTechniciansIfNeeded();
+        }
+      }, (error) => setStatus(error.message));
+    }
+  }
+
   if (isAdminSession() && !state.unsubscribeUsers) {
     state.unsubscribeUsers = onSnapshot(collection(db, "users"), (snapshot) => {
       trackFirestoreSnapshotRead("users", snapshot);
       state.users = deduplicatedUsers(snapshot.docs
         .map((document) => userFromSnapshot(document.id, document.data())))
         .sort(compareUsersByLastName);
+      syncCurrentUserFromUsersList();
       renderAdminSettings();
+      render();
     }, (error) => setStatus(error.message));
   }
 
@@ -1499,6 +1842,103 @@ function realtimeDisplayWindow() {
   };
 }
 
+function startPlanningFirestoreSyncTimer() {
+  if (state.planningFirestoreSyncTimer) {
+    window.clearInterval(state.planningFirestoreSyncTimer);
+  }
+
+  state.planningFirestoreSyncTimer = window.setInterval(() => {
+    loadPlanningRowsFromFirestore({ force: true });
+  }, planningFirestoreSyncIntervalMs);
+}
+
+async function loadPlanningRowsFromFirestore({ force = false } = {}) {
+  if (!state.authReady || !state.currentUser || shouldSuspendFirestoreSync() || !canCurrentUserAccessPlanning()) {
+    return;
+  }
+
+  if (state.isPlanningFirestoreLoading || (state.isPlanningFirestoreLoaded && !force)) {
+    return;
+  }
+
+  state.isPlanningFirestoreLoading = true;
+  try {
+    const response = await getRegulatoryPlanningEvents({ includeHistory: state.showsPlanningHistory });
+    const events = Array.isArray(response?.data?.events) ? response.data.events : [];
+    if (events.length) {
+      state.planningRows = events.map(normalizePlanningRow);
+      state.isPlanningFirestoreLoaded = true;
+      savePlanningRowsLocal();
+      if (!state.activePlanningSort) {
+        sortPlanningRowsByDate();
+      }
+      if (state.activeView === "planning") {
+        renderPlanningTable();
+      }
+      return;
+    }
+
+    if (!state.isPlanningFirestoreLoaded && canCurrentUserEditPlanning()) {
+      normalizedPlanningRows().forEach((row) => {
+        savePlanningRows(row, {
+          before: null,
+          changedFields: Object.keys(planningFirestorePayload(row)),
+          action: "imported"
+        });
+      });
+      state.isPlanningFirestoreLoaded = true;
+    }
+  } catch (error) {
+    setStatus(error.message || "Planning Firestore indisponible");
+  } finally {
+    state.isPlanningFirestoreLoading = false;
+  }
+}
+
+async function fetchPlanningTechniciansIfNeeded() {
+  if (!state.authReady || !state.currentUser || isAdminSession() || shouldSuspendFirestoreSync()) {
+    return;
+  }
+
+  if (!canCurrentUserAccessPlanning() || state.hasFetchedPlanningTechnicians || state.isFetchingPlanningTechnicians) {
+    return;
+  }
+
+  state.isFetchingPlanningTechnicians = true;
+  try {
+    const response = await getPlanningTechnicians();
+    const users = Array.isArray(response?.data?.users) ? response.data.users : [];
+    state.users = deduplicatedUsers([
+      ...state.users,
+      ...users.map((user) => normalizedPlanningTechnicianUser(user))
+    ]).sort(compareUsersByLastName);
+    state.hasFetchedPlanningTechnicians = true;
+    if (state.activeView === "planning") {
+      renderPlanningTable();
+    }
+  } catch (error) {
+    setStatus(error.message || "Liste techniciens indisponible");
+  } finally {
+    state.isFetchingPlanningTechnicians = false;
+  }
+}
+
+function normalizedPlanningTechnicianUser(user) {
+  return {
+    documentID: stringValue(user?.documentID, user?.id),
+    id: stringValue(user?.id, user?.documentID),
+    firstName: stringValue(user?.firstName),
+    lastName: stringValue(user?.lastName),
+    email: "",
+    accessCode: "",
+    isAccessCodeUserDefined: false,
+    role: stringValue(user?.role),
+    team: stringValue(user?.team),
+    canViewPlanning: false,
+    updatedAt: null
+  };
+}
+
 function isInRealtimeNoteDisplayWindow(date) {
   const day = startOfDay(date);
   const window = realtimeDisplayWindow();
@@ -1506,7 +1946,7 @@ function isInRealtimeNoteDisplayWindow(date) {
 }
 
 async function fetchNotesForSelectedDateIfNeeded(date) {
-  if (!state.currentUser || !state.authReady) {
+  if (!state.currentUser || !state.authReady || shouldSuspendFirestoreSync()) {
     return;
   }
 
@@ -1549,7 +1989,7 @@ async function fetchNotesForSelectedDateIfNeeded(date) {
 }
 
 async function fetchDeletedNotesIfNeeded() {
-  if (!state.currentUser || !state.authReady || !canCurrentUserViewDeletedNotes() || state.fetchedDeletedNotes) {
+  if (!state.currentUser || !state.authReady || shouldSuspendFirestoreSync() || !canCurrentUserViewDeletedNotes() || state.fetchedDeletedNotes) {
     return;
   }
 
@@ -1579,7 +2019,7 @@ async function fetchDeletedNotesIfNeeded() {
 }
 
 async function fetchAdminConnectionNotesIfNeeded() {
-  if (!state.currentUser || !state.authReady || !isAdminSession() || state.fetchedAdminConnectionNotes || state.isFetchingAdminConnectionNotes) {
+  if (!state.currentUser || !state.authReady || !isAdminSession() || shouldSuspendFirestoreSync() || state.fetchedAdminConnectionNotes || state.isFetchingAdminConnectionNotes) {
     return;
   }
 
@@ -1619,7 +2059,7 @@ function scheduleGlobalSearchFetch() {
 }
 
 async function fetchGlobalSearchNotesIfNeeded(searchText) {
-  if (!state.currentUser || !state.authReady) {
+  if (!state.currentUser || !state.authReady || shouldSuspendFirestoreSync()) {
     return;
   }
 
@@ -1664,7 +2104,7 @@ async function fetchGlobalSearchNotesIfNeeded(searchText) {
 }
 
 function restartAdminTabListeners() {
-  if (!state.authReady || !isAdminSession()) {
+  if (!state.authReady || !isAdminSession() || shouldSuspendFirestoreSync()) {
     return;
   }
 
@@ -1717,7 +2157,7 @@ function stopInactiveAdminTabListeners() {
 }
 
 function restartLoginEventsListener(force = false) {
-  if (!state.authReady || !isAdminSession()) {
+  if (!state.authReady || !isAdminSession() || shouldSuspendFirestoreSync()) {
     return;
   }
 
@@ -1757,7 +2197,7 @@ function restartLoginEventsListener(force = false) {
 }
 
 function restartFirestoreReadStatsListener(force = false) {
-  if (!state.authReady || !isAdminSession()) {
+  if (!state.authReady || !isAdminSession() || shouldSuspendFirestoreSync()) {
     return;
   }
 
@@ -1791,7 +2231,7 @@ function restartFirestoreReadStatsListener(force = false) {
 }
 
 function restartUserStatsListener(force = false) {
-  if (!state.authReady || !isAdminSession()) {
+  if (!state.authReady || !isAdminSession() || shouldSuspendFirestoreSync()) {
     return;
   }
 
@@ -1823,7 +2263,7 @@ function restartUserStatsListener(force = false) {
 }
 
 function restartActivityEventsListener(force = false) {
-  if (!state.authReady || !isAdminSession()) {
+  if (!state.authReady || !isAdminSession() || shouldSuspendFirestoreSync()) {
     return;
   }
 
@@ -1922,7 +2362,7 @@ function restartAdminMessageListeners() {
   );
 }
 
-function detachAuthenticatedDataSync({ keepsInitialDataRefresh = false } = {}) {
+function detachAuthenticatedDataSync({ keepsInitialDataRefresh = false, keepsData = false } = {}) {
   const unsubscribeKeys = [
     "unsubscribeNotes",
     "unsubscribeNoteDeletions",
@@ -1935,6 +2375,7 @@ function detachAuthenticatedDataSync({ keepsInitialDataRefresh = false } = {}) {
     "unsubscribeAdminMessagesTargeted",
     "unsubscribeAdminMessageDismissals",
     "unsubscribePasswordResetRequests",
+    "unsubscribeCurrentUserProfile",
     "unsubscribeUsers",
     "unsubscribeSimulators",
     "unsubscribeAppSettings"
@@ -1950,6 +2391,17 @@ function detachAuthenticatedDataSync({ keepsInitialDataRefresh = false } = {}) {
   if (!keepsInitialDataRefresh) {
     finishInitialDataRefresh();
   }
+  state.firestoreReadStatsBuffer.clear();
+  if (state.firestoreReadStatsFlushTimer) {
+    window.clearTimeout(state.firestoreReadStatsFlushTimer);
+    state.firestoreReadStatsFlushTimer = null;
+  }
+
+  if (keepsData) {
+    renderAdminMessageOverlay();
+    return;
+  }
+
   state.notes = [];
   state.fetchedNoteDayKeys = new Set();
   state.fetchedNotesByID = new Map();
@@ -1974,6 +2426,12 @@ function detachAuthenticatedDataSync({ keepsInitialDataRefresh = false } = {}) {
   state.activeAdminMessage = null;
   state.passwordResetRequests = [];
   state.didShowPasswordResetAdminAlert = false;
+  state.hasFetchedPlanningTechnicians = false;
+  state.isFetchingPlanningTechnicians = false;
+  state.isPlanningFirestoreLoaded = false;
+  state.isPlanningFirestoreLoading = false;
+  state.planningActivityByRowID = new Map();
+  state.planningActivityLoadingIDs = new Set();
   renderAdminMessageOverlay();
   state.users = [];
   state.allSimulators = [];
@@ -1985,11 +2443,6 @@ function detachAuthenticatedDataSync({ keepsInitialDataRefresh = false } = {}) {
   state.selectedDetail = null;
   state.selectedCreate = null;
   state.pendingHandwritingClear = null;
-  state.firestoreReadStatsBuffer.clear();
-  if (state.firestoreReadStatsFlushTimer) {
-    window.clearTimeout(state.firestoreReadStatsFlushTimer);
-    state.firestoreReadStatsFlushTimer = null;
-  }
   state.lastLoginEventAt = 0;
 
   elements.noteGroups.innerHTML = "";
@@ -2006,6 +2459,11 @@ function restartDailyTagsListener() {
   if (state.unsubscribeDailyTags) {
     state.unsubscribeDailyTags();
     state.unsubscribeDailyTags = null;
+  }
+
+  if (shouldSuspendFirestoreSync()) {
+    render();
+    return;
   }
 
   state.dailyTags = [];
@@ -2044,9 +2502,11 @@ function renderSession() {
 
   if (!state.currentUser) {
     elements.adminSettingsButton.classList.add("hidden");
+    elements.adminFirestoreSyncButton.classList.add("hidden");
     elements.changeCodeButton.classList.add("hidden");
     elements.userMenu.classList.add("hidden");
     elements.pageSubtitle.textContent = `${formatLongDate(state.selectedDate)} · Consultation`;
+    renderViewNavigation();
     return;
   }
 
@@ -2055,7 +2515,49 @@ function renderSession() {
   elements.userMeta.innerHTML = userRoleMetaHTML(state.currentUser.role, state.currentUser.team);
   elements.changeCodeButton.classList.toggle("hidden", state.currentUser.role === "admin");
   elements.adminSettingsButton.classList.toggle("hidden", state.currentUser.role !== "admin");
+  elements.adminFirestoreSyncButton.classList.toggle("hidden", state.currentUser.role !== "admin");
+  elements.adminFirestoreSyncButton.innerHTML = state.isFirestoreSyncSuspended
+    ? `<span class="menu-icon" aria-hidden="true">▶</span> Reprendre Firestore`
+    : `<span class="menu-icon" aria-hidden="true">⏸</span> Suspendre Firestore`;
   elements.pageSubtitle.textContent = `${formatLongDate(state.selectedDate)} · ${displayName || state.currentUser.id}`;
+  renderViewNavigation();
+}
+
+function renderViewNavigation() {
+  const canAccessPlanning = canCurrentUserAccessPlanning();
+  if (!canAccessPlanning && state.activeView === "planning") {
+    state.activeView = "notes";
+  }
+  elements.openNotesViewButton?.classList.toggle("hidden", !canAccessPlanning);
+  elements.openNotesViewButton?.classList.toggle("active", state.activeView === "notes");
+  elements.openPlanningViewButton?.classList.toggle("hidden", !canAccessPlanning);
+  elements.openPlanningViewButton?.classList.toggle("active", state.activeView === "planning");
+}
+
+function canCurrentUserAccessPlanning() {
+  if (!state.currentUser) {
+    return false;
+  }
+
+  const currentUserRecord = currentUserRecordFromUsersList();
+  if (currentUserRecord) {
+    return currentUserRecord.role === "admin" || currentUserRecord.canViewPlanning === true;
+  }
+
+  return state.currentUser.role === "admin" || state.currentUser.canViewPlanning === true;
+}
+
+function canCurrentUserEditPlanning() {
+  if (!state.currentUser) {
+    return false;
+  }
+
+  const currentUserRecord = currentUserRecordFromUsersList();
+  if (currentUserRecord) {
+    return currentUserRecord.role === "admin" || currentUserRecord.canEditPlanning === true;
+  }
+
+  return state.currentUser.role === "admin" || state.currentUser.canEditPlanning === true;
 }
 
 function updateLoginLockState(requiresLogin) {
@@ -2076,6 +2578,8 @@ function updateLoginLockState(requiresLogin) {
 function render() {
   renderSession();
   renderDataRefreshIndicator();
+  document.body.classList.toggle("planning-view", state.activeView === "planning" && Boolean(state.currentUser));
+  elements.emptyState.textContent = "Aucune consigne à afficher pour cette sélection.";
   const filtersDisabled = Boolean(state.periodStartDate);
   elements.showTaggedToggle.checked = state.showTagged;
   elements.showAcknowledgedToggle.checked = state.showAcknowledged;
@@ -2097,7 +2601,9 @@ function render() {
     }
     elements.noteGroups.innerHTML = "";
     elements.emptyState.classList.remove("hidden");
+    elements.pageTitle.classList.remove("planning-title");
     elements.pageTitle.textContent = "";
+    elements.pageSubtitle.classList.remove("hidden");
     elements.pageSubtitle.textContent = "Connexion requise";
     refreshDetail();
     return;
@@ -2106,10 +2612,18 @@ function render() {
   renderTeamPresences();
   renderSimulators();
 
+  if (state.activeView === "planning") {
+    renderPlanningTable();
+    refreshDetail();
+    return;
+  }
+
   const groups = groupedNotes();
   elements.noteGroups.innerHTML = groups.map(renderGroup).join("");
   elements.emptyState.classList.toggle("hidden", groups.length > 0);
+  elements.pageTitle.classList.remove("planning-title");
   elements.pageTitle.textContent = "";
+  elements.pageSubtitle.classList.remove("hidden");
   if (!state.currentUser) {
     elements.pageSubtitle.textContent = `${pageSubtitleDate()} · Consultation${state.search ? " · Recherche" : ""}`;
   } else {
@@ -2133,6 +2647,1919 @@ function renderPreservingCenteredSimulatorBand(preparedAnchor = null) {
   const anchor = preparedAnchor || captureCenteredSimulatorBandAnchor();
   render();
   restoreCenteredSimulatorBandAnchor(anchor);
+}
+
+function renderPlanningTable() {
+  if (!state.activePlanningSort) {
+    sortPlanningRowsByDate();
+  }
+  const rows = visiblePlanningRows();
+  const nextPlanningRowID = nextUpcomingPlanningRowID(rows);
+
+  elements.pageTitle.classList.add("planning-title");
+  elements.pageTitle.textContent = "Planning réglementaire";
+  elements.pageSubtitle.textContent = "";
+  elements.pageSubtitle.classList.add("hidden");
+  elements.emptyState.classList.add("hidden");
+  elements.simulatorShortcutGrid.innerHTML = "";
+
+  elements.noteGroups.innerHTML = `
+    <section class="planning-board" aria-label="Planning réglementaire des visites et reunions">
+      <div class="planning-sticky-banner">
+        <div class="planning-banner-top">
+          <h1>Planning réglementaire</h1>
+          ${planningEditActionsHTML()}
+        </div>
+        ${planningHeaderRowHTML()}
+      </div>
+      <div class="planning-table-wrap">
+        <table class="planning-table">
+          <colgroup>
+            <col class="planning-col-status">
+            <col class="planning-col-simu">
+            <col class="planning-col-type">
+            <col class="planning-col-date">
+            <col class="planning-col-time">
+            <col class="planning-col-time">
+            <col class="planning-col-team">
+            <col class="planning-col-technician">
+            <col class="planning-col-tri">
+            <col class="planning-col-notes">
+            <col class="planning-col-actions">
+          </colgroup>
+          <tbody>
+            ${rows.map((row, index) => renderPlanningRowWithActivity(row, nextPlanningRowID, index)).join("")}
+          </tbody>
+        </table>
+      </div>
+      ${renderPlanningEditor()}
+    </section>
+  `;
+}
+
+function planningEditActionsHTML() {
+  const canEditPlanning = canCurrentUserEditPlanning();
+  const historyButton = `
+    <button
+      class="planning-history-button${state.showsPlanningHistory ? " active" : ""}"
+      type="button"
+      data-planning-action="toggle-history"
+      aria-pressed="${state.showsPlanningHistory ? "true" : "false"}"
+      title="${state.showsPlanningHistory ? "Masquer les événements passés" : "Afficher les événements passés"}"
+    >Historique</button>
+  `;
+
+  if (!state.isPlanningEditMode) {
+    return `
+      <div class="planning-edit-actions">
+        ${canEditPlanning ? `<button class="planning-edit-button" type="button" data-planning-action="enter-edit">Modifier</button>` : ""}
+        ${historyButton}
+      </div>
+    `;
+  }
+
+  return `
+    <div class="planning-edit-actions">
+      <button class="planning-add-button" type="button" data-planning-action="add-row">+ Ajouter</button>
+      <button class="planning-exit-button" type="button" data-planning-action="exit-edit">Quitter</button>
+      ${historyButton}
+    </div>
+  `;
+}
+
+function planningHeaderRowHTML() {
+  return `
+    <div class="planning-header-row" role="row">
+      <div class="planning-col-status" role="columnheader"></div>
+      <div class="planning-col-simu" role="columnheader">
+                <button class="planning-sort-button${state.activePlanningSort === "simulator" ? " active" : ""}" type="button" data-planning-action="sort-simulator" title="Trier par simulateur puis date croissante">Simu</button>
+      </div>
+      <div class="planning-col-type" role="columnheader">
+        <button class="planning-sort-button${state.activePlanningSort === "type" ? " active" : ""}" type="button" data-planning-action="sort-type" title="Trier par type puis date croissante">Type</button>
+      </div>
+      <div class="planning-col-date" role="columnheader">
+                <button class="planning-sort-button${(state.activePlanningSort || "date") === "date" ? " active" : ""}" type="button" data-planning-action="sort-date" title="Trier par date croissante">Date</button>
+      </div>
+      <div class="planning-col-time" role="columnheader">Début</div>
+      <div class="planning-col-time" role="columnheader">Fin</div>
+      <div class="planning-col-team" role="columnheader">Eq.</div>
+      <div class="planning-col-technician" role="columnheader">
+        <button class="planning-sort-button${state.activePlanningSort === "technician" ? " active" : ""}" type="button" data-planning-action="sort-technician" title="Trier par technicien puis date croissante">Technicien</button>
+      </div>
+      <div class="planning-col-tri" role="columnheader">
+        <button class="planning-sort-button${state.activePlanningSort === "tri" ? " active" : ""}" type="button" data-planning-action="sort-tri" title="Trier par TRI puis date croissante">TRI</button>
+      </div>
+      <div class="planning-col-notes" role="columnheader">Notes</div>
+      <div class="planning-col-actions" role="columnheader"></div>
+    </div>
+  `;
+}
+
+function renderPlanningRow(row, nextPlanningRowID = "", rowIndex = 0) {
+  const id = escapeAttribute(row.id);
+  const simulatorOptions = planningSimulatorOptions(row.simulatorName);
+  const isDraftRow = isPlanningDraftRow(row);
+  const canOpenPlanningEditor = state.isPlanningEditMode && canCurrentUserEditPlanning();
+  const canEditPlanning = false;
+  const disablesStartTimeField = !canEditPlanning || row.dateMode === "month";
+  const disablesEndTimeField = !canEditPlanning || shouldDisablePlanningEndTime(row);
+  const disablesPeriodDetailFields = !canEditPlanning || row.dateMode === "month";
+  const disablesEditField = !canEditPlanning;
+  const disablesNotesField = state.isPlanningEditMode || !canCurrentUserAccessPlanning();
+  const technicianAlertLevel = planningTechnicianAlertLevel(row);
+  const highlightsMissingTri = shouldHighlightMissingPlanningTri(row);
+  const highlightsMissingStartTime = shouldHighlightMissingPlanningStartTime(row);
+  return `
+    <tr class="planning-row read-only${rowIndex % 2 ? " planning-row-alternate" : ""}${canOpenPlanningEditor ? " planning-row-selectable" : ""}${isDraftRow ? " planning-draft-row" : ""}" data-planning-row-id="${id}">
+      <td class="planning-col-status">${isDraftRow ? "" : planningStatusIconsHTML(row, nextPlanningRowID)}</td>
+      <td class="planning-col-simu">
+        <select class="${row.simulatorName ? "" : "planning-empty-select"}" data-planning-field="simulatorName" aria-label="Simu" ${disablesEditField ? "disabled" : ""}>
+          ${planningPlaceholderOptionHTML("Simu", row.simulatorName)}
+          ${simulatorOptions.map((simulator) => planningOptionHTML(simulator.name, simulator.name, row.simulatorName)).join("")}
+        </select>
+      </td>
+      <td class="planning-col-type">
+        <select class="${row.type ? "" : "planning-empty-select"}" data-planning-field="type" aria-label="Type" ${disablesEditField ? "disabled" : ""}>
+          ${planningPlaceholderOptionHTML("Type", row.type)}
+          ${planningTypes.map((type) => planningOptionHTML(type.value, type.label, row.type)).join("")}
+        </select>
+      </td>
+      <td class="planning-col-date">
+        <div class="planning-date-control">
+          ${planningDateDisplayButtonHTML(row, { enabled: canEditPlanning })}
+        </div>
+      </td>
+      <td class="planning-col-time"><span class="planning-time-display${highlightsMissingStartTime ? " planning-time-alert" : ""}" data-planning-field="startTime">${escapeHtml(row.startTime || "--:--")}</span></td>
+      <td class="planning-col-time"><span class="planning-time-display" data-planning-field="endTime">${escapeHtml(row.endTime || "--:--")}</span></td>
+      <td class="planning-col-team">${planningTeamHTML(row)}</td>
+      <td class="planning-col-technician">
+        <select class="${technicianAlertLevel ? `planning-technician-alert ${technicianAlertLevel}` : ""}" data-planning-field="participants" aria-label="Technicien" ${disablesPeriodDetailFields ? "disabled" : ""}>
+          ${planningTechnicianSelectOptionsHTML(row)}
+        </select>
+      </td>
+      <td class="planning-col-tri"><input class="${highlightsMissingTri ? "planning-tri-alert" : ""}" data-planning-field="tri" value="${escapeAttribute(row.tri)}" placeholder="TRI" ${disablesPeriodDetailFields ? "disabled" : ""}></td>
+      <td class="planning-col-notes">
+        <textarea class="planning-notes-cell" data-planning-field="notes" placeholder="Notes" ${disablesNotesField ? "disabled" : ""}>${escapeHtml(row.notes)}</textarea>
+      </td>
+      <td class="planning-col-actions planning-actions-cell">
+        ${isDraftRow
+          ? `<button class="planning-icon-button success" type="button" data-planning-action="confirm-new-row" title="Valider la création">✓</button>
+             <button class="planning-icon-button danger" type="button" data-planning-action="cancel-new-row" title="Annuler la création">×</button>`
+          : `<button class="planning-icon-button planning-history-clock ${row.hasModifications ? "modified" : "clean"}" type="button" data-planning-action="show-activity" title="${row.hasModifications ? "Suivi : modification existante" : "Suivi : aucune modification"}">◷</button>`}
+      </td>
+    </tr>
+  `;
+}
+
+function renderPlanningRowWithActivity(row, nextPlanningRowID = "", rowIndex = 0) {
+  return `${renderPlanningRow(row, nextPlanningRowID, rowIndex)}${renderPlanningActivityRow(row)}`;
+}
+
+function renderPlanningActivityRow(row) {
+  if (!state.planningActivityByRowID.has(row.id) && !state.planningActivityLoadingIDs.has(row.id)) {
+    return "";
+  }
+
+  const activities = state.planningActivityByRowID.get(row.id) || [];
+  const content = state.planningActivityLoadingIDs.has(row.id)
+    ? "<span>Chargement du suivi...</span>"
+    : (activities.length
+      ? activities.map(renderPlanningActivityItem).join("")
+      : "<span>Aucune action enregistrée.</span>");
+  return `
+    <tr class="planning-activity-row" data-planning-activity-row-id="${escapeAttribute(row.id)}">
+      <td colspan="11">
+        <div class="planning-activity-panel">${content}</div>
+      </td>
+    </tr>
+  `;
+}
+
+function renderPlanningActivityItem(activity) {
+  const details = stringValue(activity.activityDetails).trim();
+  return `
+    <div class="planning-activity-item">
+      <div class="planning-activity-heading">
+        <strong>${escapeHtml(planningActivityActionLabel(activity.action))}</strong>
+        <span>- ${escapeHtml(activity.userDisplayName || activity.userIdentifier || "Utilisateur")} · ${escapeHtml(formatDateTime(dateValue(activity.createdAt) || new Date()))}</span>
+      </div>
+      ${details ? `<small class="planning-activity-details">${escapeHtml(details)}</small>` : ""}
+    </div>
+  `;
+}
+
+function renderPlanningEditor() {
+  if (!state.planningEditor) {
+    return "";
+  }
+
+  const row = normalizePlanningRow(state.planningEditor.draft);
+  state.planningEditor.draft = row;
+  const isCreate = state.planningEditor.mode === "create";
+  const simulatorOptions = planningSimulatorOptions(row.simulatorName);
+  const disablesPeriodDetailFields = row.dateMode === "month";
+  const disablesStartTimeField = row.dateMode === "month";
+  const disablesEndTimeField = shouldDisablePlanningEndTime(row);
+  const canValidate = canValidatePlanningEditorRow(row);
+  const canEditTri = canEditPlanningTri(row);
+  return `
+    <div class="planning-editor-backdrop" data-planning-editor>
+      <section class="planning-editor-panel" aria-label="${isCreate ? "Créer une visite réglementaire" : "Modifier une visite réglementaire"}">
+        <div class="planning-editor-title">
+          <strong>${isCreate ? "Nouvelle visite réglementaire" : "Modifier la visite réglementaire"}</strong>
+          <button type="button" class="planning-icon-button danger" data-planning-editor-action="cancel" title="Annuler">×</button>
+        </div>
+        <div class="planning-editor-grid">
+          <label class="planning-editor-field planning-editor-simu">Simu
+            <select class="${row.simulatorName ? "" : "planning-empty-select"}" data-planning-editor-field="simulatorName">
+              ${planningPlaceholderOptionHTML("Simu", row.simulatorName)}
+              ${simulatorOptions.map((simulator) => planningOptionHTML(simulator.name, simulator.name, row.simulatorName)).join("")}
+            </select>
+          </label>
+          <label class="planning-editor-field planning-editor-type">Type
+            <select class="${row.type ? "" : "planning-empty-select"}" data-planning-editor-field="type">
+              ${planningPlaceholderOptionHTML("Type", row.type)}
+              ${planningTypes.map((type) => planningOptionHTML(type.value, type.label, row.type)).join("")}
+            </select>
+          </label>
+          <label class="planning-editor-field planning-editor-date">Date
+            <div class="planning-date-control">
+              <select class="${row.dateMode === "month" ? "planning-period-highlight" : ""}" data-planning-editor-field="dateMode" aria-label="Type de date">
+                ${planningOptionHTML("date", "Date", row.dateMode)}
+                ${planningOptionHTML("month", "Période", row.dateMode)}
+              </select>
+              ${planningDateDisplayButtonHTML(row, { enabled: true })}
+            </div>
+          </label>
+          <label class="planning-editor-field planning-editor-start">Début
+            ${planningTimeDisplayButtonHTML(row.startTime, "startTime", { disabled: disablesStartTimeField })}
+          </label>
+          <label class="planning-editor-field planning-editor-end">Fin
+            ${planningTimeDisplayButtonHTML(row.endTime, "endTime", { disabled: disablesEndTimeField })}
+          </label>
+          <label class="planning-editor-field planning-editor-team">Eq.
+            <div class="planning-editor-team-preview">${planningTeamHTML(row)}</div>
+          </label>
+          <label class="planning-editor-field planning-editor-technician">Technicien
+            <div class="planning-technician-combobox" data-planning-technician-combobox>
+              <input class="${planningTechnicianAlertLevel(row) ? `planning-technician-alert ${planningTechnicianAlertLevel(row)}` : ""}" data-planning-editor-field="participants" value="${escapeAttribute(row.participants)}" placeholder="Technicien" ${disablesPeriodDetailFields ? "disabled" : ""}>
+              <button type="button" data-planning-editor-action="toggle-technician-list" title="Afficher les techniciens" ${disablesPeriodDetailFields ? "disabled" : ""}>⌄</button>
+            </div>
+          </label>
+          <label class="planning-editor-field planning-editor-tri">TRI
+            <input class="${shouldHighlightMissingPlanningTri(row) ? "planning-tri-alert" : ""}" data-planning-editor-field="tri" value="${escapeAttribute(row.tri)}" placeholder="TRI" ${canEditTri ? "" : "disabled"}>
+          </label>
+          <label class="planning-editor-field planning-editor-notes">Notes
+            <textarea data-planning-editor-field="notes" placeholder="Notes">${escapeHtml(row.notes)}</textarea>
+          </label>
+        </div>
+        <div class="planning-editor-actions">
+          ${isCreate ? "" : `<button type="button" class="planning-editor-delete" data-planning-editor-action="delete">Supprimer</button>`}
+          <button type="button" class="planning-editor-cancel" data-planning-editor-action="cancel">Annuler</button>
+          <button type="button" class="planning-editor-validate" data-planning-editor-action="validate" ${canValidate ? "" : "disabled"}>Valider</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function planningActivityActionLabel(action) {
+  const labels = {
+    created: "Création",
+    imported: "Import",
+    updated: "Modification",
+    deleted: "Suppression"
+  };
+  return labels[action] || action || "Action";
+}
+
+function planningActivityValue(value) {
+  const text = stringValue(value).trim();
+  return text || "-";
+}
+
+function planningFieldLabel(field) {
+  const labels = {
+    simulatorName: "Simu",
+    type: "Type",
+    dateMode: "Mode date",
+    date: "Date",
+    month: "Période",
+    startTime: "Début",
+    endTime: "Fin",
+    participants: "Technicien",
+    tri: "TRI",
+    notes: "Notes"
+  };
+  return labels[field] || field;
+}
+
+function planningOptionHTML(value, label, selectedValue) {
+  return `<option value="${escapeAttribute(value)}" ${value === selectedValue ? "selected" : ""}>${escapeHtml(label)}</option>`;
+}
+
+function planningPlaceholderOptionHTML(label, selectedValue) {
+  return `<option value="" ${selectedValue ? "" : "selected"} disabled hidden>${escapeHtml(label)}</option>`;
+}
+
+function planningTechnicianSelectOptionsHTML(row) {
+  const selected = stringValue(row.participants).trim();
+  const technicians = planningTechnicianOptions(row);
+  const hasSelectedTechnician = technicians.some((technician) => technician === selected);
+  return `
+    ${planningOptionHTML("", "Technicien", selected)}
+    ${selected && !hasSelectedTechnician ? planningOptionHTML(selected, selected, selected) : ""}
+    ${technicians.map((technician) => planningOptionHTML(technician, technician, selected)).join("")}
+    ${planningOptionHTML(planningFreeTechnicianValue, "Saisie libre...", "")}
+  `;
+}
+
+function planningTechnicianMenuHTML(row) {
+  const technicians = planningTechnicianOptions(row);
+  if (!technicians.length) {
+    return `<div class="planning-technician-menu empty" data-planning-technician-menu>Aucun technicien</div>`;
+  }
+
+  return `
+    <div class="planning-technician-menu" data-planning-technician-menu>
+      ${technicians.map((technician) => `
+        <button type="button" data-planning-editor-action="pick-technician" data-planning-technician="${escapeAttribute(technician)}">
+          ${escapeHtml(technician)}
+        </button>
+      `).join("")}
+    </div>
+  `;
+}
+
+function planningDateDisplayButtonHTML(row, { enabled = false } = {}) {
+  const isPeriod = row.dateMode === "month";
+  const hasValue = isPeriod
+    ? /^\d{4}-\d{2}$/.test(row.month || row.date.slice(0, 7))
+    : /^\d{4}-\d{2}-\d{2}$/.test(row.date);
+  const value = isPeriod
+    ? (hasValue ? planningMonthDisplay(row.month || row.date.slice(0, 7)) : "Période")
+    : (hasValue ? planningDateDisplay(row.date) : "Date");
+  const className = `${isPeriod ? "planning-period-highlight" : ""} ${hasValue ? "" : "planning-empty-select"}`.trim();
+  return `
+    <button
+      class="planning-date-display-button ${className}"
+      type="button"
+      data-planning-date-open="${isPeriod ? "month" : "date"}"
+      aria-label="${isPeriod ? "Période" : "Date"}"
+      ${enabled && state.isPlanningEditMode && canCurrentUserEditPlanning() ? "" : "disabled"}
+    >
+      ${escapeHtml(value)}
+    </button>
+  `;
+}
+
+function planningTimeDisplayButtonHTML(value, field, { disabled = false } = {}) {
+  const hasValue = /^\d{2}:\d{2}$/.test(value || "");
+  return `
+    <button
+      class="planning-time-display-button ${hasValue ? "" : "planning-empty-select"}"
+      type="button"
+      data-planning-time-open="${escapeAttribute(field)}"
+      aria-label="${field === "startTime" ? "Heure de début" : "Heure de fin"}"
+      ${disabled || !state.isPlanningEditMode || !canCurrentUserEditPlanning() ? "disabled" : ""}
+    >
+      ${escapeHtml(hasValue ? value : "--:--")}
+    </button>
+  `;
+}
+
+function planningDateDisplay(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return "Date";
+  }
+  const [year, month, day] = value.split("-");
+  return `${day}/${month}/${year}`;
+}
+
+function planningMonthDisplay(value) {
+  if (!/^\d{4}-\d{2}$/.test(value)) {
+    return "Période";
+  }
+  const [year, month] = value.split("-");
+  return `${planningMonthName(month)} ${year}`;
+}
+
+function planningMonthName(value) {
+  return planningMonthNames[Number(value) - 1] || value;
+}
+
+function planningDateParts(value) {
+  const today = new Date();
+  const fallback = {
+    day: String(today.getDate()).padStart(2, "0"),
+    month: String(today.getMonth() + 1).padStart(2, "0"),
+    year: String(today.getFullYear())
+  };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return fallback;
+  }
+  const [year, month, day] = value.split("-");
+  return { day, month, year };
+}
+
+function planningMonthParts(value) {
+  const today = new Date();
+  if (!/^\d{4}-\d{2}$/.test(value)) {
+    return {
+      month: String(today.getMonth() + 1).padStart(2, "0"),
+      year: String(today.getFullYear())
+    };
+  }
+  const [year, month] = value.split("-");
+  return { month, year };
+}
+
+function planningYearOptions(selectedYear) {
+  const currentYear = new Date().getFullYear();
+  const years = Array.from({ length: 9 }, (_, index) => currentYear - 2 + index);
+  const parsedSelectedYear = Number(selectedYear);
+  if (Number.isInteger(parsedSelectedYear) && !years.includes(parsedSelectedYear)) {
+    years.push(parsedSelectedYear);
+  }
+  return years.sort((a, b) => a - b);
+}
+
+function planningDateWheelHTML(value) {
+  const parts = planningDateParts(value);
+  return `
+    <div class="planning-date-wheel" data-planning-date-wheel>
+      <select data-planning-date-part="day" aria-label="Jour">
+        ${Array.from({ length: 31 }, (_, index) => {
+          const day = String(index + 1).padStart(2, "0");
+          return planningOptionHTML(day, day, parts.day);
+        }).join("")}
+      </select>
+      <select data-planning-date-part="month" aria-label="Mois">
+        ${Array.from({ length: 12 }, (_, index) => {
+          const month = String(index + 1).padStart(2, "0");
+          return planningOptionHTML(month, planningMonthName(month), parts.month);
+        }).join("")}
+      </select>
+      <select data-planning-date-part="year" aria-label="Année">
+        ${planningYearOptions(parts.year).map((year) => planningOptionHTML(String(year), String(year), parts.year)).join("")}
+      </select>
+    </div>
+  `;
+}
+
+function planningMonthWheelHTML(value) {
+  const parts = planningMonthParts(value);
+  return `
+    <div class="planning-date-wheel period" data-planning-date-wheel>
+      <select data-planning-date-part="month" aria-label="Mois">
+        ${Array.from({ length: 12 }, (_, index) => {
+          const month = String(index + 1).padStart(2, "0");
+          return planningOptionHTML(month, planningMonthName(month), parts.month);
+        }).join("")}
+      </select>
+      <select data-planning-date-part="year" aria-label="Année">
+        ${planningYearOptions(parts.year).map((year) => planningOptionHTML(String(year), String(year), parts.year)).join("")}
+      </select>
+    </div>
+  `;
+}
+
+function handlePlanningTableClick(event) {
+  const action = event.target.closest("[data-planning-action]")?.dataset.planningAction;
+
+  if (action === "enter-edit") {
+    if (!canCurrentUserEditPlanning()) {
+      return;
+    }
+    state.isPlanningEditMode = true;
+    renderPlanningTable();
+    return;
+  }
+
+  if (action === "exit-edit") {
+    state.isPlanningEditMode = false;
+    state.planningEditor = null;
+    state.planningRows = normalizedPlanningRows().filter((row) => !isPlanningDraftRow(row));
+    closePlanningDateWheel();
+    renderPlanningTable();
+    return;
+  }
+
+  if (action === "toggle-history") {
+    state.showsPlanningHistory = !state.showsPlanningHistory;
+    renderPlanningTable();
+    loadPlanningRowsFromFirestore({ force: true });
+    return;
+  }
+
+  if (action === "add-row") {
+    if (!state.isPlanningEditMode || !canCurrentUserEditPlanning()) {
+      return;
+    }
+    openPlanningEditor(createPlanningRow(), { mode: "create" });
+    renderPlanningTable();
+    return;
+  }
+
+  if (action === "sort-date") {
+    state.activePlanningSort = "date";
+    sortPlanningRowsByDate();
+    savePlanningRowsLocal();
+    renderPlanningTable();
+    return;
+  }
+
+  if (action === "sort-simulator") {
+    state.activePlanningSort = "simulator";
+    sortPlanningRowsBySimulator();
+    savePlanningRowsLocal();
+    renderPlanningTable();
+    return;
+  }
+
+  if (action === "sort-type") {
+    state.activePlanningSort = "type";
+    sortPlanningRowsByAlphabeticField("type");
+    savePlanningRowsLocal();
+    renderPlanningTable();
+    return;
+  }
+
+  if (action === "sort-technician") {
+    state.activePlanningSort = "technician";
+    sortPlanningRowsByAlphabeticField("participants");
+    savePlanningRowsLocal();
+    renderPlanningTable();
+    return;
+  }
+
+  if (action === "sort-tri") {
+    state.activePlanningSort = "tri";
+    sortPlanningRowsByAlphabeticField("tri");
+    savePlanningRowsLocal();
+    renderPlanningTable();
+    return;
+  }
+
+  const rowID = event.target.closest("[data-planning-row-id]")?.dataset.planningRowId;
+  if (!rowID) {
+    return;
+  }
+
+  if (action === "show-activity") {
+    togglePlanningActivity(rowID);
+    return;
+  }
+
+  if (action === "edit-row") {
+    if (!state.isPlanningEditMode || !canCurrentUserEditPlanning()) {
+      return;
+    }
+    const row = state.planningRows.find((candidate) => candidate.id === rowID);
+    if (row) {
+      openPlanningEditor(row, { mode: "edit" });
+      renderPlanningTable();
+    }
+    return;
+  }
+
+  if (action === "confirm-new-row") {
+    if (!state.isPlanningEditMode || !canCurrentUserEditPlanning()) {
+      return;
+    }
+    const row = state.planningRows.find((candidate) => candidate.id === rowID);
+    if (!row || !isPlanningDraftRow(row)) {
+      return;
+    }
+    row.isDraft = false;
+    savePlanningRows(row, { before: null, changedFields: Object.keys(planningFirestorePayload(row)), action: "created" });
+    renderPlanningTable();
+    return;
+  }
+
+  if (action === "cancel-new-row") {
+    if (!state.isPlanningEditMode || !canCurrentUserEditPlanning()) {
+      return;
+    }
+    state.planningRows = state.planningRows.filter((row) => row.id !== rowID);
+    renderPlanningTable();
+    return;
+  }
+
+  if (action === "delete-row") {
+    if (!state.isPlanningEditMode || !canCurrentUserEditPlanning()) {
+      return;
+    }
+    const deletedRow = state.planningRows.find((row) => row.id === rowID);
+    state.planningRows = state.planningRows.filter((row) => row.id !== rowID);
+    if (!state.planningRows.length) {
+      state.planningRows.push(createPlanningRow());
+    }
+    savePlanningRowsLocal();
+    if (deletedRow) {
+      deletePlanningRowFromFirestore(deletedRow);
+    }
+    renderPlanningTable();
+    return;
+  }
+
+  if (!action && state.isPlanningEditMode && canCurrentUserEditPlanning()) {
+    const row = state.planningRows.find((candidate) => candidate.id === rowID);
+    if (row) {
+      openPlanningEditor(row, { mode: "edit" });
+      renderPlanningTable();
+    }
+  }
+}
+
+function openPlanningEditor(row, { mode = "edit" } = {}) {
+  const draft = normalizePlanningRow(row);
+  state.planningEditor = {
+    mode,
+    original: mode === "edit" ? normalizePlanningRow(row) : null,
+    draft
+  };
+}
+
+function closePlanningEditor() {
+  state.planningEditor = null;
+  closePlanningDateWheel();
+  closePlanningTechnicianMenu();
+}
+
+function handlePlanningEditorClick(event) {
+  const editorAction = event.target.closest("[data-planning-editor-action]")?.dataset.planningEditorAction;
+  if (!editorAction) {
+    return Boolean(event.target.closest("[data-planning-editor]"));
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  if (editorAction === "toggle-technician-list") {
+    togglePlanningTechnicianMenu(event.target.closest("[data-planning-technician-combobox]"));
+    return true;
+  }
+
+  if (editorAction === "pick-technician") {
+    pickPlanningTechnician(event.target.closest("[data-planning-technician]"));
+    return true;
+  }
+
+  if (editorAction === "cancel") {
+    closePlanningEditor();
+    renderPlanningTable();
+    return true;
+  }
+
+  if (editorAction === "validate") {
+    validatePlanningEditor();
+    return true;
+  }
+
+  if (editorAction === "delete") {
+    deletePlanningEditorRow();
+    return true;
+  }
+
+  return true;
+}
+
+function togglePlanningTechnicianMenu(combobox) {
+  if (!combobox || !state.planningEditor) {
+    return;
+  }
+
+  const existingMenu = document.querySelector("[data-planning-technician-menu]");
+  closePlanningTechnicianMenu();
+  if (existingMenu) {
+    return;
+  }
+
+  const template = document.createElement("template");
+  template.innerHTML = planningTechnicianMenuHTML(state.planningEditor.draft).trim();
+  const menu = template.content.firstElementChild;
+  if (!menu) {
+    return;
+  }
+  const rect = combobox.getBoundingClientRect();
+  menu.style.visibility = "hidden";
+  menu.style.minWidth = `${Math.round(rect.width)}px`;
+  document.body.append(menu);
+
+  const menuRect = menu.getBoundingClientRect();
+  const left = Math.max(8, Math.min(rect.left, window.innerWidth - menuRect.width - 8));
+  const belowTop = rect.bottom + 5;
+  const aboveTop = rect.top - menuRect.height - 5;
+  const top = belowTop + menuRect.height > window.innerHeight - 8 && aboveTop >= 8
+    ? aboveTop
+    : Math.min(belowTop, Math.max(8, window.innerHeight - menuRect.height - 8));
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+  menu.style.visibility = "";
+}
+
+function closePlanningTechnicianMenu() {
+  document.querySelector("[data-planning-technician-menu]")?.remove();
+}
+
+function pickPlanningTechnician(optionButton) {
+  const technician = optionButton?.dataset?.planningTechnician || "";
+  const editor = state.planningEditor;
+  if (!technician || !editor) {
+    return;
+  }
+
+  editor.draft.participants = technician;
+  const input = elements.noteGroups.querySelector("[data-planning-editor-field='participants']");
+  if (input) {
+    input.value = technician;
+    const alertLevel = planningTechnicianAlertLevel(editor.draft);
+    input.classList.toggle("planning-technician-alert", Boolean(alertLevel));
+    input.classList.toggle("warning", alertLevel === "warning");
+    input.classList.toggle("danger", alertLevel === "danger");
+    input.focus();
+  }
+  closePlanningTechnicianMenu();
+}
+
+function handlePlanningEditorFieldEdit(event) {
+  const field = event.target?.dataset?.planningEditorField || "";
+  const editor = state.planningEditor;
+  if (!field || !editor || !state.isPlanningEditMode || !canCurrentUserEditPlanning()) {
+    return;
+  }
+
+  const row = editor.draft;
+  row[field] = event.target.type === "checkbox" ? event.target.checked : event.target.value;
+  refreshPlanningEmptyFieldState(event.target);
+
+  if (field === "participants" && event.type === "input") {
+    return;
+  }
+
+  if (field === "notes") {
+    if (event.type === "input") {
+      return;
+    }
+    row.notes = normalizePlanningSingleLineText(row.notes);
+    event.target.value = row.notes;
+    return;
+  }
+
+  if (field === "tri" && event.type === "input") {
+    return;
+  }
+
+  if (field === "dateMode") {
+    if (row.dateMode === "month" && /^\d{4}-\d{2}-\d{2}$/.test(row.date)) {
+      row.month = row.date.slice(0, 7);
+    } else if (row.dateMode === "date" && /^\d{4}-\d{2}$/.test(row.month)) {
+      row.date = `${row.month}-01`;
+    }
+    if (row.dateMode === "month") {
+      row.startTime = "";
+      row.endTime = "";
+    } else if (shouldDisablePlanningEndTime(row)) {
+      row.endTime = "";
+    }
+    renderPlanningTable();
+    return;
+  }
+
+  if (field === "type" && shouldDisablePlanningEndTime(row)) {
+    row.endTime = "";
+    renderPlanningTable();
+    return;
+  }
+
+  if ((field === "startTime" || field === "type") && shouldAutoFillPlanningEndTime(row)) {
+    row.endTime = addHoursToTime(row.startTime, 4);
+    renderPlanningTable();
+    return;
+  }
+
+  if (["simulatorName", "type", "date", "month", "startTime", "endTime", "participants", "tri"].includes(field)) {
+    renderPlanningTable();
+  }
+}
+
+function refreshPlanningEmptyFieldState(fieldElement) {
+  if (!fieldElement?.matches?.(".planning-empty-select, [data-planning-editor-field='simulatorName'], [data-planning-editor-field='type']")) {
+    return;
+  }
+
+  fieldElement.classList.toggle("planning-empty-select", !fieldElement.value);
+}
+
+function canValidatePlanningEditorRow(row) {
+  const normalizedRow = normalizePlanningRow(row);
+  const hasDateValue = normalizedRow.dateMode === "month"
+    ? /^\d{4}-\d{2}$/.test(normalizedRow.month)
+    : /^\d{4}-\d{2}-\d{2}$/.test(normalizedRow.date);
+  return Boolean(normalizedRow.simulatorName && normalizedRow.type && hasDateValue);
+}
+
+function canEditPlanningTri(row) {
+  return canValidatePlanningEditorRow(row);
+}
+
+function validatePlanningEditor() {
+  const editor = state.planningEditor;
+  if (!editor || !canCurrentUserEditPlanning()) {
+    return;
+  }
+
+  const row = normalizePlanningRow(editor.draft);
+  if (!canValidatePlanningEditorRow(row)) {
+    return;
+  }
+
+  const original = editor.original ? normalizePlanningRow(editor.original) : null;
+  const fields = planningEditableFields();
+  const changedFields = original
+    ? fields.filter((field) => stringValue(original[field]) !== stringValue(row[field]))
+    : planningUserActivityFields(row);
+
+  if (editor.mode === "create") {
+    state.planningRows.unshift(row);
+    savePlanningRows(row, { before: null, changedFields, action: "created" });
+  } else {
+    const index = state.planningRows.findIndex((candidate) => candidate.id === row.id);
+    if (index >= 0) {
+      state.planningRows[index] = row;
+    }
+    if (changedFields.length) {
+      savePlanningRows(row, { before: original, changedFields });
+    } else {
+      savePlanningRowsLocal();
+    }
+  }
+
+  closePlanningEditor();
+  renderPlanningTable();
+}
+
+function deletePlanningEditorRow() {
+  const editor = state.planningEditor;
+  if (!editor || editor.mode === "create" || !canCurrentUserEditPlanning()) {
+    return;
+  }
+
+  const row = normalizePlanningRow(editor.original || editor.draft);
+  state.planningRows = state.planningRows.filter((candidate) => candidate.id !== row.id);
+  if (!state.planningRows.length) {
+    state.planningRows.push(createPlanningRow());
+  }
+  savePlanningRowsLocal();
+  deletePlanningRowFromFirestore(row);
+  closePlanningEditor();
+  renderPlanningTable();
+}
+
+function planningEditableFields() {
+  return ["simulatorName", "type", "dateMode", "date", "month", "startTime", "endTime", "participants", "tri", "notes"];
+}
+
+function planningUserActivityFields(row) {
+  const normalizedRow = normalizePlanningRow(row);
+  return ["simulatorName", "type", "dateMode", normalizedRow.dateMode === "month" ? "month" : "date", "startTime", "endTime", "participants", "tri", "notes"]
+    .filter((field) => stringValue(normalizedRow[field]));
+}
+
+function handlePlanningFieldEdit(event) {
+  const field = event.target?.dataset?.planningField || "";
+  const rowElement = event.target?.closest("[data-planning-row-id]");
+  const rowID = rowElement?.dataset.planningRowId;
+  if (!field || !rowID) {
+    return;
+  }
+
+  const row = state.planningRows.find((candidate) => candidate.id === rowID);
+  if (!row) {
+    return;
+  }
+
+  const isNotesField = field === "notes";
+  if (isNotesField) {
+    if (!canCurrentUserAccessPlanning()) {
+      return;
+    }
+  } else if (!state.isPlanningEditMode || !canCurrentUserEditPlanning()) {
+    return;
+  }
+
+  const before = { ...row };
+  let shouldRenderAfterFreeTechnician = false;
+
+  row[field] = event.target.type === "checkbox" ? event.target.checked : event.target.value;
+  if (field === "participants" && row.participants === planningFreeTechnicianValue) {
+    row.participants = before.participants || "";
+    event.target.value = row.participants;
+    shouldRenderAfterFreeTechnician = true;
+  }
+  if (field === "notes") {
+    if (event.type === "input") {
+      return;
+    }
+    row.notes = normalizePlanningSingleLineText(row.notes);
+    event.target.value = row.notes;
+  }
+
+  if (field === "dateMode") {
+    if (row.dateMode === "month" && /^\d{4}-\d{2}-\d{2}$/.test(row.date)) {
+      row.month = row.date.slice(0, 7);
+    } else if (row.dateMode === "date" && /^\d{4}-\d{2}$/.test(row.month)) {
+      row.date = `${row.month}-01`;
+    }
+    if (row.dateMode === "month") {
+      row.startTime = "";
+      row.endTime = "";
+    } else if (shouldDisablePlanningEndTime(row)) {
+      row.endTime = "";
+    }
+    savePlanningRows(row, { before, changedFields: ["dateMode", "date", "month", "startTime", "endTime"] });
+    renderPlanningTable();
+    return;
+  }
+
+  if (field === "type" && shouldDisablePlanningEndTime(row)) {
+    row.endTime = "";
+    savePlanningRows(row, { before, changedFields: ["type", "endTime"] });
+    renderPlanningTable();
+    return;
+  }
+
+  if ((field === "startTime" || field === "type") && shouldAutoFillPlanningEndTime(row)) {
+    row.endTime = addHoursToTime(row.startTime, 4);
+    savePlanningRows(row, { before, changedFields: [field, "endTime"] });
+    renderPlanningTable();
+    return;
+  }
+
+  if (field === "date" || field === "month" || field === "startTime") {
+    savePlanningRows(row, { before, changedFields: [field] });
+    renderPlanningTable();
+    return;
+  }
+
+  savePlanningRows(row, { before, changedFields: [field] });
+  if (shouldRenderAfterFreeTechnician) {
+    renderPlanningTable();
+    return;
+  }
+  refreshPlanningRowAlerts(row, rowElement);
+  if (field === "endTime") {
+    rowElement.querySelector(".planning-col-team").innerHTML = planningTeamHTML(row);
+  }
+  refreshPlanningStatusIcons();
+  updatePlanningSubtitleOnly();
+}
+
+function preparePlanningTimeInput(event) {
+  if (!state.isPlanningEditMode || !canCurrentUserEditPlanning()) {
+    return;
+  }
+
+  const input = event.target;
+  if (!input?.matches(".planning-time-input") || input.value) {
+    return;
+  }
+
+  const field = input.dataset.planningField;
+  const rowElement = input.closest("[data-planning-row-id]");
+  const rowID = rowElement?.dataset.planningRowId;
+  const row = state.planningRows.find((candidate) => candidate.id === rowID);
+  if (!field || !row || input.disabled) {
+    return;
+  }
+
+  const before = { ...row };
+  row[field] = "12:00";
+  input.value = "12:00";
+
+  if (field === "startTime" && shouldAutoFillPlanningEndTime(row)) {
+    row.endTime = addHoursToTime(row.startTime, 4);
+    const endInput = rowElement.querySelector("[data-planning-field='endTime']");
+    if (endInput && !endInput.disabled) {
+      endInput.value = row.endTime;
+    }
+  }
+
+  savePlanningRows(row, { before, changedFields: field === "startTime" && shouldAutoFillPlanningEndTime(row) ? ["startTime", "endTime"] : [field] });
+  refreshPlanningRowAlerts(row, rowElement);
+  rowElement.querySelector(".planning-col-team").innerHTML = planningTeamHTML(row);
+  refreshPlanningStatusIcons();
+  updatePlanningSubtitleOnly();
+}
+
+function preparePlanningEditorTimeInput(event) {
+  const input = event.target;
+  const editor = state.planningEditor;
+  if (!editor || !input?.matches(".planning-time-input") || input.value || input.disabled) {
+    return;
+  }
+
+  const field = input.dataset.planningEditorField;
+  if (!["startTime", "endTime"].includes(field)) {
+    return;
+  }
+
+  const row = editor.draft;
+  row[field] = "12:00";
+  input.value = "12:00";
+  if (field === "startTime" && shouldAutoFillPlanningEndTime(row)) {
+    row.endTime = addHoursToTime(row.startTime, 4);
+    const panel = input.closest("[data-planning-editor]");
+    const endInput = panel?.querySelector("[data-planning-editor-field='endTime']");
+    const teamPreview = panel?.querySelector(".planning-editor-team-preview");
+    if (endInput && !endInput.disabled) {
+      endInput.value = row.endTime;
+    }
+    if (teamPreview) {
+      teamPreview.innerHTML = planningTeamHTML(row);
+    }
+  }
+}
+
+function openPlanningTimeWheel(event) {
+  if (!state.isPlanningEditMode || !canCurrentUserEditPlanning()) {
+    return;
+  }
+
+  const trigger = event.target.closest("[data-planning-time-open]");
+  if (!trigger) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  closePlanningTimeWheel();
+  closePlanningDateWheel();
+  const editorElement = trigger.closest("[data-planning-editor]");
+  const editor = state.planningEditor;
+  if (!editorElement || !editor) {
+    return;
+  }
+
+  const field = trigger.dataset.planningTimeOpen;
+  if (!["startTime", "endTime"].includes(field) || trigger.disabled) {
+    return;
+  }
+
+  const row = editor.draft;
+  if (!/^\d{2}:\d{2}$/.test(row[field])) {
+    row[field] = "12:00";
+    if (field === "startTime" && shouldAutoFillPlanningEndTime(row)) {
+      row.endTime = addHoursToTime(row.startTime, 4);
+    }
+  }
+
+  const rect = trigger.getBoundingClientRect();
+  const popover = document.createElement("div");
+  popover.className = "planning-time-wheel-popover";
+  popover.style.visibility = "hidden";
+  popover.innerHTML = planningTimeWheelHTML(row[field]);
+
+  const updateTimeValue = () => {
+    row[field] = planningTimeFromWheel(popover);
+    trigger.textContent = row[field];
+    trigger.classList.toggle("planning-empty-select", !/^\d{2}:\d{2}$/.test(row[field]));
+    if (field === "startTime" && shouldAutoFillPlanningEndTime(row)) {
+      row.endTime = addHoursToTime(row.startTime, 4);
+      const endButton = editorElement.querySelector("[data-planning-time-open='endTime']");
+      if (endButton && !endButton.disabled) {
+        endButton.textContent = row.endTime || "--:--";
+        endButton.classList.toggle("planning-empty-select", !row.endTime);
+      }
+    }
+    refreshPlanningEditorDerivedFields(editorElement, row);
+  };
+
+  updateTimeValue();
+  popover.addEventListener("change", updateTimeValue);
+  popover.addEventListener("click", (popoverEvent) => popoverEvent.stopPropagation());
+  document.body.append(popover);
+
+  const popoverRect = popover.getBoundingClientRect();
+  const left = Math.max(8, Math.min(rect.left, window.innerWidth - popoverRect.width - 8));
+  const belowTop = rect.bottom + 4;
+  const aboveTop = rect.top - popoverRect.height - 4;
+  const top = belowTop + popoverRect.height > window.innerHeight - 8 && aboveTop >= 8
+    ? aboveTop
+    : Math.min(belowTop, Math.max(8, window.innerHeight - popoverRect.height - 8));
+  popover.style.left = `${left}px`;
+  popover.style.top = `${top}px`;
+  popover.style.visibility = "";
+  window.requestAnimationFrame(() => popover.querySelector("select")?.focus());
+}
+
+function planningTimeWheelHTML(value) {
+  const time = /^\d{2}:\d{2}$/.test(value || "") ? value : "12:00";
+  const [selectedHour, selectedMinute] = time.split(":");
+  const minuteOptions = ["00", "15", "30", "45"];
+  const normalizedMinute = minuteOptions.includes(selectedMinute) ? selectedMinute : nearestPlanningQuarterMinute(selectedMinute);
+  return `
+    <div class="planning-time-wheel" data-planning-time-wheel>
+      <select data-planning-time-part="hour" aria-label="Heure">
+        ${Array.from({ length: 24 }, (_, hour) => {
+          const valueText = String(hour).padStart(2, "0");
+          return planningOptionHTML(valueText, valueText, selectedHour);
+        }).join("")}
+      </select>
+      <select data-planning-time-part="minute" aria-label="Minutes">
+        ${minuteOptions.map((minute) => planningOptionHTML(minute, minute, normalizedMinute)).join("")}
+      </select>
+    </div>
+  `;
+}
+
+function nearestPlanningQuarterMinute(value) {
+  const minute = Number(value);
+  if (!Number.isFinite(minute)) {
+    return "00";
+  }
+  const rounded = Math.round(minute / 15) * 15;
+  return String(rounded >= 60 ? 45 : rounded).padStart(2, "0");
+}
+
+function planningTimeFromWheel(wheel) {
+  const hour = wheel?.querySelector("[data-planning-time-part='hour']")?.value || "12";
+  const minute = wheel?.querySelector("[data-planning-time-part='minute']")?.value || "00";
+  return `${hour}:${minute}`;
+}
+
+function closePlanningTimeWheel() {
+  document.querySelector(".planning-time-wheel-popover")?.remove();
+}
+
+function openPlanningDateWheel(event) {
+  if (!state.isPlanningEditMode || !canCurrentUserEditPlanning()) {
+    return;
+  }
+
+  const trigger = event.target.closest("[data-planning-date-open]");
+  if (!trigger) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  closePlanningDateWheel();
+  closePlanningTimeWheel();
+  const editorElement = trigger.closest("[data-planning-editor]");
+  const rowElement = trigger.closest("[data-planning-row-id]");
+  const rowID = rowElement?.dataset.planningRowId;
+  const row = editorElement
+    ? state.planningEditor?.draft
+    : state.planningRows.find((candidate) => candidate.id === rowID);
+  if (!row) {
+    return;
+  }
+
+  const mode = trigger.dataset.planningDateOpen === "month" ? "month" : "date";
+  const rect = trigger.getBoundingClientRect();
+  const popover = document.createElement("div");
+  popover.className = "planning-date-wheel-popover";
+  popover.style.visibility = "hidden";
+  popover.innerHTML = mode === "month"
+    ? planningMonthWheelHTML(row.month || row.date.slice(0, 7))
+    : planningDateWheelHTML(row.date);
+
+  const updateDateValue = () => {
+    const before = { ...row };
+    if (mode === "month") {
+      row.month = planningMonthFromWheel(popover);
+      trigger.textContent = planningMonthDisplay(row.month);
+      trigger.classList.toggle("planning-empty-select", !/^\d{4}-\d{2}$/.test(row.month));
+      if (!editorElement) {
+        savePlanningRows(row, { before, changedFields: ["month"] });
+      }
+    } else {
+      row.date = planningDateFromWheel(popover);
+      trigger.textContent = planningDateDisplay(row.date);
+      trigger.classList.toggle("planning-empty-select", !/^\d{4}-\d{2}-\d{2}$/.test(row.date));
+      const teamHTML = planningTeamHTML(row);
+      const rowTeamCell = rowElement?.querySelector(".planning-col-team");
+      const editorTeamCell = editorElement?.querySelector(".planning-editor-team-preview");
+      if (rowTeamCell) {
+        rowTeamCell.innerHTML = teamHTML;
+      }
+      if (editorTeamCell) {
+        editorTeamCell.innerHTML = teamHTML;
+      }
+      if (!editorElement) {
+        savePlanningRows(row, { before, changedFields: ["date"] });
+      }
+    }
+    if (rowElement) {
+      refreshPlanningRowAlerts(row, rowElement);
+      refreshPlanningStatusIcons();
+    } else if (editorElement) {
+      refreshPlanningEditorDerivedFields(editorElement, row);
+    }
+  };
+
+  if (editorElement && ((mode === "month" && !/^\d{4}-\d{2}$/.test(row.month)) || (mode === "date" && !/^\d{4}-\d{2}-\d{2}$/.test(row.date)))) {
+    updateDateValue();
+  }
+
+  popover.addEventListener("change", updateDateValue);
+  popover.addEventListener("click", (popoverEvent) => popoverEvent.stopPropagation());
+  document.body.append(popover);
+
+  const popoverRect = popover.getBoundingClientRect();
+  const left = Math.max(8, Math.min(rect.left, window.innerWidth - popoverRect.width - 8));
+  const belowTop = rect.bottom + 4;
+  const aboveTop = rect.top - popoverRect.height - 4;
+  const top = belowTop + popoverRect.height > window.innerHeight - 8 && aboveTop >= 8
+    ? aboveTop
+    : Math.min(belowTop, Math.max(8, window.innerHeight - popoverRect.height - 8));
+  popover.style.left = `${left}px`;
+  popover.style.top = `${top}px`;
+  popover.style.visibility = "";
+  window.requestAnimationFrame(() => popover.querySelector("select")?.focus());
+}
+
+function planningDateFromWheel(wheel) {
+  const parts = {
+    day: wheel?.querySelector("[data-planning-date-part='day']")?.value || "01",
+    month: wheel?.querySelector("[data-planning-date-part='month']")?.value || "01",
+    year: wheel?.querySelector("[data-planning-date-part='year']")?.value || String(new Date().getFullYear())
+  };
+  const year = Number(parts.year);
+  const monthIndex = Number(parts.month) - 1;
+  const requestedDay = Number(parts.day);
+  const lastDay = new Date(year, monthIndex + 1, 0).getDate();
+  const day = Math.min(requestedDay, lastDay);
+  return `${String(year).padStart(4, "0")}-${String(monthIndex + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function planningMonthFromWheel(wheel) {
+  const month = wheel?.querySelector("[data-planning-date-part='month']")?.value || "01";
+  const year = wheel?.querySelector("[data-planning-date-part='year']")?.value || String(new Date().getFullYear());
+  return `${String(year).padStart(4, "0")}-${month}`;
+}
+
+function closePlanningDateWheel() {
+  document.querySelector(".planning-date-wheel-popover")?.remove();
+}
+
+function refreshPlanningEditorDerivedFields(editorElement, row) {
+  const teamPreview = editorElement.querySelector(".planning-editor-team-preview");
+  if (teamPreview) {
+    teamPreview.innerHTML = planningTeamHTML(row);
+  }
+
+  const technicianField = editorElement.querySelector("[data-planning-editor-field='participants']");
+  if (technicianField && !technicianField.disabled) {
+    const alertLevel = planningTechnicianAlertLevel(row);
+    technicianField.classList.toggle("planning-technician-alert", Boolean(alertLevel));
+    technicianField.classList.toggle("warning", alertLevel === "warning");
+    technicianField.classList.toggle("danger", alertLevel === "danger");
+  }
+  const technicianMenu = editorElement.querySelector("[data-planning-technician-menu]");
+  if (technicianMenu) {
+    technicianMenu.outerHTML = planningTechnicianMenuHTML(row);
+  }
+
+  const triInput = editorElement.querySelector("[data-planning-editor-field='tri']");
+  if (triInput) {
+    triInput.disabled = !canEditPlanningTri(row);
+    triInput.classList.toggle("planning-tri-alert", shouldHighlightMissingPlanningTri(row));
+  }
+
+  const validateButton = editorElement.querySelector("[data-planning-editor-action='validate']");
+  if (validateButton) {
+    validateButton.disabled = !canValidatePlanningEditorRow(row);
+  }
+}
+
+async function togglePlanningActivity(rowID) {
+  if (state.planningActivityByRowID.has(rowID)) {
+    state.planningActivityByRowID.delete(rowID);
+    renderPlanningTable();
+    return;
+  }
+
+  if (state.planningActivityLoadingIDs.has(rowID)) {
+    return;
+  }
+
+  state.planningActivityLoadingIDs.add(rowID);
+  renderPlanningTable();
+  try {
+    const response = await getRegulatoryPlanningActivity({ eventID: rowID, limit: 25 });
+    const activities = Array.isArray(response?.data?.activities) ? response.data.activities : [];
+    state.planningActivityByRowID.set(rowID, activities);
+  } catch (error) {
+    setStatus(error.message || "Suivi planning indisponible");
+    state.planningActivityByRowID.set(rowID, []);
+  } finally {
+    state.planningActivityLoadingIDs.delete(rowID);
+    renderPlanningTable();
+  }
+}
+
+function updatePlanningSubtitleOnly() {
+  if (state.activeView !== "planning") {
+    return;
+  }
+
+  const rows = normalizedPlanningRows();
+  elements.pageSubtitle.textContent = `${rows.length} element${rows.length > 1 ? "s" : ""}`;
+}
+
+function focusPlanningSimulator(rowID) {
+  requestAnimationFrame(() => {
+    elements.noteGroups
+      .querySelector(`[data-planning-row-id="${CSS.escape(rowID)}"] [data-planning-field='simulatorName']`)
+      ?.focus();
+  });
+}
+
+function normalizedPlanningRows() {
+  state.planningRows = Array.isArray(state.planningRows) && state.planningRows.length
+    ? state.planningRows.map(normalizePlanningRow)
+    : [createPlanningRow()];
+  return state.planningRows;
+}
+
+function visiblePlanningRows() {
+  const rows = normalizedPlanningRows();
+  return state.showsPlanningHistory ? rows : rows.filter((row) => !isPlanningEventPast(row));
+}
+
+function normalizePlanningRow(row) {
+  const isDraft = row?.isDraft === true;
+  const dateMode = row.dateMode === "month" ? "month" : "date";
+  const hasValidDate = /^\d{4}-\d{2}-\d{2}$/.test(row.date);
+  return {
+    id: stringValue(row.id) || crypto.randomUUID(),
+    simulatorName: normalizePlanningSimulatorName(row.simulatorName),
+    type: isDraft && !row.type ? "" : normalizePlanningType(row.type),
+    dateMode,
+    date: hasValidDate ? row.date : "",
+    month: /^\d{4}-\d{2}$/.test(row.month) ? row.month : (hasValidDate ? row.date.slice(0, 7) : ""),
+    startTime: /^\d{2}:\d{2}$/.test(row.startTime) ? row.startTime : (/^\d{2}:\d{2}$/.test(row.time) ? row.time : ""),
+    endTime: /^\d{2}:\d{2}$/.test(row.endTime) ? row.endTime : "",
+    participants: stringValue(row.participants),
+    tri: stringValue(row.tri),
+    notes: normalizePlanningSingleLineText(row.notes),
+    mirrorNoteID: stringValue(row.mirrorNoteID),
+    hasModifications: row.hasModifications === true,
+    isDraft
+  };
+}
+
+function createPlanningRow({ draft = false } = {}) {
+  return {
+    id: crypto.randomUUID(),
+    simulatorName: "",
+    type: "",
+    dateMode: "date",
+    date: "",
+    month: "",
+    startTime: "",
+    endTime: "",
+    participants: "",
+    tri: "",
+    notes: "",
+    mirrorNoteID: "",
+    hasModifications: false,
+    isDraft: draft
+  };
+}
+
+function isPlanningDraftRow(row) {
+  return row?.isDraft === true;
+}
+
+function normalizePlanningSingleLineText(value) {
+  return stringValue(value)
+    .split(/\r?\n+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join("; ");
+}
+
+function loadPlanningRows() {
+  try {
+    const raw = localStorage.getItem(planningStorageKey);
+    const parsed = JSON.parse(raw || "[]");
+    if (!Array.isArray(parsed) || !parsed.length || shouldReplaceLocalPlanningWithImport(parsed)) {
+      localStorage.setItem(planningImportVersionStorageKey, regulatoryPlanningImportVersion);
+      localStorage.setItem(planningStorageKey, JSON.stringify(importedRegulatoryPlanningRows));
+      return importedRegulatoryPlanningRows.map(normalizePlanningRow);
+    }
+    return parsed.map(normalizePlanningRow);
+  } catch {
+    localStorage.setItem(planningImportVersionStorageKey, regulatoryPlanningImportVersion);
+    return importedRegulatoryPlanningRows.map(normalizePlanningRow);
+  }
+}
+
+function shouldReplaceLocalPlanningWithImport(rows) {
+  if (localStorage.getItem(planningImportVersionStorageKey) === regulatoryPlanningImportVersion) {
+    return false;
+  }
+
+  const normalizedRows = rows.map(normalizePlanningRow);
+  if (normalizedRows.length && normalizedRows.every((row) => row.id.startsWith("import-2026-"))) {
+    return true;
+  }
+
+  return normalizedRows.length <= 3 && normalizedRows.every((row) => {
+    return !row.simulatorName
+      || row.simulatorName === defaultPlanningSimulatorName()
+      || row.date === isoDate(new Date());
+  });
+}
+
+function normalizePlanningType(value) {
+  if (!stringValue(value).trim()) {
+    return "";
+  }
+
+  if (planningTypes.some((type) => type.value === value)) {
+    return value;
+  }
+
+  if (value === "meeting") {
+    return "reunion-technique";
+  }
+
+  if (normalizeKey(value) === "auto-eval" || normalizeKey(value) === "auto eval") {
+    return "auto-eval";
+  }
+
+  return defaultPlanningType;
+}
+
+function shouldDisablePlanningEndTime(row) {
+  return row.dateMode === "month" || ["dgac", "reunion-technique"].includes(row.type);
+}
+
+function shouldAutoFillPlanningEndTime(row) {
+  return row.dateMode !== "month" && row.startTime && isPlanningFlyOut(row);
+}
+
+function isPlanningFlyOut(row) {
+  return stringValue(row?.type).startsWith("fly-out-");
+}
+
+function addHoursToTime(value, hours) {
+  if (!/^\d{2}:\d{2}$/.test(value)) {
+    return "";
+  }
+
+  const [hour, minute] = value.split(":").map(Number);
+  const totalMinutes = (hour * 60 + minute + hours * 60) % (24 * 60);
+  const nextHour = String(Math.floor(totalMinutes / 60)).padStart(2, "0");
+  const nextMinute = String(totalMinutes % 60).padStart(2, "0");
+  return `${nextHour}:${nextMinute}`;
+}
+
+function nextUpcomingPlanningRowID(rows) {
+  const now = new Date();
+  const upcomingRows = rows
+    .map((row) => ({ row, range: planningEventRange(row) }))
+    .filter((entry) => entry.range && entry.range.end >= now)
+    .sort((first, second) => first.range.start - second.range.start);
+  return upcomingRows[0]?.row.id || "";
+}
+
+function planningStatusIconsHTML(row, nextPlanningRowID) {
+  const isPast = isPlanningEventPast(row);
+  const isNext = row.id === nextPlanningRowID;
+  const isIncomplete = !isPast && isPlanningRowIncomplete(row);
+  if (!isPast && !isNext && !isIncomplete) {
+    return "";
+  }
+
+  return `
+    <div class="planning-status-icons">
+      ${isPast ? `<span class="planning-status-icon past" title="Date passée" aria-label="Date passée">✓</span>` : ""}
+      ${isNext ? `<span class="planning-status-icon next${isIncomplete ? " incomplete" : ""}" title="${isIncomplete ? "Prochain événement à compléter" : "Prochain événement à venir"}" aria-label="${isIncomplete ? "Prochain événement à compléter" : "Prochain événement à venir"}">➜</span>` : ""}
+      ${!isNext && isIncomplete ? `<span class="planning-status-icon incomplete" title="Période, heure de début ou technicien à compléter" aria-label="Période, heure de début ou technicien à compléter">!</span>` : ""}
+    </div>
+  `;
+}
+
+function isPlanningRowIncomplete(row) {
+  return row.dateMode === "month"
+    || (isPlanningFlyOut(row) && !/^\d{2}:\d{2}$/.test(row.startTime))
+    || !stringValue(row.participants).trim();
+}
+
+function planningTechnicianAlertLevel(row) {
+  if (stringValue(row.participants).trim()) {
+    return "";
+  }
+
+  if (row.dateMode === "month") {
+    return "";
+  }
+
+  const range = planningEventRange(row);
+  if (!range || range.end < new Date()) {
+    return "";
+  }
+
+  const oneMonthFromNow = new Date();
+  oneMonthFromNow.setMonth(oneMonthFromNow.getMonth() + 1);
+  return range.start <= oneMonthFromNow ? "danger" : "warning";
+}
+
+function shouldHighlightMissingPlanningTri(row) {
+  if (stringValue(row.tri).trim()) {
+    return false;
+  }
+
+  if (row.dateMode === "month") {
+    return false;
+  }
+
+  return /^\d{4}-\d{2}-\d{2}$/.test(row.date) && !isPlanningEventPast(row);
+}
+
+function shouldHighlightMissingPlanningStartTime(row) {
+  if (/^\d{2}:\d{2}$/.test(row.startTime) || row.dateMode === "month") {
+    return false;
+  }
+
+  return /^\d{4}-\d{2}-\d{2}$/.test(row.date) && !isPlanningEventPast(row);
+}
+
+function refreshPlanningRowAlerts(row, rowElement) {
+  if (!rowElement) {
+    return;
+  }
+
+  const triInput = rowElement.querySelector("[data-planning-field='tri']");
+  triInput?.classList.toggle("planning-tri-alert", shouldHighlightMissingPlanningTri(row));
+
+  const startInput = rowElement.querySelector("[data-planning-field='startTime']");
+  startInput?.classList.toggle("planning-time-alert", shouldHighlightMissingPlanningStartTime(row));
+
+  const technicianInput = rowElement.querySelector("[data-planning-field='participants']");
+  if (technicianInput) {
+    technicianInput.classList.remove("warning", "danger");
+    const alertLevel = planningTechnicianAlertLevel(row);
+    technicianInput.classList.toggle("planning-technician-alert", Boolean(alertLevel));
+    if (alertLevel) {
+      technicianInput.classList.add(alertLevel);
+    }
+  }
+}
+
+function sortPlanningRowsByDate() {
+  state.planningRows = normalizedPlanningRows().sort(comparePlanningRowsByDate);
+}
+
+function sortPlanningRowsBySimulator() {
+  state.planningRows = normalizedPlanningRows().sort((first, second) => {
+    const draftOrder = Number(isPlanningDraftRow(second)) - Number(isPlanningDraftRow(first));
+    const simulatorOrder = planningSimulatorSortValue(first.simulatorName) - planningSimulatorSortValue(second.simulatorName)
+      || first.simulatorName.localeCompare(second.simulatorName, "fr", { sensitivity: "base" });
+    return draftOrder || simulatorOrder || comparePlanningRowsByDate(first, second);
+  });
+}
+
+function sortPlanningRowsByAlphabeticField(field) {
+  state.planningRows = normalizedPlanningRows().sort((first, second) => {
+    const draftOrder = Number(isPlanningDraftRow(second)) - Number(isPlanningDraftRow(first));
+    const firstValue = planningAlphabeticSortLabel(first, field);
+    const secondValue = planningAlphabeticSortLabel(second, field);
+    return draftOrder
+      || firstValue.localeCompare(secondValue, "fr", { sensitivity: "base" })
+      || comparePlanningRowsByDate(first, second);
+  });
+}
+
+function planningAlphabeticSortLabel(row, field) {
+  if (field === "type") {
+    return planningTypes.find((type) => type.value === row.type)?.label || row.type;
+  }
+
+  return stringValue(row[field]).trim();
+}
+
+function comparePlanningRowsByDate(first, second) {
+  return Number(isPlanningDraftRow(second)) - Number(isPlanningDraftRow(first))
+    || planningEventSortTime(first) - planningEventSortTime(second)
+    || first.simulatorName.localeCompare(second.simulatorName, "fr", { sensitivity: "base" })
+    || first.id.localeCompare(second.id);
+}
+
+function planningEventSortTime(row) {
+  return planningEventRange(row)?.start.getTime() || Number.MAX_SAFE_INTEGER;
+}
+
+function planningSimulatorSortValue(name) {
+  const normalizedName = normalizeKey(name);
+  const simulator = state.allSimulators.find((candidate) => normalizeKey(candidate.name) === normalizedName);
+  return simulator ? simulator.sortOrder : Number.MAX_SAFE_INTEGER;
+}
+
+function refreshPlanningStatusIcons() {
+  if (state.activeView !== "planning") {
+    return;
+  }
+
+  const rows = visiblePlanningRows();
+  const nextPlanningRowID = nextUpcomingPlanningRowID(rows);
+  rows.forEach((row) => {
+    const cell = elements.noteGroups.querySelector(`[data-planning-row-id="${CSS.escape(row.id)}"] .planning-col-status`);
+    if (cell) {
+      cell.innerHTML = planningStatusIconsHTML(row, nextPlanningRowID);
+    }
+  });
+}
+
+function isPlanningEventPast(row) {
+  const range = planningEventRange(row);
+  return Boolean(range && range.end < new Date());
+}
+
+function planningEventRange(row) {
+  if (row.dateMode === "month") {
+    if (!/^\d{4}-\d{2}$/.test(row.month)) {
+      return null;
+    }
+
+    const [year, month] = row.month.split("-").map(Number);
+    return {
+      start: new Date(year, month - 1, 1, 0, 0, 0, 0),
+      end: new Date(year, month, 0, 23, 59, 59, 999)
+    };
+  }
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(row.date)) {
+    return null;
+  }
+
+  const day = parseDateInput(row.date);
+  const start = /^\d{2}:\d{2}$/.test(row.startTime)
+    ? planningDateWithTime(day, row.startTime)
+    : dateAt(day, 0, 0);
+  let end = /^\d{2}:\d{2}$/.test(row.endTime)
+    ? planningDateWithTime(day, row.endTime)
+    : new Date(day.getFullYear(), day.getMonth(), day.getDate(), 23, 59, 59, 999);
+
+  if (/^\d{2}:\d{2}$/.test(row.endTime) && end <= start) {
+    end = planningDateWithTime(addDays(day, 1), row.endTime);
+  }
+
+  return { start, end };
+}
+
+function planningDateWithTime(day, value) {
+  const [hour, minute] = value.split(":").map(Number);
+  return dateAt(day, hour, minute);
+}
+
+function planningTeamHTML(row) {
+  const slots = planningTeamSlots(row);
+  if (!slots.length) {
+    return "<span class=\"planning-team-empty\">-</span>";
+  }
+
+  return `
+    <div class="planning-team-list">
+      ${slots.map((slot) => {
+        const team = teamInfo(slot.teamID);
+        const shift = shiftInfo(slot.shiftID);
+        return `
+          <span class="planning-team-pill ${escapeAttribute(shift.id)}">
+            ${escapeHtml(team.title.replace("Equipe ", ""))}
+          </span>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function planningTeamSlots(row) {
+  if (row.dateMode !== "date" || !/^\d{4}-\d{2}-\d{2}$/.test(row.date) || !/^\d{2}:\d{2}$/.test(row.startTime)) {
+    return [];
+  }
+
+  const day = parseDateInput(row.date);
+  const [hour, minute] = row.startTime.split(":").map(Number);
+  const instant = dateAt(day, hour, minute);
+  const slots = [
+    ...planningTeamSlotsForDay(addDays(day, -1)),
+    ...planningTeamSlotsForDay(day),
+    ...planningTeamSlotsForDay(addDays(day, 1))
+  ];
+
+  if (isPlanningFlyOut(row) && /^\d{2}:\d{2}$/.test(row.endTime)) {
+    const [endHour, endMinute] = row.endTime.split(":").map(Number);
+    let endInstant = dateAt(day, endHour, endMinute);
+    if (endInstant <= instant) {
+      endInstant = dateAt(addDays(day, 1), endHour, endMinute);
+    }
+    return slots.filter((slot) => instant < slot.end && endInstant > slot.start);
+  }
+
+  return slots.filter((slot) => instant >= slot.start && instant < slot.end);
+}
+
+function planningTechnicianOptions(row) {
+  const teamIDs = new Set(planningTeamSlots(row).map((slot) => slot.teamID));
+  if (!teamIDs.size) {
+    return [];
+  }
+
+  return state.users
+    .filter((user) => ["technician", "teamLeader"].includes(user.role) && teamIDs.has(user.team))
+    .sort(compareUsersByLastName)
+    .map(planningTechnicianDisplayName)
+    .filter(Boolean)
+    .filter((name, index, names) => names.indexOf(name) === index);
+}
+
+function planningTechnicianDisplayName(user) {
+  const lastName = stringValue(user.lastName).trim();
+  const firstName = stringValue(user.firstName).trim();
+  if (firstName && lastName) {
+    return `${firstName.slice(0, 1).toLocaleUpperCase("fr")}. ${lastName}`;
+  }
+
+  return lastName || firstName || currentDisplayNameForUser(user);
+}
+
+function planningTeamSlotsForDay(day) {
+  const weekend = isWeekendDay(day);
+  return teamPresences(day)
+    .filter((presence) => !weekend || presence.shift.id !== "evening")
+    .map((presence) => {
+      const interval = planningShiftInterval(day, presence.shift.id, weekend);
+      return interval ? {
+        day: startOfDay(day),
+        teamID: presence.team.id,
+        shiftID: presence.shift.id,
+        start: interval.start,
+        end: interval.end
+      } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.start - b.start || a.teamID.localeCompare(b.teamID, "fr"));
+}
+
+function planningShiftInterval(day, shiftID, weekend) {
+  if (weekend) {
+    if (shiftID === "morning") return { start: dateAt(day, 6, 0), end: dateAt(day, 18, 0) };
+    if (shiftID === "night") return { start: dateAt(day, 18, 0), end: dateAt(addDays(day, 1), 6, 0) };
+    return null;
+  }
+
+  if (shiftID === "morning") return { start: dateAt(day, 6, 0), end: dateAt(day, 14, 0) };
+  if (shiftID === "evening") return { start: dateAt(day, 14, 0), end: dateAt(day, 22, 0) };
+  if (shiftID === "night") return { start: dateAt(day, 22, 0), end: dateAt(addDays(day, 1), 6, 0) };
+  return null;
+}
+
+function planningSimulatorOptions(selectedName = "") {
+  const excludedKeys = new Set([normalizeKey(generalName), normalizeKey("REX Application")]);
+  const options = state.allSimulators
+    .filter((simulator) => {
+      const key = normalizeKey(simulator.name);
+      return key && !excludedKeys.has(key) && !simulator.isHidden;
+    })
+    .sort((first, second) => first.sortOrder - second.sortOrder || first.name.localeCompare(second.name, "fr", { sensitivity: "base" }));
+
+  const normalizedSelected = normalizeKey(selectedName);
+  if (normalizedSelected && !options.some((simulator) => normalizeKey(simulator.name) === normalizedSelected)) {
+    return [{ name: selectedName, sortOrder: -1 }, ...options];
+  }
+
+  return options;
+}
+
+function normalizePlanningSimulatorName(value) {
+  const name = stringValue(value).trim();
+  const key = normalizeKey(name);
+  return key && key !== normalizeKey(generalName) && key !== normalizeKey("REX Application") ? name : "";
+}
+
+function defaultPlanningSimulatorName() {
+  return "";
+}
+
+function savePlanningRowsLocal() {
+  try {
+    localStorage.setItem(planningStorageKey, JSON.stringify(normalizedPlanningRows().filter((row) => !isPlanningDraftRow(row))));
+    localStorage.setItem(planningFirestoreSyncStorageKey, String(Date.now()));
+  } catch (error) {
+    setStatus(error.message || "Planning non enregistre");
+  }
+}
+
+function planningMirrorNoteID(rowID) {
+  return rowID ? `regulatory-planning-${rowID}` : "";
+}
+
+function savePlanningRows(row = null, { before = null, changedFields = [], action = "updated" } = {}) {
+  savePlanningRowsLocal();
+  if (!row || isPlanningDraftRow(row) || !state.authReady || shouldSuspendFirestoreSync() || !canCurrentUserAccessPlanning()) {
+    return;
+  }
+
+  const normalizedRow = normalizePlanningRow(row);
+  const previousMirrorNoteID = normalizedRow.mirrorNoteID || planningMirrorNoteID(normalizedRow.id);
+  saveRegulatoryPlanningEvent({
+    event: planningFirestorePayload(normalizedRow),
+    previousEvent: before ? planningFirestorePayload(normalizePlanningRow(before)) : null,
+    changedFields,
+    action
+  }).then(async (result) => {
+    state.planningActivityByRowID.delete(row.id);
+    const nextMirrorNoteID = stringValue(result?.data?.mirrorNoteID);
+    row.mirrorNoteID = nextMirrorNoteID;
+    const localRow = state.planningRows.find((candidate) => candidate.id === row.id);
+    if (localRow) {
+      localRow.mirrorNoteID = nextMirrorNoteID;
+    }
+
+    if (nextMirrorNoteID) {
+      await fetchNoteByID(nextMirrorNoteID);
+    }
+    if (previousMirrorNoteID && previousMirrorNoteID !== nextMirrorNoteID) {
+      state.fetchedNotesByID.delete(previousMirrorNoteID);
+      state.notes = state.notes.filter((note) => note.id !== previousMirrorNoteID);
+    }
+
+    if (typeof result?.data?.hasModifications === "boolean") {
+      row.hasModifications = result.data.hasModifications;
+      if (localRow) {
+        localRow.hasModifications = result.data.hasModifications;
+      }
+    }
+    savePlanningRowsLocal();
+    if (state.activeView === "planning") {
+      renderPlanningTable();
+    } else if (state.activeView === "notes") {
+      render();
+    }
+    state.isPlanningFirestoreLoaded = true;
+    setStatus("Planning enregistre");
+  }).catch((error) => {
+    setStatus(error.message || "Planning non enregistre dans Firestore");
+  });
+}
+
+function deletePlanningRowFromFirestore(row) {
+  if (!state.authReady || shouldSuspendFirestoreSync() || !canCurrentUserEditPlanning()) {
+    return;
+  }
+
+  deleteRegulatoryPlanningEvent({ id: row.id })
+    .then(() => {
+      const mirrorNoteID = normalizePlanningRow(row).mirrorNoteID || planningMirrorNoteID(row.id);
+      if (mirrorNoteID) {
+        state.fetchedNotesByID.delete(mirrorNoteID);
+        state.notes = state.notes.filter((note) => note.id !== mirrorNoteID);
+        if (state.activeView === "notes") {
+          render();
+        }
+      }
+      setStatus("Ligne planning supprimee");
+    })
+    .catch((error) => setStatus(error.message || "Suppression planning impossible"));
+}
+
+function planningFirestorePayload(row) {
+  const normalizedRow = normalizePlanningRow(row);
+  return {
+    id: normalizedRow.id,
+    simulatorName: normalizedRow.simulatorName,
+    type: normalizedRow.type,
+    dateMode: normalizedRow.dateMode,
+    date: normalizedRow.date,
+    month: normalizedRow.month,
+    startTime: normalizedRow.startTime,
+    endTime: normalizedRow.endTime,
+    participants: normalizedRow.participants,
+    tri: normalizedRow.tri,
+    notes: normalizedRow.notes,
+    mirrorNoteID: normalizedRow.mirrorNoteID,
+    hasModifications: normalizedRow.hasModifications === true,
+    sortDate: planningSortDateValue(normalizedRow),
+    simulatorKey: normalizeKey(normalizedRow.simulatorName),
+    typeKey: normalizeKey(normalizedRow.type),
+    technicianKey: normalizeKey(normalizedRow.participants),
+    triKey: normalizeKey(normalizedRow.tri)
+  };
+}
+
+function planningSortDateValue(row) {
+  if (row.dateMode === "month" && /^\d{4}-\d{2}$/.test(row.month)) {
+    return `${row.month}-01`;
+  }
+
+  return /^\d{4}-\d{2}-\d{2}$/.test(row.date) ? row.date : "9999-12-31";
 }
 
 function captureCenteredSimulatorBandAnchor() {
@@ -2301,6 +4728,7 @@ function goToToday() {
 }
 
 function resetDisplayState() {
+  state.activeView = "notes";
   state.selectedDate = startOfDay(new Date());
   state.visibleMonth = startOfMonth(state.selectedDate);
   state.search = "";
@@ -2605,6 +5033,8 @@ function noteFromSnapshot(id, data) {
     isGeneral: Boolean(data.isGeneral),
     simulatorNames: destinationSimulatorNamesFromData(data),
     priority: stringValue(data.priorityRawValue),
+    regulatoryPlanningMirror: data.regulatoryPlanningMirror === true,
+    regulatoryPlanningEventID: stringValue(data.regulatoryPlanningEventID),
     handwritingData: stringValue(data.handwritingData),
     handwritingPreviewImageData: stringValue(data.handwritingPreviewImageData),
     handwritingClearedAt: dateValue(data.handwritingClearedAt),
@@ -3461,6 +5891,8 @@ function userFromSnapshot(documentID, data) {
     isAccessCodeUserDefined: Boolean(data.isAccessCodeUserDefined),
     role: migratedSupportRole,
     team: rawTeam === "support" ? "" : rawTeam,
+    canViewPlanning: data.canViewPlanning === true,
+    canEditPlanning: data.canEditPlanning === true,
     updatedAt: dateValue(data.updatedAt)
   };
 }
@@ -3473,7 +5905,9 @@ function userFromAuthClaims(uid, claims) {
     lastName: stringValue(claims.lastName),
     email: stringValue(claims.email).toLowerCase(),
     role: stringValue(claims.role, "consultation"),
-    team: stringValue(claims.team)
+    team: stringValue(claims.team),
+    canViewPlanning: claims.canViewPlanning === true,
+    canEditPlanning: claims.canEditPlanning === true
   });
 }
 
@@ -3485,8 +5919,50 @@ function normalizedSessionUser(user) {
     lastName: stringValue(user?.lastName),
     email: stringValue(user?.email).toLowerCase(),
     role: stringValue(user?.role, "consultation"),
-    team: stringValue(user?.team)
+    team: stringValue(user?.team),
+    canViewPlanning: user?.canViewPlanning === true,
+    canEditPlanning: user?.canEditPlanning === true
   };
+}
+
+function syncCurrentUserFromUsersList() {
+  if (!state.currentUser) {
+    return;
+  }
+
+  const matchedUser = currentUserRecordFromUsersList();
+  if (!matchedUser) {
+    return;
+  }
+
+  state.currentUser = normalizedSessionUser({
+    ...state.currentUser,
+    ...matchedUser
+  });
+  saveSession(state.currentUser);
+}
+
+function currentUserRecordFromUsersList() {
+  if (!state.currentUser) {
+    return null;
+  }
+
+  const currentKeys = [
+    state.currentUser.id,
+    state.currentUser.documentID,
+    state.currentUser.email,
+    currentDisplayName()
+  ].map(normalizeKey).filter(Boolean);
+
+  return state.users.find((user) => {
+    const userKeys = [
+      user.id,
+      user.documentID,
+      user.email,
+      currentDisplayNameForUser(user)
+    ].map(normalizeKey).filter(Boolean);
+    return userKeys.some((key) => currentKeys.includes(key));
+  }) || null;
 }
 
 function passwordResetRequestFromSnapshot(documentID, data) {
@@ -3590,9 +6066,14 @@ function adminMessageFromSnapshot(documentID, data) {
 }
 
 function activityEventFromSnapshot(documentID, data) {
+  if (data.hidden === true) {
+    return null;
+  }
+
   const action = stringValue(data.action, "modified");
   const noteID = stringValue(data.noteID);
-  if (!noteID) {
+  const planningEventID = stringValue(data.planningEventID);
+  if (!noteID && !planningEventID) {
     return null;
   }
 
@@ -3603,7 +6084,9 @@ function activityEventFromSnapshot(documentID, data) {
     action,
     actionTitle: stringValue(data.actionTitle, activityActionTitles[action] || action),
     noteID,
+    planningEventID,
     noteTitle: stringValue(data.noteTitle),
+    activityDetails: stringValue(data.activityDetails),
     simulatorNames: Array.isArray(data.simulatorNames)
       ? data.simulatorNames.map((name) => stringValue(name)).filter(Boolean)
       : [],
@@ -4143,6 +6626,14 @@ function renderAdminUsers() {
             <option value="team5">Equipe 5</option>
           </select>
         </label>
+        <label class="admin-checkbox-field">
+          <span>Planning réglementaire</span>
+          <input id="newUserCanViewPlanning" type="checkbox">
+        </label>
+        <label class="admin-checkbox-field">
+          <span>Modifier planning réglementaire</span>
+          <input id="newUserCanEditPlanning" type="checkbox">
+        </label>
       </div>
       <div class="admin-actions create-user-actions">
         <button type="button" data-admin-action="create-user">Ajouter l'utilisateur</button>
@@ -4178,6 +6669,9 @@ function renderAdminUserCard(user) {
     ? `Version demandée : ${requiredVersion}`
     : "Aucune version demandée";
   const isHiddenBySearch = !adminUserMatchesSearch(user);
+  const isAdminUser = user.role === "admin";
+  const canViewPlanning = isAdminUser || user.canViewPlanning === true;
+  const canEditPlanning = isAdminUser || user.canEditPlanning === true;
   return `
     <article
       class="admin-card"
@@ -4219,6 +6713,14 @@ function renderAdminUserCard(user) {
             <option value="team4" ${user.team === "team4" ? "selected" : ""}>Equipe 4</option>
             <option value="team5" ${user.team === "team5" ? "selected" : ""}>Equipe 5</option>
           </select>
+        </label>
+        <label class="admin-checkbox-field">
+          <span>Planning réglementaire</span>
+          <input data-field="canViewPlanning" type="checkbox" ${canViewPlanning ? "checked" : ""} ${isAdminUser ? "disabled" : ""}>
+        </label>
+        <label class="admin-checkbox-field">
+          <span>Modifier planning réglementaire</span>
+          <input data-field="canEditPlanning" type="checkbox" ${canEditPlanning ? "checked" : ""} ${isAdminUser ? "disabled" : ""}>
         </label>
       </div>
       <div class="admin-actions">
@@ -4343,7 +6845,7 @@ function renderAdminActivity() {
     ${renderAdminBackButton()}
     <div class="admin-section-heading">
       <h3>Jour</h3>
-      <p>Actions enregistrées sur les consignes.</p>
+      <p>Actions enregistrées sur les consignes et le planning réglementaire.</p>
     </div>
     <div class="admin-card">
       <div class="admin-form-grid admin-activity-date-grid">
@@ -4355,7 +6857,7 @@ function renderAdminActivity() {
       </div>
     </div>
     <div class="admin-card admin-activity-filter">
-      <label>Rechercher<input data-admin-activity-search value="${escapeAttribute(state.adminActivitySearch)}" placeholder="Utilisateur, action, simulateur ou consigne"></label>
+      <label>Rechercher<input data-admin-activity-search value="${escapeAttribute(state.adminActivitySearch)}" placeholder="Utilisateur, action, simulateur, consigne ou planning"></label>
     </div>
     <div class="admin-section-heading">
       <h3>Actions</h3>
@@ -4369,7 +6871,9 @@ function renderAdminActivity() {
 function renderAdminActivityEvent(event) {
   const note = state.notes.find((candidate) => candidate.id === event.noteID);
   const displayName = displayNameForIdentifier(event.userIdentifier) || event.userDisplayName || event.userIdentifier;
-  const noteTitle = event.noteTitle || note?.title || "Consigne sans titre";
+  const isPlanningEvent = Boolean(event.planningEventID);
+  const noteTitle = event.noteTitle || note?.title || (isPlanningEvent ? "Planning réglementaire" : "Consigne sans titre");
+  const activityDetails = stringValue(event.activityDetails).trim();
   const destinationText = event.simulatorNames.length ? event.simulatorNames.join(", ") : activitySimulatorNames(note || event).join(", ");
   const actionContext = stringValue(event.context).trim();
   const simulatorText = actionContext || destinationText;
@@ -4388,8 +6892,11 @@ function renderAdminActivityEvent(event) {
         ${destinationsMeta}
       </div>
       <div class="admin-activity-note-row">
-        <span>${escapeHtml(noteTitle)}</span>
-        <button type="button" class="secondary" data-admin-action="open-activity-note" ${event.noteID ? "" : "disabled"}>Ouvrir</button>
+        <span>
+          ${escapeHtml(noteTitle)}
+          ${activityDetails ? `<small>${escapeHtml(activityDetails)}</small>` : ""}
+        </span>
+        <button type="button" class="secondary" data-admin-action="open-activity-note" ${event.noteID ? "" : "disabled"}>${isPlanningEvent ? "Planning" : "Ouvrir"}</button>
       </div>
     </article>
   `;
@@ -4408,6 +6915,7 @@ function filteredActivityEvents() {
       displayName,
       event.actionTitle,
       event.noteTitle,
+      event.activityDetails,
       note?.title || "",
       event.simulatorNames.join(" "),
       event.context
@@ -4429,7 +6937,7 @@ async function openActivityNote(card) {
 }
 
 async function fetchNoteByID(noteID) {
-  if (!noteID || !state.authReady || !state.currentUser) {
+  if (!noteID || !state.authReady || !state.currentUser || shouldSuspendFirestoreSync()) {
     return null;
   }
 
@@ -4845,6 +7353,8 @@ async function createAdminUser() {
     .slice(0, 6);
   const role = nullableString(elements.adminBody.querySelector("#newUserRole")?.value || "");
   const team = nullableString(elements.adminBody.querySelector("#newUserTeam")?.value || "");
+  const canEditPlanning = role === "admin" || Boolean(elements.adminBody.querySelector("#newUserCanEditPlanning")?.checked);
+  const canViewPlanning = canEditPlanning || Boolean(elements.adminBody.querySelector("#newUserCanViewPlanning")?.checked);
 
   if (accessCode.length !== 6) {
     setStatus("Le code utilisateur doit contenir 6 chiffres");
@@ -4869,6 +7379,8 @@ async function createAdminUser() {
       isAccessCodeUserDefined: false,
       roleRawValue: role,
       teamRawValue: team,
+      canViewPlanning,
+      canEditPlanning,
       updatedAt: new Date()
     });
     setStatus("Utilisateur ajouté");
@@ -4899,6 +7411,10 @@ async function saveAdminUser(documentID) {
     setStatus("Impossible de retirer le dernier compte admin");
     return;
   }
+  const nextCanEditPlanning = nextRole === "admin"
+    || Boolean(card.querySelector('[data-field="canEditPlanning"]')?.checked);
+  const nextCanViewPlanning = nextCanEditPlanning
+    || Boolean(card.querySelector('[data-field="canViewPlanning"]')?.checked);
 
   const patch = {
     firstName: card.querySelector('[data-field="firstName"]').value.trim(),
@@ -4906,6 +7422,8 @@ async function saveAdminUser(documentID) {
     email: card.querySelector('[data-field="email"]').value.trim().toLowerCase(),
     roleRawValue: nextRole,
     teamRawValue: nullableString(card.querySelector('[data-field="team"]').value),
+    canViewPlanning: nextCanViewPlanning,
+    canEditPlanning: nextCanEditPlanning,
     updatedAt: new Date()
   };
 
@@ -4915,6 +7433,11 @@ async function saveAdminUser(documentID) {
   }
 
   await updateDoc(doc(db, "users", documentID), patch);
+  state.users = state.users.map((candidate) => candidate.documentID === documentID
+    ? userFromSnapshot(documentID, { ...candidate, ...patch })
+    : candidate);
+  syncCurrentUserFromUsersList();
+  renderSession();
   setStatus("Utilisateur enregistré");
 }
 
@@ -6281,6 +8804,9 @@ async function saveDetailEdit(note, options = {}) {
     ensureInitialRevision(revisions, note);
     patch.title = title;
     patch.text = text;
+    if (note.regulatoryPlanningMirror) {
+      patch.regulatoryPlanningMirrorSource = "note";
+    }
     revisions.push({
       id: crypto.randomUUID(),
       author: currentDisplayName(),
@@ -6370,6 +8896,9 @@ async function saveDetailEdit(note, options = {}) {
       });
     } else {
       await updateNote(note.id, patch);
+      if (textChanged) {
+        await syncPlanningNotesFromMirrorNoteIfNeeded(note, text);
+      }
       await recordNoteEditActivity(note, context, {
         textChanged,
         richTextChanged,
@@ -7153,6 +9682,27 @@ async function updateNote(noteID, patch) {
     render();
   }
   setStatus("Données synchronisées");
+}
+
+async function syncPlanningNotesFromMirrorNoteIfNeeded(note, nextText) {
+  if (!note?.regulatoryPlanningMirror || !note.regulatoryPlanningEventID) {
+    return;
+  }
+
+  const response = await syncRegulatoryPlanningNotesFromMirrorNote({
+    noteID: note.id,
+    notes: nextText
+  });
+  const planningEventID = stringValue(response?.data?.planningEventID, note.regulatoryPlanningEventID);
+  const notes = stringValue(response?.data?.notes, nextText);
+  const row = state.planningRows.find((candidate) => candidate.id === planningEventID);
+  if (row) {
+    row.notes = notes;
+    savePlanningRowsLocal();
+    if (state.activeView === "planning") {
+      renderPlanningTable();
+    }
+  }
 }
 
 async function resyncNoteForOlderDevices(note) {

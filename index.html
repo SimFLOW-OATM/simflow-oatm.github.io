@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>SimFLOW Web</title>
-  <link rel="stylesheet" href="./styles.css?v=20260825-refresh-indicator-white">
+  <link rel="stylesheet" href="./styles.css?v=20260830-web-187a">
   <script>
     if (window.location.protocol === "file:") {
       window.location.replace("http://127.0.0.1:8765/");
@@ -69,6 +69,13 @@
 
         <section class="sidebar-section">
           <div class="team-presence-list" id="teamPresenceList"></div>
+        </section>
+
+        <div class="sidebar-separator"></div>
+
+        <section class="sidebar-section">
+          <button class="sidebar-nav-button active" id="openNotesViewButton" type="button">Consignes</button>
+          <button class="sidebar-nav-button" id="openPlanningViewButton" type="button">Planning réglementaire</button>
         </section>
 
         <div class="sidebar-separator"></div>
@@ -154,6 +161,10 @@
           <button class="hidden" id="adminSettingsButton" type="button">
             <span class="menu-icon" aria-hidden="true">⚙</span>
             Administration
+          </button>
+          <button class="hidden" id="adminFirestoreSyncButton" type="button">
+            <span class="menu-icon" aria-hidden="true">⏸</span>
+            Suspendre Firestore
           </button>
         </div>
         <div class="web-version-badge" id="webVersionBadge">v</div>
@@ -271,6 +282,6 @@
     </section>
   </div>
 
-  <script type="module" src="./app.js?v=20260818-password-reset"></script>
+  <script type="module" src="./app.js?v=20260830-web-187a"></script>
 </body>
 </html>
