@@ -340,6 +340,9 @@ const elements = {
   nextMonthButton: document.querySelector("#nextMonthButton"),
   todayButton: document.querySelector("#todayButton"),
   teamPresenceList: document.querySelector("#teamPresenceList"),
+  planningSidebarNav: document.querySelector("#planningSidebarNav"),
+  notesFilterSection: document.querySelector("#notesFilterSection"),
+  notesSearchSection: document.querySelector("#notesSearchSection"),
   showTaggedToggle: document.querySelector("#showTaggedToggle"),
   showAcknowledgedToggle: document.querySelector("#showAcknowledgedToggle"),
   showDeletedRow: document.querySelector("#showDeletedRow"),
@@ -2493,9 +2496,13 @@ function renderSession() {
   updateLoginLockState(!isLoggedIn);
   elements.loginPanel.classList.toggle("hidden", isLoggedIn);
   elements.userPanel.classList.toggle("hidden", !isLoggedIn);
+  const isPlanningView = state.activeView === "planning" && isLoggedIn;
+  elements.planningSidebarNav?.classList.toggle("hidden", isPlanningView);
+  elements.notesFilterSection?.classList.toggle("hidden", isPlanningView);
+  elements.notesSearchSection?.classList.toggle("hidden", isPlanningView);
   const canViewDeleted = canCurrentUserViewDeletedNotes();
-  elements.showDeletedRow.classList.toggle("hidden", !canViewDeleted);
-  elements.showOnlyDeletedRow.classList.toggle("hidden", !canViewDeleted || state.currentUser?.role !== "admin");
+  elements.showDeletedRow.classList.toggle("hidden", isPlanningView || !canViewDeleted);
+  elements.showOnlyDeletedRow.classList.toggle("hidden", isPlanningView || !canViewDeleted || state.currentUser?.role !== "admin");
   if ((!canViewDeleted || state.currentUser?.role !== "admin") && state.showOnlyDeleted) {
     state.showOnlyDeleted = false;
   }

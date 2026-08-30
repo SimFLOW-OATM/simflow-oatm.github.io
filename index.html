@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>SimFLOW Web</title>
-  <link rel="stylesheet" href="./styles.css?v=20260830-web-187a-search-placeholder">
+  <link rel="stylesheet" href="./styles.css?v=20260830-web-187a-hide-planning-sidebar-nav">
   <script>
     if (window.location.protocol === "file:") {
       window.location.replace("http://127.0.0.1:8765/");
@@ -71,15 +71,17 @@
           <div class="team-presence-list" id="teamPresenceList"></div>
         </section>
 
-        <div class="sidebar-separator"></div>
+        <div id="planningSidebarNav">
+          <div class="sidebar-separator"></div>
 
-        <section class="sidebar-section">
-          <button class="sidebar-nav-button" id="openPlanningViewButton" type="button">Planning réglementaire</button>
-        </section>
+          <section class="sidebar-section">
+            <button class="sidebar-nav-button" id="openPlanningViewButton" type="button">Planning réglementaire</button>
+          </section>
 
-        <div class="sidebar-separator"></div>
+          <div class="sidebar-separator"></div>
+        </div>
 
-        <section class="sidebar-section">
+        <section class="sidebar-section" id="notesFilterSection">
           <label class="switch-row" for="showTaggedToggle">
             <svg class="switch-icon" viewBox="0 0 24 24" aria-hidden="true">
               <path d="M5 21V5"></path>
@@ -124,7 +126,7 @@
 
         <div class="sidebar-separator"></div>
 
-        <section class="sidebar-section">
+        <section class="sidebar-section" id="notesSearchSection">
           <div class="search-row">
             <input id="searchInput" placeholder="Recherche Mot dans Consignes">
             <button id="clearSearchButton" class="danger icon-button" title="Effacer la recherche">×</button>
@@ -280,6 +282,6 @@
     </section>
   </div>
 
-  <script type="module" src="./app.js?v=20260830-web-187a-search-placeholder"></script>
+  <script type="module" src="./app.js?v=20260830-web-187a-hide-planning-sidebar-nav"></script>
 </body>
 </html>
