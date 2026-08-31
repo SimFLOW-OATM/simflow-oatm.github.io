@@ -47,6 +47,7 @@ const webDeviceStorageKey = "simflow.web.deviceIdentifier";
 const sessionDurationMs = 30 * 24 * 60 * 60 * 1000;
 const staleDataRefreshThresholdMs = 24 * 60 * 60 * 1000;
 const staleDataRefreshWarningThresholdMs = 30 * 60 * 1000;
+const wakeAutoDataRefreshThresholdMs = 12 * 60 * 60 * 1000;
 const activeLoginSessionWindowMs = 90 * 1000;
 const loginPresenceRefreshMs = 2 * 1000;
 const firestoreReadStatsFlushMs = 5 * 1000;
@@ -185,6 +186,7 @@ const state = {
   pendingHandwritingClear: null,
   detailTimelineEvents: [],
   activeAdminTab: "home",
+  adminActivitySubTab: "activity",
   adminLoginDate: startOfDay(new Date()),
   adminActivityDate: startOfDay(new Date()),
   codeModalMode: "login",
@@ -200,6 +202,8 @@ const state = {
   planningFirestoreSyncTimer: null,
   planningActivityByRowID: new Map(),
   planningActivityLoadingIDs: new Set(),
+  isPlanningHistoryPickerOpen: false,
+  selectedPlanningHistoryYears: new Set(),
   fetchedNoteDayKeys: new Set(),
   fetchedNotesByID: new Map(),
   fetchedSearchKeys: new Set(),
@@ -213,6 +217,7 @@ const state = {
   loginEvents: [],
   userStats: [],
   firestoreReadStats: [],
+  userSyncStatuses: [],
   activityEvents: [],
   adminMaintenanceAudit: null,
   adminMaintenanceStatus: "",
@@ -241,6 +246,7 @@ const state = {
   unsubscribeUserStats: null,
   unsubscribeFirestoreReadStats: null,
   firestoreReadStatsMode: "",
+  unsubscribeUserSyncStatuses: null,
   unsubscribeActivityEvents: null,
   unsubscribeAdminMessagesAll: null,
   unsubscribeAdminMessagesTargeted: null,
@@ -699,6 +705,11 @@ elements.noteGroups.addEventListener("change", (event) => {
     return;
   }
 
+  if (event.target.matches("[data-planning-history-year]")) {
+    handlePlanningHistoryYearChange(event.target);
+    return;
+  }
+
   if (event.target.closest("[data-planning-editor]")) {
     handlePlanningEditorFieldEdit(event);
     return;
@@ -851,7 +862,15 @@ elements.adminOverlay.addEventListener("click", (event) => {
     renderAdminSettings();
   } else if (action === "open-admin-activity") {
     state.activeAdminTab = "activity";
+    state.adminActivitySubTab = "activity";
     renderAdminSettings();
+  } else if (action === "open-admin-user-sync") {
+    state.activeAdminTab = "activity";
+    state.adminActivitySubTab = "sync";
+    renderAdminSettings({ force: true, resetScroll: true });
+  } else if (action === "admin-activity-tab") {
+    state.adminActivitySubTab = actionButton.dataset.adminActivityTab || "activity";
+    renderAdminSettings({ force: true, resetScroll: true });
   } else if (action === "open-admin-app-version") {
     state.activeAdminTab = "appVersion";
     renderAdminSettings();
@@ -1416,8 +1435,10 @@ function handleAppBecameVisible() {
     return;
   }
 
+  const shouldRefreshAfterWake = shouldShowWakeAutoDataRefresh();
   recordLoginAppearance();
-  if (!shouldShowStaleDataRefresh()) {
+  if (!shouldRefreshAfterWake && !shouldShowStaleDataRefresh()) {
+    saveLastActiveTimestamp();
     return;
   }
 
@@ -1425,6 +1446,11 @@ function handleAppBecameVisible() {
   detachAuthenticatedDataSync({ keepsInitialDataRefresh: true });
   attachFirebaseListeners();
   restartDailyTagsListener();
+  saveLastActiveTimestamp();
+
+  if (shouldRefreshAfterWake) {
+    refreshDataAfterWake();
+  }
 }
 
 function saveLastActiveTimestamp() {
@@ -1434,6 +1460,11 @@ function saveLastActiveTimestamp() {
 function shouldShowStaleDataRefresh() {
   const lastActiveAt = Number(localStorage.getItem(lastActiveStorageKey) || 0);
   return lastActiveAt > 0 && Date.now() - lastActiveAt >= staleDataRefreshThresholdMs;
+}
+
+function shouldShowWakeAutoDataRefresh() {
+  const lastActiveAt = Number(localStorage.getItem(lastActiveStorageKey) || 0);
+  return lastActiveAt > 0 && Date.now() - lastActiveAt >= wakeAutoDataRefreshThresholdMs;
 }
 
 function prepareInitialDataRefreshIfNeeded() {
@@ -1501,21 +1532,28 @@ function renderDataRefreshIndicator() {
     return;
   }
 
+  const isAdmin = isAdminSession();
   if (shouldSuspendFirestoreSync()) {
-    elements.dataRefreshIndicator.classList.remove("stale", "syncing");
+    elements.dataRefreshIndicator.classList.remove("stale", "syncing", "info-only");
     elements.dataRefreshIndicator.classList.add("suspended");
     elements.dataRefreshIndicator.disabled = true;
     elements.dataRefreshIndicatorText.textContent = "Firestore suspendu";
+    elements.dataRefreshIndicator.title = "Synchronisation Firestore suspendue";
     return;
   }
 
   const isStale = !state.lastSuccessfulDataRefreshAt
     || Date.now() - state.lastSuccessfulDataRefreshAt.getTime() > staleDataRefreshWarningThresholdMs;
   elements.dataRefreshIndicator.classList.remove("suspended");
-  elements.dataRefreshIndicator.classList.toggle("stale", isStale);
+  elements.dataRefreshIndicator.classList.toggle("info-only", !isAdmin);
+  elements.dataRefreshIndicator.classList.toggle("stale", isAdmin && isStale);
   elements.dataRefreshIndicator.classList.toggle("syncing", state.isManualDataRefreshRunning);
-  elements.dataRefreshIndicator.disabled = !state.currentUser || state.isManualDataRefreshRunning;
-  elements.dataRefreshIndicatorText.textContent = `MAJ ${lastSuccessfulDataRefreshText()} - ${activeCurrentDayNoteCount()} (${activeCurrentDayAverageCreationAgeText()})`;
+  elements.dataRefreshIndicator.disabled = !state.currentUser || state.isManualDataRefreshRunning || !isAdmin;
+  elements.dataRefreshIndicator.title = isAdmin
+    ? "Synchroniser les données"
+    : "Dernière synchronisation connue";
+  const prefix = isAdmin ? "MAJ" : "À jour";
+  elements.dataRefreshIndicatorText.textContent = `${prefix} ${lastSuccessfulDataRefreshText()} - ${activeCurrentDayNoteCount()} (${activeCurrentDayAverageCreationAgeText()})`;
 }
 
 function lastSuccessfulDataRefreshText() {
@@ -1534,8 +1572,7 @@ function activeCurrentDayNoteEntries() {
   const entries = [];
 
   for (const context of contexts) {
-    state.notes
-      .filter((note) => noteBelongsToContext(note, context))
+    contextDisplayNotes(state.notes.filter((note) => canCurrentUserSeeNote(note)), context)
       .filter((note) => isActiveCurrentDayNote(note, context, today))
       .filter((note) => !isOnlyHandwrittenNoteForCurrentUser(note))
       .forEach((note) => entries.push(note));
@@ -1584,6 +1621,18 @@ function isActiveCurrentDayNote(note, context, day) {
 }
 
 async function refreshDataFromIndicator() {
+  if (!isAdminSession()) {
+    return;
+  }
+
+  refreshDataFromServer("Synchronisation des données...", "Données synchronisées");
+}
+
+function refreshDataAfterWake() {
+  refreshDataFromServer("Rattrapage après veille...", "Données synchronisées");
+}
+
+async function refreshDataFromServer(startMessage, successMessage) {
   if (!state.currentUser || !state.authReady || state.isManualDataRefreshRunning) {
     return;
   }
@@ -1596,7 +1645,7 @@ async function refreshDataFromIndicator() {
 
   state.isManualDataRefreshRunning = true;
   renderDataRefreshIndicator();
-  setStatus("Synchronisation des données...");
+  setStatus(startMessage);
 
   try {
     await Promise.all([
@@ -1604,7 +1653,7 @@ async function refreshDataFromIndicator() {
       fetchHandwritingNotesFromServer()
     ]);
     recordSuccessfulDataRefresh();
-    setStatus("Données synchronisées");
+    setStatus(successMessage);
     renderSimulators();
     render();
   } catch (error) {
@@ -1635,17 +1684,37 @@ async function fetchRealtimeNotesFromServer() {
     ))
   ]);
 
-  const notesByID = new Map(state.notes.map((note) => [note.id, note]));
+  const fetchedRealtimeNotes = snapshots.flatMap((snapshot) => {
+    return snapshot.docs.map((document) => noteFromSnapshot(document.id, document.data()));
+  });
+  const fetchedRealtimeNoteIDs = new Set(fetchedRealtimeNotes.map((note) => note.id));
+  state.fetchedNotesByID = new Map([...state.fetchedNotesByID].filter(([, note]) => {
+    return !isNoteCoveredByRealtimeFetch(note, displayWindow) || fetchedRealtimeNoteIDs.has(note.id);
+  }));
+
+  const notesByID = new Map(state.notes
+    .filter((note) => !isNoteCoveredByRealtimeFetch(note, displayWindow) || fetchedRealtimeNoteIDs.has(note.id))
+    .map((note) => [note.id, note]));
   snapshots.forEach((snapshot) => {
     trackFirestoreRead("handoverNotes", snapshot.docs.length);
-    snapshot.docs
-      .map((document) => noteFromSnapshot(document.id, document.data()))
-      .forEach((note) => {
-        state.fetchedNotesByID.set(note.id, note);
-        notesByID.set(note.id, note);
-      });
+  });
+  fetchedRealtimeNotes.forEach((note) => {
+    state.fetchedNotesByID.set(note.id, note);
+    notesByID.set(note.id, note);
   });
   state.notes = Array.from(notesByID.values());
+}
+
+function isNoteCoveredByRealtimeFetch(note, displayWindow = realtimeDisplayWindow()) {
+  if (note.syncState === "active") {
+    return note.displayDate < displayWindow.end;
+  }
+
+  if (note.syncState === "archived" || note.syncState === "deleted") {
+    return note.realtimeActiveUntil && note.realtimeActiveUntil >= displayWindow.start;
+  }
+
+  return false;
 }
 
 async function fetchHandwritingNotesFromServer() {
@@ -1681,6 +1750,7 @@ function attachFirebaseListeners() {
       snapshot.docChanges().forEach((change) => {
         if (change.type === "removed") {
           target.delete(change.doc.id);
+          state.fetchedNotesByID.delete(change.doc.id);
         } else {
           target.set(change.doc.id, noteFromSnapshot(change.doc.id, change.doc.data()));
         }
@@ -1858,7 +1928,7 @@ function startPlanningFirestoreSyncTimer() {
   }, planningFirestoreSyncIntervalMs);
 }
 
-async function loadPlanningRowsFromFirestore({ force = false } = {}) {
+async function loadPlanningRowsFromFirestore({ force = false, includeHistory = state.showsPlanningHistory } = {}) {
   if (!state.authReady || !state.currentUser || shouldSuspendFirestoreSync() || !canCurrentUserAccessPlanning()) {
     return;
   }
@@ -1869,7 +1939,7 @@ async function loadPlanningRowsFromFirestore({ force = false } = {}) {
 
   state.isPlanningFirestoreLoading = true;
   try {
-    const response = await getRegulatoryPlanningEvents({ includeHistory: state.showsPlanningHistory });
+    const response = await getRegulatoryPlanningEvents({ includeHistory });
     const events = Array.isArray(response?.data?.events) ? response.data.events : [];
     if (events.length) {
       state.planningRows = events.map(normalizePlanningRow);
@@ -2130,7 +2200,11 @@ function startActiveAdminTabListener() {
   }
 
   if (state.activeAdminTab === "activity") {
-    restartActivityEventsListener();
+    if (state.adminActivitySubTab === "sync") {
+      restartUserSyncStatusesListener();
+    } else {
+      restartActivityEventsListener();
+    }
   }
 }
 
@@ -2155,10 +2229,16 @@ function stopInactiveAdminTabListeners() {
     state.userStats = [];
   }
 
-  if (state.activeAdminTab !== "activity" && state.unsubscribeActivityEvents) {
+  if ((state.activeAdminTab !== "activity" || state.adminActivitySubTab !== "activity") && state.unsubscribeActivityEvents) {
     state.unsubscribeActivityEvents();
     state.unsubscribeActivityEvents = null;
     state.activityEvents = [];
+  }
+
+  if ((state.activeAdminTab !== "activity" || state.adminActivitySubTab !== "sync") && state.unsubscribeUserSyncStatuses) {
+    state.unsubscribeUserSyncStatuses();
+    state.unsubscribeUserSyncStatuses = null;
+    state.userSyncStatuses = [];
   }
 }
 
@@ -2273,7 +2353,7 @@ function restartActivityEventsListener(force = false) {
     return;
   }
 
-  if (state.activeAdminTab !== "activity") {
+  if (state.activeAdminTab !== "activity" || state.adminActivitySubTab !== "activity") {
     return;
   }
 
@@ -2301,6 +2381,38 @@ function restartActivityEventsListener(force = false) {
       trackFirestoreSnapshotRead("activityEvents", snapshot);
       state.activityEvents = snapshot.docs
         .map((document) => activityEventFromSnapshot(document.id, document.data()))
+        .filter(Boolean);
+      renderAdminSettings();
+    },
+    (error) => setStatus(error.message)
+  );
+}
+
+function restartUserSyncStatusesListener(force = false) {
+  if (!state.authReady || !isAdminSession() || shouldSuspendFirestoreSync()) {
+    return;
+  }
+
+  if (state.activeAdminTab !== "activity" || state.adminActivitySubTab !== "sync") {
+    return;
+  }
+
+  if (state.unsubscribeUserSyncStatuses && !force) {
+    return;
+  }
+
+  if (state.unsubscribeUserSyncStatuses) {
+    state.unsubscribeUserSyncStatuses();
+    state.unsubscribeUserSyncStatuses = null;
+  }
+
+  state.userSyncStatuses = [];
+  state.unsubscribeUserSyncStatuses = onSnapshot(
+    collection(db, "userSyncStatus"),
+    (snapshot) => {
+      trackFirestoreSnapshotRead("userSyncStatus", snapshot);
+      state.userSyncStatuses = snapshot.docs
+        .map((document) => userSyncStatusFromSnapshot(document.id, document.data()))
         .filter(Boolean);
       renderAdminSettings();
     },
@@ -2376,6 +2488,7 @@ function detachAuthenticatedDataSync({ keepsInitialDataRefresh = false, keepsDat
     "unsubscribeDailyTags",
     "unsubscribeLoginEvents",
     "unsubscribeFirestoreReadStats",
+    "unsubscribeUserSyncStatuses",
     "unsubscribeActivityEvents",
     "unsubscribeAdminMessagesAll",
     "unsubscribeAdminMessagesTargeted",
@@ -2424,6 +2537,7 @@ function detachAuthenticatedDataSync({ keepsInitialDataRefresh = false, keepsDat
   state.userStats = [];
   state.firestoreReadStats = [];
   state.firestoreReadStatsMode = "";
+  state.userSyncStatuses = [];
   state.activityEvents = [];
   state.adminMessagesAll = [];
   state.adminMessagesTargeted = [];
@@ -2702,6 +2816,7 @@ function renderPlanningTable() {
           </tbody>
         </table>
       </div>
+      ${renderPlanningHistoryPicker()}
       ${renderPlanningEditor()}
     </section>
   `;
@@ -2736,6 +2851,41 @@ function planningEditActionsHTML() {
       <button class="planning-add-button" type="button" data-planning-action="add-row">+ Ajouter</button>
       <button class="planning-exit-button" type="button" data-planning-action="exit-edit">Quitter Modification</button>
       ${historyButton}
+    </div>
+  `;
+}
+
+function renderPlanningHistoryPicker() {
+  if (!state.isPlanningHistoryPickerOpen) {
+    return "";
+  }
+
+  const years = planningArchiveYears();
+  const yearList = years.length
+    ? years.map((year) => `
+        <label class="planning-history-year-option">
+          <input
+            type="checkbox"
+            data-planning-history-year="${year}"
+            ${state.selectedPlanningHistoryYears.has(year) ? "checked" : ""}
+          >
+          <span>${year}</span>
+        </label>
+      `).join("")
+    : `<p class="planning-history-empty">Aucune archive disponible</p>`;
+
+  return `
+    <div class="planning-history-modal-backdrop" data-planning-history-backdrop>
+      <div class="planning-history-modal" role="dialog" aria-modal="true" aria-label="Historique planning réglementaire">
+        <h2>Historique</h2>
+        <div class="planning-history-years">
+          ${yearList}
+        </div>
+        <div class="planning-history-modal-actions">
+          <button class="planning-history-cancel-button" type="button" data-planning-action="cancel-history-picker">Annuler</button>
+          <button class="planning-history-show-button" type="button" data-planning-action="show-history-picker" ${state.selectedPlanningHistoryYears.size ? "" : "disabled"}>Afficher</button>
+        </div>
+      </div>
     </div>
   `;
 }
@@ -3164,9 +3314,34 @@ function handlePlanningTableClick(event) {
   }
 
   if (action === "toggle-history") {
-    state.showsPlanningHistory = !state.showsPlanningHistory;
+    if (state.showsPlanningHistory) {
+      state.showsPlanningHistory = false;
+      state.selectedPlanningHistoryYears.clear();
+      state.isPlanningHistoryPickerOpen = false;
+      renderPlanningTable();
+      loadPlanningRowsFromFirestore({ force: true, includeHistory: false });
+      return;
+    }
+
+    state.isPlanningHistoryPickerOpen = true;
     renderPlanningTable();
-    loadPlanningRowsFromFirestore({ force: true });
+    loadPlanningRowsFromFirestore({ force: true, includeHistory: true });
+    return;
+  }
+
+  if (action === "cancel-history-picker") {
+    state.isPlanningHistoryPickerOpen = false;
+    if (!state.showsPlanningHistory) {
+      state.selectedPlanningHistoryYears.clear();
+    }
+    renderPlanningTable();
+    return;
+  }
+
+  if (action === "show-history-picker") {
+    state.showsPlanningHistory = true;
+    state.isPlanningHistoryPickerOpen = false;
+    renderPlanningTable();
     return;
   }
 
@@ -4005,7 +4180,48 @@ function normalizedPlanningRows() {
 
 function visiblePlanningRows() {
   const rows = normalizedPlanningRows();
-  return state.showsPlanningHistory ? rows : rows.filter((row) => !isPlanningEventPast(row));
+  if (!state.showsPlanningHistory) {
+    return rows.filter((row) => !isPlanningEventPast(row));
+  }
+
+  return rows.filter((row) => {
+    if (!isPlanningEventPast(row)) {
+      return true;
+    }
+
+    const year = planningArchiveYear(row);
+    return year && state.selectedPlanningHistoryYears.has(year);
+  });
+}
+
+function planningArchiveYears() {
+  return [...new Set(normalizedPlanningRows()
+    .filter((row) => isPlanningEventPast(row))
+    .map(planningArchiveYear)
+    .filter(Boolean))]
+    .sort((first, second) => first - second);
+}
+
+function planningArchiveYear(row) {
+  const sortDate = planningSortDateValue(row);
+  const match = /^(\d{4})-\d{2}-\d{2}$/.exec(sortDate);
+  return match ? Number(match[1]) : null;
+}
+
+function handlePlanningHistoryYearChange(input) {
+  const years = planningArchiveYears();
+  const checkedYears = [...elements.noteGroups.querySelectorAll("[data-planning-history-year]:checked")]
+    .map((checkbox) => Number(checkbox.dataset.planningHistoryYear))
+    .filter(Number.isInteger);
+
+  state.selectedPlanningHistoryYears.clear();
+  checkedYears.forEach((checkedYear) => {
+    years
+      .filter((year) => year >= checkedYear)
+      .forEach((year) => state.selectedPlanningHistoryYears.add(year));
+  });
+
+  renderPlanningTable();
 }
 
 function normalizePlanningRow(row) {
@@ -4901,7 +5117,7 @@ function groupedNotes() {
   const groups = [];
 
   for (const simulator of simulators) {
-    const contextNotes = matchingNotes.filter((note) => noteBelongsToContext(note, simulator.name));
+    const contextNotes = contextDisplayNotes(matchingNotes, simulator.name);
     const acknowledgedHiddenCount = state.search || state.showAcknowledged ? 0 : contextNotes.filter((note) => {
       return matchesSelection(note, simulator.name, { includeAcknowledged: true })
         && isAcknowledgedHidden(note, simulator.name);
@@ -6053,6 +6269,30 @@ function firestoreReadStatFromSnapshot(documentID, data) {
   };
 }
 
+function userSyncStatusFromSnapshot(documentID, data) {
+  return {
+    id: stringValue(data.id, documentID),
+    documentID,
+    userIdentifier: stringValue(data.userIdentifier, data.id || documentID),
+    displayName: stringValue(data.displayName),
+    firstName: stringValue(data.firstName),
+    lastName: stringValue(data.lastName),
+    role: stringValue(data.role),
+    team: stringValue(data.team),
+    source: stringValue(data.source),
+    appVersion: stringValue(data.appVersion),
+    lastSeenAt: dateValue(data.lastSeenAt) || null,
+    lastSuccessfulRefreshAt: dateValue(data.lastSuccessfulRefreshAt) || null,
+    lastSuccessfulCatchUpAt: dateValue(data.lastSuccessfulCatchUpAt) || null,
+    lastCatchUpFrom: dateValue(data.lastCatchUpFrom) || null,
+    lastCatchUpChangedNotesCount: data.lastCatchUpChangedNotesCount === undefined
+      ? null
+      : numberValue(data.lastCatchUpChangedNotesCount),
+    lastCatchUpStatus: stringValue(data.lastCatchUpStatus),
+    updatedAt: dateValue(data.updatedAt) || null
+  };
+}
+
 function userStatsFromSnapshot(documentID, data) {
   return {
     id: stringValue(data.id, documentID),
@@ -6189,7 +6429,7 @@ function renderAdminSettings(options = {}) {
         : state.activeAdminTab === "connections"
           ? "Connexions"
           : state.activeAdminTab === "activity"
-            ? "Suivi d'activité"
+            ? (state.adminActivitySubTab === "sync" ? "Synchro utilisateurs" : "Suivi d'activité")
             : state.activeAdminTab === "appVersion"
               ? "Version iPad"
               : state.activeAdminTab === "maintenance"
@@ -6374,6 +6614,13 @@ function renderAdminHome() {
         <span>
           <strong>Suivi d'activité</strong>
           <small>Actions utilisateur et lien direct consigne</small>
+        </span>
+      </button>
+      <button class="admin-menu-row" type="button" data-admin-action="open-admin-user-sync">
+        <span class="admin-menu-icon">◷</span>
+        <span>
+          <strong>Synchro utilisateurs</strong>
+          <small>Dernier état connu, classé par prénom</small>
         </span>
       </button>
       <button class="admin-menu-row" type="button" data-admin-action="open-admin-app-version">
@@ -6858,9 +7105,14 @@ function renderAdminConnectionGroup(group) {
 }
 
 function renderAdminActivity() {
+  if (state.adminActivitySubTab === "sync") {
+    return renderAdminUserSyncStatuses();
+  }
+
   const events = filteredActivityEvents();
   return `
     ${renderAdminBackButton()}
+    ${renderAdminActivitySubTabs()}
     <div class="admin-section-heading">
       <h3>Jour</h3>
       <p>Actions enregistrées sur les consignes et le planning réglementaire.</p>
@@ -6884,6 +7136,165 @@ function renderAdminActivity() {
       ${events.map(renderAdminActivityEvent).join("") || "<p class=\"muted\">Aucune action.</p>"}
     </div>
   `;
+}
+
+function renderAdminActivitySubTabs() {
+  return `
+    <div class="admin-subtabs">
+      <button
+        class="admin-subtab ${state.adminActivitySubTab === "activity" ? "active" : ""}"
+        type="button"
+        data-admin-action="admin-activity-tab"
+        data-admin-activity-tab="activity"
+      >Activité</button>
+      <button
+        class="admin-subtab ${state.adminActivitySubTab === "sync" ? "active" : ""}"
+        type="button"
+        data-admin-action="admin-activity-tab"
+        data-admin-activity-tab="sync"
+      >Synchro utilisateurs</button>
+    </div>
+  `;
+}
+
+function renderAdminUserSyncStatuses() {
+  const rows = adminUserSyncStatusRows();
+  return `
+    ${renderAdminBackButton()}
+    ${renderAdminActivitySubTabs()}
+    <div class="admin-section-heading">
+      <h3>Synchro utilisateurs</h3>
+      <p>Dernier état connu de synchronisation, classé par prénom.</p>
+    </div>
+    <div class="admin-card admin-sync-card">
+      <div class="admin-sync-table">
+        <div class="admin-sync-row admin-sync-header">
+          <span>Utilisateur</span>
+          <span>Source</span>
+          <span>Version</span>
+          <span>Ouverture</span>
+          <span>Synchro</span>
+          <span>Rattrapage</span>
+          <span>Notes</span>
+          <span>État</span>
+        </div>
+        ${rows.map(renderAdminUserSyncStatusRow).join("") || "<p class=\"muted\">Aucun utilisateur.</p>"}
+      </div>
+    </div>
+  `;
+}
+
+function renderAdminUserSyncStatusRow(row) {
+  const level = syncStatusLevel(row);
+  const statusLabel = syncStatusLabel(row, level);
+  return `
+    <div class="admin-sync-row">
+      <strong>${escapeHtml(row.displayName)}</strong>
+      <span>${escapeHtml(sourceDisplayName(row.status?.source))}</span>
+      <span>${escapeHtml(row.status?.appVersion || "-")}</span>
+      <span>${escapeHtml(formatSyncDate(row.status?.lastSeenAt))}</span>
+      <span>${escapeHtml(formatSyncDate(row.status?.lastSuccessfulRefreshAt))}</span>
+      <span>${escapeHtml(formatSyncDate(row.status?.lastSuccessfulCatchUpAt))}</span>
+      <span>${row.status?.lastCatchUpChangedNotesCount ?? "-"}</span>
+      <span class="admin-sync-pill ${level}">${escapeHtml(statusLabel)}</span>
+    </div>
+  `;
+}
+
+function adminUserSyncStatusRows() {
+  const statusesByKey = new Map();
+  state.userSyncStatuses.forEach((status) => {
+    [status.userIdentifier, status.id, status.documentID, status.displayName]
+      .map(normalizeKey)
+      .filter(Boolean)
+      .forEach((key) => statusesByKey.set(key, status));
+  });
+
+  const consumedStatusIDs = new Set();
+  const rows = state.users.map((user) => {
+    const possibleKeys = [user.id, user.documentID, currentDisplayNameForUser(user)].map(normalizeKey).filter(Boolean);
+    const status = possibleKeys.map((key) => statusesByKey.get(key)).find(Boolean) || null;
+    if (status) {
+      consumedStatusIDs.add(status.id || status.documentID || status.userIdentifier);
+    }
+    return {
+      user,
+      status,
+      displayName: currentDisplayNameForUser(user),
+      firstName: stringValue(user.firstName),
+      lastName: stringValue(user.lastName)
+    };
+  });
+
+  state.userSyncStatuses.forEach((status) => {
+    const statusID = status.id || status.documentID || status.userIdentifier;
+    if (consumedStatusIDs.has(statusID)) {
+      return;
+    }
+    rows.push({
+      user: null,
+      status,
+      displayName: status.displayName || [status.firstName, status.lastName].filter(Boolean).join(" ") || status.userIdentifier || "Utilisateur",
+      firstName: status.firstName,
+      lastName: status.lastName
+    });
+  });
+
+  return rows.sort((first, second) => {
+    return stringValue(first.firstName || first.displayName).localeCompare(stringValue(second.firstName || second.displayName), "fr", { sensitivity: "base" })
+      || stringValue(first.lastName).localeCompare(stringValue(second.lastName), "fr", { sensitivity: "base" })
+      || stringValue(first.displayName).localeCompare(stringValue(second.displayName), "fr", { sensitivity: "base" });
+  });
+}
+
+function syncStatusLevel(row) {
+  const latestSync = latestDate(row.status?.lastSuccessfulCatchUpAt, row.status?.lastSuccessfulRefreshAt);
+  if (!latestSync) {
+    return "unknown";
+  }
+
+  const ageMs = Date.now() - latestSync.getTime();
+  if (ageMs <= 24 * 60 * 60 * 1000) {
+    return "ok";
+  }
+  if (ageMs <= 4 * 24 * 60 * 60 * 1000) {
+    return "warning";
+  }
+  return "danger";
+}
+
+function syncStatusLabel(row, level) {
+  if (level === "unknown") {
+    return "Jamais vu";
+  }
+  if (level === "ok") {
+    return "À jour";
+  }
+  if (level === "warning") {
+    return "À surveiller";
+  }
+  return "En retard";
+}
+
+function latestDate(...dates) {
+  return dates
+    .filter((date) => date instanceof Date && !Number.isNaN(date.getTime()))
+    .sort((first, second) => second.getTime() - first.getTime())[0] || null;
+}
+
+function formatSyncDate(date) {
+  return date ? formatDateTime(date) : "-";
+}
+
+function sourceDisplayName(source) {
+  const value = normalizeKey(source);
+  if (value === "ipad" || value === "ios") {
+    return "iOS";
+  }
+  if (value === "web") {
+    return "Web";
+  }
+  return source || "-";
 }
 
 function renderAdminActivityEvent(event) {
@@ -9746,6 +10157,65 @@ function noteBelongsToContext(note, context) {
 
   const contextKey = normalizeKey(context);
   return note.simulatorNames.some((name) => normalizeKey(name) === contextKey);
+}
+
+function contextDisplayNotes(notes, context) {
+  const notesByID = new Map();
+  notes
+    .filter((note) => noteBelongsToContext(note, context))
+    .forEach((note) => {
+      if (!notesByID.has(note.id)) {
+        notesByID.set(note.id, note);
+      }
+    });
+
+  return [...groupBy([...notesByID.values()], (note) => handoverOriginKey(note)).values()]
+    .map((group) => group.sort((first, second) => compareOriginSiblingNotes(first, second, context))[0])
+    .filter(Boolean);
+}
+
+function compareOriginSiblingNotes(first, second, context) {
+  const firstIsSpecific = isContextSpecificDetachedNote(first, context);
+  const secondIsSpecific = isContextSpecificDetachedNote(second, context);
+  if (firstIsSpecific !== secondIsSpecific) {
+    return firstIsSpecific ? -1 : 1;
+  }
+
+  const firstContextCount = first.isGeneral ? 0 : first.simulatorNames.length;
+  const secondContextCount = second.isGeneral ? 0 : second.simulatorNames.length;
+  if (firstContextCount !== secondContextCount) {
+    return firstContextCount - secondContextCount;
+  }
+
+  const firstActivityTime = (latestContentModificationDate(first) || first.updatedAt || new Date(0)).getTime();
+  const secondActivityTime = (latestContentModificationDate(second) || second.updatedAt || new Date(0)).getTime();
+  if (firstActivityTime !== secondActivityTime) {
+    return secondActivityTime - firstActivityTime;
+  }
+
+  const firstUpdatedTime = (first.updatedAt || new Date(0)).getTime();
+  const secondUpdatedTime = (second.updatedAt || new Date(0)).getTime();
+  if (firstUpdatedTime !== secondUpdatedTime) {
+    return secondUpdatedTime - firstUpdatedTime;
+  }
+
+  return stringValue(first.id).localeCompare(stringValue(second.id), "fr");
+}
+
+function isContextSpecificDetachedNote(note, context) {
+  if (context === generalName) {
+    return note.isGeneral;
+  }
+
+  return !note.isGeneral && note.simulatorNames.length === 1 && noteBelongsToContext(note, context);
+}
+
+function handoverOriginKey(note) {
+  const authorKey = normalizeKey(note.authorIdentifier || note.author);
+  const createdAt = note.createdAt || new Date(0);
+  const createdAtKey = (createdAt.getTime() / 1000).toFixed(3);
+  const firstDisplayDate = note.firstDisplayDate || note.displayDate || createdAt;
+  return [authorKey, createdAtKey, isoDate(startOfDay(firstDisplayDate))].join("|");
 }
 
 function matchesSelection(note, context, options = {}) {

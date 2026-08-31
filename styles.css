@@ -231,6 +231,16 @@ body.requires-login .login-panel > :not(.sidebar-login-button) {
   background: rgba(146, 64, 14, 0.9);
 }
 
+.data-refresh-indicator.info-only {
+  color: #ffffff;
+  background: #168a3a;
+}
+
+.data-refresh-indicator.info-only.stale {
+  color: #7c2d12;
+  background: rgba(255, 159, 10, 0.24);
+}
+
 .data-refresh-indicator.syncing .data-refresh-icon {
   animation: refresh-spin 900ms linear infinite;
 }
@@ -440,13 +450,21 @@ body.requires-login .login-panel > :not(.sidebar-login-button) {
 }
 
 .today-button {
+  display: block;
+  width: fit-content;
+  min-width: 156px;
+  max-width: calc(100% - 28px);
   min-height: 24px;
-  margin-top: -1px;
+  margin: -1px auto 0;
   border-radius: 999px;
   padding: 0 12px;
   background: #2f86ff;
   font-size: 11px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.24);
+}
+
+.today-button.full {
+  width: fit-content;
 }
 
 .sidebar-separator {
@@ -1179,6 +1197,93 @@ h1:empty + p {
 .planning-history-button.active {
   color: #ffffff;
   background: #0f4ea8;
+}
+
+.planning-history-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(15, 23, 42, 0.28);
+}
+
+.planning-history-modal {
+  width: min(360px, calc(100vw - 36px));
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 10px;
+  padding: 16px;
+  background: #ffffff;
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.24);
+}
+
+.planning-history-modal h2 {
+  margin: 0 0 12px;
+  color: var(--ink);
+  font-size: 22px;
+  line-height: 1.1;
+}
+
+.planning-history-years {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.planning-history-year-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--ink);
+  background: rgba(239, 246, 255, 0.74);
+  font-weight: 800;
+}
+
+.planning-history-year-option input {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: #2563eb;
+}
+
+.planning-history-empty {
+  margin: 0;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.planning-history-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.planning-history-cancel-button,
+.planning-history-show-button {
+  min-width: 104px;
+  min-height: 38px;
+  border-radius: 8px;
+}
+
+.planning-history-cancel-button {
+  color: #334155;
+  background: #e2e8f0;
+}
+
+.planning-history-show-button {
+  color: #ffffff;
+  background: #2563eb;
+}
+
+.planning-history-show-button:disabled {
+  cursor: not-allowed;
+  color: #94a3b8;
+  background: #e2e8f0;
 }
 
 .planning-table-wrap {
@@ -2491,6 +2596,27 @@ mark {
   background: var(--blue);
 }
 
+.admin-subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.admin-subtab {
+  min-height: 38px;
+  border-radius: 12px;
+  padding: 0 16px;
+  color: var(--blue-dark);
+  background: rgba(47, 128, 237, 0.12);
+  box-shadow: none;
+}
+
+.admin-subtab.active {
+  color: white;
+  background: var(--blue);
+}
+
 .admin-body {
   overflow: auto;
   padding: 18px 24px 26px;
@@ -2700,6 +2826,72 @@ mark {
   font-size: 20px;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
+}
+
+.admin-sync-card {
+  overflow: auto;
+}
+
+.admin-sync-table {
+  min-width: 980px;
+  display: grid;
+  gap: 0;
+}
+
+.admin-sync-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.2fr) 80px 90px 145px 145px 145px 70px 120px;
+  align-items: center;
+  gap: 12px;
+  min-height: 42px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.admin-sync-row:last-child {
+  border-bottom: 0;
+}
+
+.admin-sync-row strong {
+  min-width: 0;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-sync-header {
+  min-height: 32px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.admin-sync-pill {
+  display: inline-flex;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 5px 8px;
+  color: white;
+  background: #8f9baa;
+  line-height: 1;
+}
+
+.admin-sync-pill.ok {
+  color: #050505;
+  background: #34c759;
+}
+
+.admin-sync-pill.warning {
+  color: #050505;
+  background: #ff9f0a;
+}
+
+.admin-sync-pill.danger {
+  background: #ff3b30;
 }
 
 .admin-connection-sessions {
