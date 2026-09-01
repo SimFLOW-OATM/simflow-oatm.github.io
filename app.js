@@ -30,14 +30,22 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
-const WEB_APP_VERSION = "1.87a";
+const WEB_APP_VERSION = "1.89";
 const userGuideURL = "./assets/Guide%20utilisateur%20SimFLOW.pdf";
 const deletedLegacySimulatorNames = new Set(["Simu", "Simu 1", "Simu 2", "Simu 3", "Simu 4", "Simu Tes", "Simu test 2", "Simu Test 2"]);
 const sessionStorageKey = "simflow.web.currentUser";
 const planningStorageKey = "simflow.web.mandatoryPlanningRows";
+const preventivePlanningStorageKey = "simflow.web.preventivePlanningRows";
 const planningImportVersionStorageKey = "simflow.web.mandatoryPlanningImportVersion";
+const planningFirestoreImportVersionStorageKey = "simflow.web.regulatoryPlanningImportVersion";
+const planningMirrorLabelSyncStorageKey = "simflow.web.regulatoryPlanningMirrorLabelSyncVersion";
+const planningSimulatorRepairStorageKey = "simflow.web.regulatoryPlanningSimulatorRepairVersion";
+const preventivePlanningMirrorScopeStorageKey = "simflow.web.preventivePlanningMirrorScopeVersion";
 const planningFirestoreSyncStorageKey = "simflow.web.regulatoryPlanningLastSyncAt";
-const regulatoryPlanningImportVersion = "2026-regulatory-table-v2";
+const regulatoryPlanningImportVersion = "2026-regulatory-table-v7-canonical-simulators";
+const regulatoryPlanningMirrorLabelVersion = "fly-out-label-v2";
+const regulatoryPlanningSimulatorRepairVersion = "canonical-simulators-v5";
+const preventivePlanningMirrorScopeVersion = "all-simulators-v1";
 const firestoreSyncSuspendedStorageKey = "simflow.web.firestoreSyncSuspended";
 const lastActiveStorageKey = "simflow.web.lastActiveAt";
 const lastSuccessfulDataRefreshStorageKey = "simflow.web.lastSuccessfulDataRefreshAt";
@@ -53,15 +61,21 @@ const loginPresenceRefreshMs = 2 * 1000;
 const firestoreReadStatsFlushMs = 5 * 1000;
 const planningFirestoreSyncIntervalMs = 60 * 60 * 1000;
 const planningTypes = [
-  { value: "fly-out-part-a", label: "Fly Out Part A" },
-  { value: "fly-out-part-b", label: "Fly Out Part B" },
-  { value: "fly-out-part-c", label: "Fly Out Part C" },
-  { value: "fly-out-part-d", label: "Fly Out Part D" },
+  { value: "fly-out-part-a", label: "Fly-Out Part A" },
+  { value: "fly-out-part-b", label: "Fly-Out Part B" },
+  { value: "fly-out-part-c", label: "Fly-Out Part C" },
+  { value: "fly-out-part-d", label: "Fly-Out Part D" },
   { value: "dgac", label: "DGAC" },
   { value: "auto-eval", label: "Auto-Eval" },
   { value: "reunion-technique", label: "Réunion technique" }
 ];
 const defaultPlanningType = planningTypes[0].value;
+const preventivePlanningEvents = [
+  { value: "annuelle", label: "Annuelle" },
+  { value: "semestrielle", label: "Semestrielle" },
+  { value: "trimestrielle", label: "Trimestrielle" },
+  { value: "autre", label: "Autre" }
+];
 const planningFreeTechnicianValue = "__free_technician__";
 const planningMonthNames = [
   "janvier",
@@ -77,50 +91,202 @@ const planningMonthNames = [
   "novembre",
   "décembre"
 ];
+const importedRegulatoryPlanningArchive2023Rows = importedPlanningRowsFromTSV(`
+Simu	type	Horaire 	Equipe 	Nom 	IT CARL	GED	Commentaire
+A220#2	FLYOUT PART B	28/11/23 de 06h00 à 10h00	Equipe 1	M.Ichalalen	X	X	
+FTD B777	FLYOUT B + C	30/11/23 de 15h00 à 19h00	Equipe 5	T.Florian	X	X	
+B777#4	FLYOUT PART C	01/12/23 de 10h00 à 14h00	Equipe 4	J-P Holowczak	X	X	
+A320#6	FLYOUT PART B	04/12/23 de 17h10 à 21h10	Equipe 2	P Le Cordroch 	X	X	
+A350#2	FLYOUT PART A	05/12/23 de 06h00 à 10h00	Equipe 5	M.Ocipski	X	X	
+B777#3	FLYOUT PART B	05/12/23 de 14h00 à 18h00	Equipe 2 	V .Esnault	X	X	
+FTD A350	DSAC AUTO	06/12/23 de 14h00 à 15h30	Equipe 4	S. Alibhay	X		
+A320#7	FLYOUT PART C	11/12/23 de 13h10 à 17h10	Equipe 1	L.Veron	X	X	
+A220#1	FLYOUT PART C	13/12/23 de 06h00 à 10h00	Equipe 4	C.Martinot	X	X	
+FTD A220	FLYOUT PART A	15/12/23 de 14h00 à 18h00	Equipe 3	J.P. Cavaciuti	X	X	
+FTD A320	FLYOUT PART B	15/12/23 de 14h00 à 18h00	Equipe 3	M. Gantois		X	
+A350#1	FLYOUT PART B	22/12/23 de 17h10 à 21h10	Equipe 2	O.Sicourmat	X	X	
+`);
+const importedRegulatoryPlanningArchive2024Rows = importedPlanningRowsFromTSV(`
+Simu	type	Horaire 	Equipe 	Nom 	IT CARL	GED	Commentaire
+B777#1	FLYOUT PART C+D	24/01/24 de 06h00 à 10h00	Equipe 3		X	X	
+A330	FLYOUT PART C	29/01/24 de 06h20 à 10h20	Equipe 2	V Esnault 	X	X	
+A220#2	FLYOUT PART C	08/02/24 de 06h00 à 10h00	Equipe 1	S. GOMES	X	X	
+FTDB777	FLYOUT PART D	16/02/24 de 17h00 à 21h00	Equipe 4	JP. HOLOWCZAK	X	X	
+A320#7	FLYOUT PART D	29/02/24 de 06h00 à 10h00	Equipe 3	J.P. Cavaciuti	X	X	
+FTD350	FLYOUT PART A	01/03/24 de 10h00 à 14h00	Equipe 1	G.Guinde	X	X	
+A350#2	FLYOUT PART B	04/03/24 de 06h25 à 10h25	Equipe 2	S.Dupire	X	X	
+A220#1	FLYOUT PART D	05/03/24 de 06h00 à 10h00	Equipe 2	Y.Sene	X	X	
+B777#2	FLYOUT PART C	08/03/24 de 06h00 à 10h00	Equipe 5	F.Theodose	X	X	
+B787#1	FLYOUT PART C	11/03/24 de 10h00 à 14h00	Equipe 1	L.Veron	X	X	
+A320#6	FLYOUT PART C	18/03/24 de 06H00 à 10H00	Equipe#5	H.Dechaume	X	X	
+A350#1	FLYOUT PART C	20/03/24 de 06h00 à 10h00	Equipe#5	M.Ocipski	X	X	
+B787	FLYOUT PART D	30/04/24 de 05h45 à 09h45	Equipe 4	R.Aragon	X	X	
+A220#2	FLYOUT PART D	17/05/24 de 06h00 à 10h00	Equipe#5	M.Ocipski	X	X	
+FTDA320	FLYOUT PART D	27/05/24 de 13h00 à 17h00	Equipe 2	T. Devilliers	X		
+A320#7	FLYOUT PART A	04/06/24 de 06h00 à 10h00	Equipe 4	C. De Sa	X	X	
+A220#1	FLYOUT PART A	05/06/24 de 06h00 à 10h00	Equipe 4	JP. HOLOWCZAK	X	X	
+FTDA220	FLYOUT PART C	07/06/24 de 13h00 à 17h00	Equipe 3	JP. Cavaciuti  			
+A320#6	FLYOUT PART D	21/06/24 de 06h00 à 10h00	Equipe 5	H. DECHAUME	X	X	
+A350#2	FLYOUT PART C	28/06/24 de 06h00 à 10h00	Equipe 4	P.Le Cordroch	X	X	
+B777#3	FLYOUT PART D	15/07/24 de 06h00 à 10h00	Equipe 3	M.Gantois			
+A330	FLYOUT PART A	16/07/24 de 06h00 à 10h00	Equipe 3	J.P Cavaciuti			
+B777#1	FLYOUT PART B	22/07/24 de 10h00 à 14h00	Equipe 2	Y Sene 			
+A350#2	FLYOUT PART D	01/08/24 de 21h45 à 01h45	Equipe 2	S Dupire	X	X	
+A320#7	FLYOUT PART B	23/08/24 de 06h00 à 10h00	Equipe 1	M.Ichalalen			
+B787	FLYOUT PART A	01/09/24 de 13h45 à 17h45	Equipe 5	F.Theodose	X	X	
+A320#6	FLYOUT PART A	04/09/24 de 18h00 à 22h00	Equipe 5	H.Dechaume	X	X	
+FTD220	FLYOUT PART B	05/09/24 de 14h00 à 18h00	Equipe 5	M.Ocipski	x	x	
+FTDA350	FLYOUT PART C	09/09/24 de 14h00 à 18h00	Equipe 2	S.Dupire	X	X	
+FTDA320	FLYOUT PART A	10/09/24 de 13h00 à 19h00	Equipe 2	T.Devilliers	X	X	
+FTD777	FLYOUT PART B	11/09/24 de 07h00 à 11h00	Equipe 4	JP.Holowczak		x	
+A350#1	DSAC	11/09/24 de 08h00 à 19h00	Equipe 4	R.Aragon			
+B777#2	FLYOUT PART A	27/09/24 de 16h45 à 21h45	Equipe 2	Y.Sene	X	X	
+A220#1	FLYOUT PART B	30/09/24 de 06h00 à 10h00 	Equipe 2	V.Esnault	X	X	
+B777#4	FLYOUT PART B	01/10/24 de 18h00 à 22h00	Equipe 4	S.Alibhay	x	x	
+A350#1	FLYOUT PART A	01/11/24 de 13h05 à 17h05	Equipe 1 ou 2	G.Guinde			
+FTDA350	FLYOUT PART D	04/11/24 de 16h00 à 20h00	Equipe 4	C.De Sa			
+A330	FLYOUT PART B	05/11/24 de 16h35 à 20h35	Equipe 4	P.Le Cordroch			
+A220#2	FLYOUT PART B	07/11/24 de 18h00 à 22h00	Equipe 1	N.Simon			
+B777#3	FLYOUT Eval spéciale	18/11/24	SATM	JP.Holowczak	x	x	
+FTDA220	FLYOUT PART A	04/12/24	Equipe 3	J.P Cavaciuti		x	
+FTDA350	DSAC	05/12/24 de 08h00 à 19h00	Equipe 4	S.Alibhay			
+A350#2	FLYOUT PART A	09/12/24 de 18h00 à 22h00	Equipe 4	R. Aragon			
+FTDA320	FLYOUT PART B	10/12/24 de 14h00 à 18h00	Equipe 4	C.De Sa			
+A350#1	FLYOUT PART B	12/12/24 de 06h00 à 10h00	Equipe 2	O. Sicourmat	X	X	
+A320#6	FLY OUT PART B	17/12/24 de 10h00 à 14h00	Equipe 1	G. Guinde	X	X	
+A220#1	FLYOUT PART C	20/12/24 de 06h00 à 10h00	Equipe 4	JP.Holowczak	X	X	
+`);
+const importedRegulatoryPlanningArchive2025Rows = importedPlanningRowsFromTSV(`
+Simu	type	Horaire 	Equipe 	Nom 	IT CARL	GED	Commentaire
+B777#3	FLYOUT PART A	16/01/25 de 09h30 à 13h10	Equipe 2	O.Sicourmat			
+B777#1	FLYOUT PART D	24/01/25 de 06h00 à 10h00	Equipe 4	P.Le Cordroch			
+A330	FLYOUT PART C	29/01/25 de 16h45 à 20h45	Equipe 4	R.Aragon	x	x	
+A350 FTD 	FLYOUT PART A	06/02/25 de 10h00 à 14h00	Equipe 4	S. Alibhay	x	x	
+A320#7	FLYOUT PART D	07/02/25 de 06h00 à 10h00	Equipe 2	V Esnault  			
+B777 FTD 	FLYOUT PART D	13/02/25 de 17h30 à 21h30	Equipe 2	Y Sene 			
+A220#2	FLYOUT PART C	24/02/25 de 06h00 à 10h00	Equipe 1	N.Simon		x	
+B777#3	FLYOUT PART B	03/03/25 de 18h00 à 22h00	Equipe 2	V.Esnault	x	x	
+A320#6	FLYOUT PART C	04/03/25 de 06h00 à 10h00	Equipe 5	H.Dechaume			
+A350#2	FLYOUT PART B	13/03/25	Equipe 3				
+A320#7	FLYOUT autoeval	18/03/25 de 06h00 à 10h00	Equipe 5	S.Lempereur			
+A220#3	DGAC	24 et 25/03/25 de 07h00 à 18h00		Y. Dumaire 			
+A320 FTD	FLYOUT PART C	25/03/25 de 10h00 à 14h00	Equipe 2	S.Dupire 			
+A220 FTD	FLYOUT PART D	28/03/25 de 11h00 à 15h00	Equipe 5	S.Bignon			
+A350#1	FLYOUT PART C	01/04/25 de 18h00 à 22h00	Equipe 3	D.Vaquer			
+B777#4	FLYOUT PART D	02/04/25 de 16h00 à 20h00	Equipe 5	M.Le Roux			
+B777#1	FLYOUT PART A	09/04/25 de 07h30 à 11h30	Equipe 5	F.Theodose	x	x	
+A330	FLYOUT PART D	09/04/25 de 16h45 à 20h45	Equipe 4	S.Alibhay		x	
+A220#2	FLYOUT PART D	05/05/25 de 06h00 à 10h00	Equipe 1	M.Ichalalen		x	
+A350#1	FLYOUT Eval Spéciale	06/05/25 de 06h30 à 14h30	Equipe 1	G.Guinde si besoin			Matheus présent
+A350 FTD	FLYOUT PART B	09/05/25 de 14h00 à 18h00	Equipe 5	F.Theodose	x	x	
+A320 FTD	FLYOUT PART D	14/05/25 de 14h00 à 18h00	Equipe 4	R.Aragon	x	x	
+B787	FLYOUT PART D	15/05/25 de 06h00 à 10h00	Equipe 5	F.Theodose	x	x	
+A220#3	FLYOUT PART A	19/05/25 de 18h00 à 22h00	Equipe 1	S.Gomes			
+A330	DGAC auto éval + FO	20/05/25 	Equipe 1	M. Ichalalen			
+A320#7	FLYOUT PART A	22/05/25 de 18h00 à 22h00	Equipe 3	JP.Cavaciuti 			
+B777#3	FLYOUT PART C	27/05/25 de 20h45 à 23h59	Equipe 5	S.Alibhay	x	x	
+B777#2	FLYOUT PART D	28/05/25 de 06h00 à 10h00	Equipe 3	JJ Marie			
+B787	FLYOUT + Auto éval	04/06/25 de 06h00 à 10h00	Equipe 3	L.Bicocchi			
+A350#1	FLYOUT PART D	05/06/25 de 16h00 à 20h00	Equipe 1	G.Guinde			
+B777#4	FLYOUT PART A	07/06/25 de 06h00 à 10h00	Equipe 5	M.Ocipski	x	x	
+A220#2	DGAC	12/06/25	Equipe 3	JP.Cavaciuti 			
+B777#3	FLYOUT PART D	13/06/25 de 10h00 à 14h00	Equipe 4	R. Aragon	x	x	
+B777#2	DGAC auto éval + FO	17/06/25	Equipe 3	JJ. Marie			
+A320#6	FLYOUT PART D	18/06/25 de 17h00 à 21h00	Equipe 4	C. De Sa	x	x	
+A350#2	FLYOUT PART C	19/06/25 de 06h00 à 10h00	Equipe 5	H. Dechaume			
+A220 FTD	FLYOUT PART A	23/06/25 de 10h00 à 14h00	Equipe 4	JP holowczak	x	x	Tester le HUD
+A220#1	FLYOUT PART A	24/06/25 de 06h00 à 10h00	Equipe 4	R. Aragon	x	x	
+A320 FTD	DGAC	30/06/25 de 08h à 14h		P. Le Cordroch			
+A350#2	FLYOUT PART D + auto	05/07/25 de 18h00 à 22h00	Equipe 5	F.Theodose	x	x	
+A330	FLYOUT PART A	06/07/25 de 17h00 à 21h00	Equipe 1 	M.Ichalalen			
+B777 FTD	FLYOUT PART A	07/07/25 de 14h00 à 18h00	Equipe 4	JP. Holowczak	x	x	
+A350#2	DGAC auto éval + FO	07/07/25					
+A320#6	DGAC auto éval + FO	08/07/25 de 6h00 à 10h00		H. Dechaume			
+B777#3	DGAC	10/07/25 de 8h à 14h		JP. Holowczak	x	x	
+A350#3	FLYOUT PART B	11/07/25 de 10h00 à 14h00	Equipe 5	H.Dechaume	X	X 	
+B777#1	FLYOUT PART B	30/07/25 de 06h00 à 10h00	Equipe 4	R.Aragon			Début 7h iso 6h
+B777#2	FLYOUT PART A	01/08/25 de 06h00 à 10h00	Equipe 2	O.Sicourmat			Fait,  insertion dans la GED sera faite ASAP
+B787	FLYOUT PART A	06/08/25 de 06h00 à 10h00	Equipe 3	D.Vaquer			
+A320#7	FLYOUT PART B	07/08/25 de 18h00 à 22h00	Equipe 2	V.Esnault		x	
+A220#3	FLYOUT PART B	11/08/25 de 06h00 à 10h00	Equipe 2	P .Luzurier 		x	
+A350 FTD	FLYOUT PART C	20/08/25 de 14h00 à 18h00	Equipe 5	S.Lempereur	x	x	
+A220#2	FLYOUT PART A	22/08/25 de 06h00 à 10h00	Equipe 4	J.Ferreira	x	x	
+B777 FTD	FLYOUT PART B	25/08/25 de 14h00 à 18h00	Equipe 2	Y.Sene			
+A350#1	DSAC AUTO EVAL	26/08/25 de 10h00 à 14h00	Equipe 5	S.Bignon			
+A220#1	FLYOUT PART B	03/09/25 de 06h00 à 10h00	Equipe 4	G.Imbert		X 	Pas d'IT CARL, à valider dès que dispo
+A350#1	FLYOUT PART A	10/09/25 de 06H00 à 10H00	Equipe 3	Laurent Bicocchi			
+B777#3	FLYOUT PART A	18/09/25 de 06H00 à 10H00	Equipe 2	F.Mansuis		x	Pas d'IT 
+A320#6	FLYOUT PART A	23/09/25 de 06H00 à 10H00	Equipe 1	N.Simon / D.Solente		x	Pas d'IT
+A220 FTD	FLYOUT PART B	25/09/25 de 17H00 à 21H00	Equipe 5	S.Lempereur		x	Pas d'IT
+A320 FTD	FLYOUT PART A	29/09/25 de 16H00 à 20H00	Equipe 2	T.Devilliers			
+B777#4	FLYOUT PART B	30/09/25 de 06h00 à 10h00	Equipe 5	M.Le Roux		x	Pas d'IT
+B777#3	FLYOUT PART A	18/09/25 de 06H00 à 10H00	Equipe 2	F.Mansuis		x	Pas d'IT 
+A330	FLYOUT PART B	04/11/25 de 06h00 à 10h00	Equipe 5	M.Le Roux	X	X	Pas d'IT
+A320#7	FLYOUT PART C	05/11/25 de 16h45 à 20h45	Equipe 4	C. De Sa	X	X	
+A350#3	FLYOUT PART C	07/11/25 de 16h45 à 20h45	Equipe 4	R.Aragon	X	X	
+B787	FLYOUT PART B	09/11/25 de 17h00 à 21h00	Equipe 2	O.Sicoumat 			
+B777#1	FLYOUT PART C	12/11/25 de 06h00 à 10h00	Equipe 4	R.Aragon	X	X	
+B777#2	FLYOUT PART B	21/11/25 de 06h00 à 10h00	Equipe 1	G.Guinde	X	X	Tri: Francois Emaille
+A350 FTD	FLYOUT PART D	24/11/25 de 06h30 à 10h00	Equipe 4	V.Esnault 		X	TRI: Frederic Corbalan
+A220#2	FLYOUT PART B	26/11/25 de 06h00 à 10h00	Equipe 2	P.Luzurier		X	TRI: Christian MAGAND
+A220#3	FLYOUT PART C	27/11/25 de 10h00 à 14h00	Equipe 2	F.Mansuis 			TRI: Frédéric PLAIRE
+B777 FTD	FLYOUT PART C	28/11/25 de 09h00 à 13h00	Equipe 5	F.Theodose	     x	x	TRI: Stéphane CASARTELLI
+A220#1	FLYOUT PART C	09/12/25 de 10h00 à 14h00	Equipe 5	M.Le Roux		x	TRI: Christian MAGAND
+B777#4	FLYOUT speciale #1	08/12/25 de 08h30 à 16h30		JP. Holowczak	x	X	TRI : Martin HOUZELLE
+A320#6	FLYOUT PART B	11/12/25 de 06h00 à 10h00	Equipe 5	H.Dechaume	X	X	TRI: François Fernandes-Caleiro
+A350 FTD	Auto Eval + FLYOUT	16/12/25 de 06h00 à 10h00	Equipe 4	C.De Sa	X	x	TRI: Maxime VALTIN + SFI : B.H. DUFOUR
+B777#1	FLYOUT PART D	16/12/25 de 06h00 à 10h00	Equipe 4	Jorge	x	x	
+A320 FTD	FLYOUT PART B	17/12/25 de 14h00 à 18h00	Equipe 3	G.Millet			TRI: Gabriel AKAOUI
+A350#1	FLYOUT PART B	19/12/25 de 06h45 à 10h45	Equipe 2	F.Mansuis 	     x	x	TRI: Frederic Corbalan
+`);
+
 const importedRegulatoryPlanningRows = [
+  ...importedRegulatoryPlanningArchive2023Rows,
+  ...importedRegulatoryPlanningArchive2024Rows,
+  ...importedRegulatoryPlanningArchive2025Rows,
   importedPlanningRow("A350FF3", "fly-out-part-d", "2026-01-05", "14:00", "18:00", "G. Millet", "Frederic Corbalan"),
-  importedPlanningRow("B777FF4", "dgac", "2026-01-07", "08:00", "16:00", "JP. Holowczak", "Francois Emaille", "GED: x"),
+  importedPlanningRow("B777FFS4", "dgac", "2026-01-07", "08:00", "16:00", "JP. Holowczak", "Francois Emaille", "GED: x"),
   importedPlanningRow("A220FF3", "fly-out-part-d", "2026-01-12", "18:00", "22:00", "F. Mansuis", "Magand", "IT CARL: X\nGED: x"),
-  importedPlanningRow("B777FF3", "fly-out-part-b", "2026-01-21", "06:00", "10:00", "J. Ferreira", "Francois Emaille", "IT CARL: x\nGED: x"),
+  importedPlanningRow("B777FFS3", "fly-out-part-b", "2026-01-21", "06:00", "10:00", "J. Ferreira", "Francois Emaille", "IT CARL: x\nGED: x"),
   importedPlanningRow("A350FF3", "dgac", "2026-01-22", "08:00", "16:00", "S. Alibhay", ""),
   importedPlanningRow("A350FF2", "fly-out-part-a", "2026-01-27", "18:00", "22:00", "M. Ocipski", "Frederic Corbalan", "IT CARL: x\nGED: x"),
   importedPlanningRow("A330", "fly-out-part-c", "2026-01-30", "10:00", "14:00", "M. Ichalalen", "Hocquet"),
-  importedPlanningRow("B777FF4", "fly-out-part-c", "2026-02-01", "17:00", "21:00", "F. Theodose", "Francois Emaille", "IT CARL: Pas sorti\nGED: OK"),
+  importedPlanningRow("B777FFS4", "fly-out-part-c", "2026-02-01", "17:00", "21:00", "F. Theodose", "Francois Emaille", "IT CARL: Pas sorti\nGED: OK"),
   importedPlanningRow("A320FF7", "fly-out-part-d", "2026-02-02", "06:00", "10:00", "Y. Sene", "Gabriel Akkaoui", "IT CARL: IT076432\nGED: OK"),
   importedPlanningRow("B787", "fly-out-part-c", "2026-02-05", "06:00", "10:00", "V. Esnault", "Guyon + Parrain"),
   importedPlanningRow("A220FF2", "fly-out-part-c", "2026-02-16", "06:00", "10:00", "M. Ocipski", "Plaire", "IT CARL: X\nGED: X"),
   importedPlanningRow("A220FF1", "fly-out-part-d", "2026-02-18", "06:00", "10:00", "S. Bignon", "Plaire"),
   importedPlanningRow("A220FF3", "dgac", "2026-02-19", "", "", "M. Ocipski", "Magand"),
-  importedPlanningRow("A350TD", "fly-out-part-a", "2026-02-25", "14:00", "18:00", "M. Gantois", "Valtin"),
-  importedPlanningRow("B777FF4", "fly-out-part-d", "2026-03-01", "06:00", "09:30", "O. Sicourmat", "Jeandenand"),
-  importedPlanningRow("B777TD", "fly-out-part-d", "2026-03-02", "14:00", "18:00", "S. Lempereur", "Emaille + Jeandenand", "IT CARL: IT076440\nGED: B777_FTD1 FR-2107_FO_PART D_Mars_2026"),
-  importedPlanningRow("B777FF2", "fly-out-part-c", "2026-03-03", "10:00", "14:00", "JJ. Marie", "Jeandenand"),
+  importedPlanningRow("A350FTD", "fly-out-part-a", "2026-02-25", "14:00", "18:00", "M. Gantois", "Valtin"),
+  importedPlanningRow("B777FFS4", "fly-out-part-d", "2026-03-01", "06:00", "09:30", "O. Sicourmat", "Jeandenand"),
+  importedPlanningRow("B777FTD", "fly-out-part-d", "2026-03-02", "14:00", "18:00", "S. Lempereur", "Emaille + Jeandenand", "IT CARL: IT076440\nGED: B777_FTD1 FR-2107_FO_PART D_Mars_2026"),
+  importedPlanningRow("B777FFS2", "fly-out-part-c", "2026-03-03", "10:00", "14:00", "JJ. Marie", "Jeandenand"),
   importedPlanningRow("A220FF1", "auto-eval", "2026-03-04", "", "", "S. Bignon", "Magand"),
   importedPlanningRow("A330", "fly-out-part-d", "2026-03-05", "14:30", "18:30", "V. Esnault", "Leroux"),
   importedPlanningRow("A320FF6", "fly-out-part-c", "2026-03-18", "06:00", "10:00", "M. Ichalalen", "Akkaoui"),
-  importedPlanningRow("A320TD", "fly-out-part-c", "2026-03-25", "10:00", "12:00", "S. Bignon", "Akkaoui", "IT CARL: OK\nGED: OK"),
+  importedPlanningRow("A320FTD", "fly-out-part-c", "2026-03-25", "10:00", "12:00", "S. Bignon", "Akkaoui", "IT CARL: OK\nGED: OK"),
   importedPlanningRow("A320FF7", "dgac", "2026-03-26", "", "", "S. Lempereur", "Fernandes"),
-  importedPlanningRow("A220TD", "fly-out-part-d", "2026-03-27", "07:00", "11:00", "M. Gantois", "Plaire"),
+  importedPlanningRow("A220FTD", "fly-out-part-d", "2026-03-27", "07:00", "11:00", "M. Gantois", "Plaire"),
   importedPlanningRow("A350FF1", "fly-out-part-c", "2026-04-01", "06:00", "10:00", "R. Aragon", "Valtin", "IT CARL: x\nGED: x"),
   importedPlanningRow("A330", "dgac", "2026-04-02", "", "", "M. Ichalalen", ""),
   importedPlanningRow("B787", "fly-out-part-d", "2026-04-05", "13:10", "17:10", "O. Sicourmat", "Guyon", "IT CARL: X\nGED: X"),
-  importedPlanningRow("B777FF2", "fly-out-part-d", "2026-04-06", "16:00", "20:00", "M. Le Roux", "Emaille", "IT CARL: X\nGED: X"),
-  importedPlanningRow("B777FF4", "auto-eval", "2026-04-10", "", "", "G. Guinde", "Jeandenand"),
+  importedPlanningRow("B777FFS2", "fly-out-part-d", "2026-04-06", "16:00", "20:00", "M. Le Roux", "Emaille", "IT CARL: X\nGED: X"),
+  importedPlanningRow("B777FFS4", "auto-eval", "2026-04-10", "", "", "G. Guinde", "Jeandenand"),
   importedPlanningRow("A350FF3", "fly-out-part-a", "2026-04-19", "16:40", "19:40", "S. Alibhay", "Corbalan"),
   importedPlanningRow("A220FF3", "fly-out-part-a", "2026-05-05", "18:00", "22:00", "D. Solente", "Plaire"),
-  importedPlanningRow("A220TD", "auto-eval", "2026-05-05", "06:00", "10:00", "N. Simon", "", "FLY OUT"),
+  importedPlanningRow("A220FTD", "auto-eval", "2026-05-05", "06:00", "10:00", "N. Simon", "", "FLY-OUT"),
   importedPlanningRow("B787", "dgac", "2026-05-06", "", "", "L. Bicocchi", ""),
   importedPlanningRow("A320FF7", "fly-out-part-a", "2026-05-07", "06:00", "10:00", "C. De Sa", "Fernandes"),
-  importedPlanningRow("B777FF3", "fly-out-part-d", "2026-05-08", "06:00", "10:00", "O. Sicourmat", "Jeandenand"),
-  importedPlanningRow("B777TD", "fly-out-part-a", "2026-05-10", "14:00", "18:00", "F. Mansuis", "Emaille"),
-  importedPlanningRow("A350TD", "fly-out-part-b", "2026-05-12", "12:00", "16:00", "S. Lempereur", "Valtin", "IT CARL: X\nGED: X"),
+  importedPlanningRow("B777FFS3", "fly-out-part-d", "2026-05-08", "06:00", "10:00", "O. Sicourmat", "Jeandenand"),
+  importedPlanningRow("B777FTD", "fly-out-part-a", "2026-05-10", "14:00", "18:00", "F. Mansuis", "Emaille"),
+  importedPlanningRow("A350FTD", "fly-out-part-b", "2026-05-12", "12:00", "16:00", "S. Lempereur", "Valtin", "IT CARL: X\nGED: X"),
   importedPlanningRow("A350FF1", "fly-out-part-d", "2026-05-21", "06:00", "10:00", "V. Esnault", "Hocquet"),
   importedPlanningRow("A220FF2", "auto-eval", "2026-05-22", "", "", "P. Luzurier", ""),
-  importedPlanningRow("A320TD", "fly-out-part-d", "2026-05-26", "10:00", "14:00", "G. Guinde", "Akkaoui"),
-  importedPlanningRow("A220TD", "fly-out-part-a", "2026-06-15", "10:00", "14:00", "M. Gantois", "Magand"),
-  importedPlanningRow("A320FF6", "fly-out-part-d", "2026-06-15", "14:00", "18:00", "Dechaume", "Fernandes", "IT CARL: X\nGED: X\nFly Out imprimé"),
-  importedPlanningRow("A320TD", "dgac", "2026-06-18", "", "", "Jorge", ""),
-  importedPlanningRow("B777FF3", "auto-eval", "2026-06-29", "10:00", "14:00", "JP. Holowczak", "Plaire"),
+  importedPlanningRow("A320FTD", "fly-out-part-d", "2026-05-26", "10:00", "14:00", "G. Guinde", "Akkaoui"),
+  importedPlanningRow("A220FTD", "fly-out-part-a", "2026-06-15", "10:00", "14:00", "M. Gantois", "Magand"),
+  importedPlanningRow("A320FF6", "fly-out-part-d", "2026-06-15", "14:00", "18:00", "Dechaume", "Fernandes", "IT CARL: X\nGED: X\nFly-Out imprimé"),
+  importedPlanningRow("A320FTD", "dgac", "2026-06-18", "", "", "Jorge", ""),
+  importedPlanningRow("B777FFS3", "auto-eval", "2026-06-29", "10:00", "14:00", "JP. Holowczak", "Plaire"),
   importedPlanningRow("A350FF2", "fly-out-part-c", "2026-07-01", "16:00", "20:00", "M. Le Roux", "M. Valtin", "IT CARL: x\nGED: x"),
   importedPlanningRow("A350FF1", "dgac", "2026-07-02", "", "", "G. Guinde", "Valtin", "DGAC récurrent"),
   importedPlanningRow("A350FF3", "fly-out-part-b", "2026-07-05", "16:45", "20:45", "S. Alibhay", "Corbalan"),
@@ -128,31 +294,31 @@ const importedRegulatoryPlanningRows = [
   importedPlanningRow("A330", "fly-out-part-a", "2026-07-10", "06:00", "10:00", "L. Bicocchi", "Corbalan"),
   importedPlanningRow("A220FF2", "dgac", "2026-07-20", "", "", "", "", "DGAC STD 1.0"),
   importedPlanningRow("A220FF1", "fly-out-part-a", "2026-07-21", "06:00", "10:00", "G. Millet", "Plaire"),
-  importedPlanningRow("B777FF1", "fly-out-part-b", "2026-07-23", "06:00", "10:00", "JJ. Marie", "Emaille"),
+  importedPlanningRow("B777FFS1", "fly-out-part-b", "2026-07-23", "06:00", "10:00", "JJ. Marie", "Emaille"),
   importedPlanningRow("A320FF7", "fly-out-part-b", "2026-08-12", "06:00", "10:00", "S. Bignon", "Akkaoui"),
-  importedPlanningRow("B777TD", "fly-out-part-b", "2026-08-23", "16:00", "20:00", "O. Sicourmat / G. Guinde", "Emaille", "Equipe 2/1"),
+  importedPlanningRow("B777FTD", "fly-out-part-b", "2026-08-23", "16:00", "20:00", "O. Sicourmat / G. Guinde", "Emaille", "Equipe 2/1"),
   importedPlanningRow("A220FF3", "fly-out-part-b", "2026-08-26", "06:00", "10:00", "M. Gantois", "Plaire"),
   importedPlanningRow("A220FF2", "fly-out-part-a", "2026-08-28", "18:00", "22:00", "V. Esnault", "Magand"),
   importedPlanningRow("B787", "fly-out-part-a", "2026-08-29", "14:00", "18:00", "M. Ichalalen", "Parrain"),
-  importedPlanningRow("B777FF2", "fly-out-part-a", "2026-08-31", "14:00", "18:00", "J. Ferreira", "Jeandenand"),
-  importedPlanningRow("B777FF4", "fly-out-part-a", "2026-09-01", "18:00", "22:00", "G. Imbert", "Jeandenand"),
+  importedPlanningRow("B777FFS2", "fly-out-part-a", "2026-08-31", "14:00", "18:00", "J. Ferreira", "Jeandenand"),
+  importedPlanningRow("B777FFS4", "fly-out-part-a", "2026-09-01", "18:00", "22:00", "G. Imbert", "Jeandenand"),
   importedPlanningRow("A350FF2", "fly-out-part-d", "2026-09-01", "06:00", "10:00", "S. Dupire", "Valtin"),
-  importedPlanningRow("A220TD", "fly-out-part-b", "2026-09-07", "14:00", "18:00", "JP. Cavaciuti", "Plaire"),
-  importedPlanningRow("B777FF3", "fly-out-part-a", "2026-09-11", "06:00", "10:00", "S. Alibhay", "Jeandenand"),
+  importedPlanningRow("A220FTD", "fly-out-part-b", "2026-09-07", "14:00", "18:00", "JP. Cavaciuti", "Plaire"),
+  importedPlanningRow("B777FFS3", "fly-out-part-a", "2026-09-11", "06:00", "10:00", "S. Alibhay", "Jeandenand"),
   importedPlanningRow("A320FF6", "fly-out-part-a", "2026-09-16", "14:00", "18:00", "C. De Sa", "Akkaoui"),
   importedPlanningRow("A220FF1", "fly-out-part-b", "2026-09-24", "06:00", "10:00", "", "Plaire"),
-  importedPlanningRow("A320TD", "fly-out-part-a", "2026-09-30", "14:00", "18:00", "", "Fernandes"),
+  importedPlanningRow("A320FTD", "fly-out-part-a", "2026-09-30", "14:00", "18:00", "", "Fernandes"),
   importedPlanningRow("A350FF1", "fly-out-part-a", "2026-10-05", "18:00", "22:00", "R. Aragon", "Corbaland"),
   importedPlanningRow("A330", "fly-out-part-b", "2026-10-05", "06:00", "10:00", "", "Leroux"),
   importedPlanningRow("A350FF2", "dgac", "2026-10-08", "", "", "", ""),
-  importedPlanningRow("B777FF1", "fly-out-part-c", "2026-10-11", "12:00", "16:00", "F. Theodose", "Jeandenand"),
+  importedPlanningRow("B777FFS1", "fly-out-part-c", "2026-10-11", "12:00", "16:00", "F. Theodose", "Jeandenand"),
   importedPlanningRow("A350FF3", "fly-out-part-c", "2026-11-03", "18:00", "22:00", "S. Lempereur", "Corbaland"),
-  importedPlanningRow("A350TD", "dgac", "2026-12-10", "", "", "", "")
+  importedPlanningRow("A350FTD", "dgac", "2026-12-10", "", "", "", "")
 ];
 
 function importedPlanningRow(simulatorName, type, date, startTime, endTime, participants, tri, notes = "") {
   return {
-    id: `import-2026-${simulatorName}-${type}-${date}-${startTime || "day"}`.toLocaleLowerCase("fr").replace(/[^a-z0-9]+/g, "-"),
+    id: `import-${date.slice(0, 4) || "planning"}-${simulatorName}-${type}-${date}-${startTime || "day"}`.toLocaleLowerCase("fr").replace(/[^a-z0-9]+/g, "-"),
     simulatorName,
     type,
     dateMode: "date",
@@ -162,8 +328,196 @@ function importedPlanningRow(simulatorName, type, date, startTime, endTime, part
     endTime,
     participants,
     tri,
+    notes,
+    firestoreSource: false
+  };
+}
+
+function importedPlanningRowsFromTSV(rawText) {
+  const rows = stringValue(rawText)
+    .trim()
+    .split(/\r?\n/)
+    .slice(1)
+    .map((line) => line.split("\t"));
+  const importedRows = [];
+  const seenKeys = new Set();
+
+  rows.forEach((columns) => {
+    const [simulatorName, type, schedule, , participant, itCarl, ged, comment] = [...columns, "", "", "", "", "", "", "", ""];
+    if (!stringValue(simulatorName).trim() || !stringValue(schedule).trim()) {
+      return;
+    }
+
+    const parsedSchedule = importedPlanningSchedule(schedule);
+    if (!parsedSchedule.date) {
+      return;
+    }
+
+    importedPlanningTypes(type).forEach((parsedType) => {
+      const notes = [
+        stringValue(itCarl).trim() ? `IT CARL: ${normalizePlanningWhitespace(itCarl)}` : "",
+        stringValue(ged).trim() ? `GED: ${normalizePlanningWhitespace(ged)}` : "",
+        ...parsedType.notes,
+        ...parsedSchedule.notes,
+        normalizePlanningWhitespace(comment)
+      ].filter(Boolean).join("\n");
+      const row = importedPlanningRow(
+        importedPlanningSimulatorName(simulatorName),
+        parsedType.value,
+        parsedSchedule.date,
+        parsedSchedule.startTime,
+        parsedSchedule.endTime,
+        importedPlanningPersonName(participant),
+        "",
+        notes
+      );
+      const key = [
+        row.simulatorName,
+        row.type,
+        row.date,
+        row.startTime,
+        row.endTime,
+        normalizeKey(row.participants)
+      ].join("|");
+      if (seenKeys.has(key)) {
+        return;
+      }
+      seenKeys.add(key);
+      importedRows.push(row);
+    });
+  });
+
+  return importedRows;
+}
+
+function importedPlanningSimulatorName(value) {
+  return canonicalPlanningSimulatorName(normalizePlanningWhitespace(value)
+    .replace(/\bB787\s*#\s*\d+\b/i, "B787")
+    .replace(/\bFTD\s*A?220\b/i, "A220FTD")
+    .replace(/\bFTD\s*A?320\b/i, "A320FTD")
+    .replace(/\bFTD\s*A?350\b/i, "A350FTD")
+    .replace(/\bFTD\s*B?777\b/i, "B777FTD")
+    .replace(/\bA220\s*#\s*/i, "A220FF")
+    .replace(/\bA320\s*#\s*/i, "A320FF")
+    .replace(/\bA350\s*#\s*/i, "A350FF")
+    .replace(/\bB777\s*#\s*/i, "B777FFS")
+    .replace(/\b220\s*#\s*/i, "A220FF")
+    .replace(/\bA220\s+FTD\b/i, "A220FTD")
+    .replace(/\bA320\s+FTD\b/i, "A320FTD")
+    .replace(/\bA350\s+FTD\b/i, "A350FTD")
+    .replace(/\bB777\s+FTD\b/i, "B777FTD"));
+}
+
+function importedPlanningTypes(value) {
+  const label = normalizePlanningWhitespace(value);
+  const key = normalizeKey(label);
+  const partSegment = label.match(/part\s*([a-d](?:\s*\+\s*[a-d])*)/i)?.[1]
+    || (key.includes("flyout") ? label.match(/fly\s*out\s*([a-d](?:\s*\+\s*[a-d])*)/i)?.[1] : "")
+    || "";
+  const partLetters = partSegment
+    .split("+")
+    .map((part) => part.trim().toLocaleLowerCase("fr"))
+    .filter((part) => /^[a-d]$/.test(part));
+  const partTypes = partLetters.map((part) => `fly-out-part-${part}`);
+
+  let types = [...new Set(partTypes)];
+  if (!types.length) {
+    if (key.includes("part a") || key.includes("part-a")) {
+      types = ["fly-out-part-a"];
+    } else if (key.includes("part b") || key.includes("part-b")) {
+      types = ["fly-out-part-b"];
+    } else if (key.includes("part c") || key.includes("part-c")) {
+      types = ["fly-out-part-c"];
+    } else if (key.includes("part d") || key.includes("part-d")) {
+      types = ["fly-out-part-d"];
+    } else if (key.includes("dgac") || key.includes("dsac")) {
+      types = ["dgac"];
+    } else if (key.includes("auto") || key.includes("eval")) {
+      types = ["auto-eval"];
+    } else {
+      types = [defaultPlanningType];
+    }
+  }
+
+  const canonicalLabels = new Set(["flyout part a", "flyout part b", "flyout part c", "flyout part d", "dgac"]);
+  const notes = label && !canonicalLabels.has(label.toLocaleLowerCase("fr")) ? [label] : [];
+  return types.map((type) => ({ value: type, notes }));
+}
+
+function importedPlanningSchedule(value) {
+  const schedule = normalizePlanningWhitespace(value);
+  const dateMatch = schedule.match(/(\d{1,2})(?:\s+et\s+\d{1,2})?\/(\d{1,2})\/(\d{2,4})/);
+  if (!dateMatch) {
+    return { date: "", startTime: "", endTime: "", notes: [] };
+  }
+
+  const year = Number(dateMatch[3]);
+  const date = `${String(year < 100 ? 2000 + year : year).padStart(4, "0")}-${String(Number(dateMatch[2])).padStart(2, "0")}-${String(Number(dateMatch[1])).padStart(2, "0")}`;
+  const timeMatches = [...schedule.matchAll(/(\d{1,2})\s*[hH]\s*(\d{0,2})|(\d{2})(\d{2})\s*[hH]/g)]
+    .map((match) => {
+      const hour = Number(match[1] || match[3]);
+      const minute = Number(match[2] || match[4] || 0);
+      return Number.isFinite(hour) ? `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}` : "";
+    })
+    .filter(Boolean);
+  const notes = dateMatch[0].includes(" et ") ? [dateMatch[0]] : [];
+  return {
+    date,
+    startTime: timeMatches[0] || "",
+    endTime: timeMatches[1] || "",
     notes
   };
+}
+
+function importedPlanningPersonName(value) {
+  const names = normalizePlanningWhitespace(value)
+    .split(/\s*\/\s*/)
+    .map(formatPlanningPersonName)
+    .filter(Boolean);
+  return names.join(" / ");
+}
+
+function normalizePlanningWhitespace(value) {
+  return stringValue(value).replace(/\s+/g, " ").trim();
+}
+
+function formatPlanningPersonName(value) {
+  const normalized = normalizePlanningWhitespace(value).replace(/\s+\./g, ".");
+  if (!normalized) {
+    return "";
+  }
+
+  const initialMatch = normalized.match(/^((?:\p{Lu}\s*[.-]\s*)+\p{Lu}?|\p{Lu})\s+(.+)$/u)
+    || normalized.match(/^((?:\p{Lu}\s*[.-]\s*)+)(.+)$/u);
+  if (initialMatch) {
+    const initials = planningFirstNameInitials(initialMatch[1]);
+    const lastName = normalizePlanningWhitespace(initialMatch[2]);
+    const usesExplicitInitials = /[.-]/.test(initialMatch[1]) || new RegExp(`^${initialMatch[1]}\\s+`, "u").test(normalized);
+    if (usesExplicitInitials && initials && lastName) {
+      return `${initials}. ${lastName}`;
+    }
+  }
+
+  const parts = normalized.split(" ").filter(Boolean);
+  if (parts.length < 2) {
+    return normalized;
+  }
+
+  const particleIndex = parts.findIndex((part, index) => index > 0 && ["de", "du", "des", "le", "la", "les", "van", "von"].includes(normalizeKey(part)));
+  const lastNameStart = particleIndex > 0 ? particleIndex : parts.length - 1;
+  const firstNames = parts.slice(0, lastNameStart).join(" ");
+  const lastName = parts.slice(lastNameStart).join(" ");
+  const initials = planningFirstNameInitials(firstNames);
+  return initials && lastName ? `${initials}. ${lastName}` : normalized;
+}
+
+function planningFirstNameInitials(value) {
+  return normalizePlanningWhitespace(value)
+    .split(/[\s.-]+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => part.slice(0, 1).toLocaleUpperCase("fr"))
+    .join("");
 }
 
 const state = {
@@ -193,10 +547,15 @@ const state = {
   isSaving: false,
   notes: [],
   planningRows: loadPlanningRows(),
+  preventivePlanningRows: loadPreventivePlanningRows(),
   activePlanningSort: "",
+  activePreventivePlanningSort: "",
   isPlanningEditMode: false,
+  isPreventivePlanningEditMode: false,
   planningEditor: null,
+  preventivePlanningEditor: null,
   showsPlanningHistory: false,
+  showsPreventivePlanningHistory: false,
   isPlanningFirestoreLoaded: false,
   isPlanningFirestoreLoading: false,
   planningFirestoreSyncTimer: null,
@@ -204,6 +563,9 @@ const state = {
   planningActivityLoadingIDs: new Set(),
   isPlanningHistoryPickerOpen: false,
   selectedPlanningHistoryYears: new Set(),
+  isPreventivePlanningHistoryPickerOpen: false,
+  selectedPreventivePlanningHistoryYears: new Set(),
+  isImportingPlanningRows: false,
   fetchedNoteDayKeys: new Set(),
   fetchedNotesByID: new Map(),
   fetchedSearchKeys: new Set(),
@@ -284,7 +646,11 @@ const getRegulatoryPlanningEvents = httpsCallable(functions, "getRegulatoryPlann
 const saveRegulatoryPlanningEvent = httpsCallable(functions, "saveRegulatoryPlanningEvent");
 const deleteRegulatoryPlanningEvent = httpsCallable(functions, "deleteRegulatoryPlanningEvent");
 const getRegulatoryPlanningActivity = httpsCallable(functions, "getRegulatoryPlanningActivity");
+const recordPreventivePlanningActivity = httpsCallable(functions, "recordPreventivePlanningActivity");
+const getPreventivePlanningActivity = httpsCallable(functions, "getPreventivePlanningActivity");
 const syncRegulatoryPlanningNotesFromMirrorNote = httpsCallable(functions, "syncRegulatoryPlanningNotesFromMirrorNote");
+const refreshRegulatoryPlanningMirrorLabels = httpsCallable(functions, "refreshRegulatoryPlanningMirrorLabels");
+const repairRegulatoryPlanningSimulatorNames = httpsCallable(functions, "repairRegulatoryPlanningSimulatorNames");
 const activityActionTitles = {
   created: "Creation",
   modified: "Modification",
@@ -307,6 +673,7 @@ const elements = {
   brandResetButton: document.querySelector("#brandResetButton"),
   openNotesViewButton: document.querySelector("#openNotesViewButton"),
   openPlanningViewButton: document.querySelector("#openPlanningViewButton"),
+  openPreventivePlanningViewButton: document.querySelector("#openPreventivePlanningViewButton"),
   dataRefreshIndicator: document.querySelector("#dataRefreshIndicator"),
   dataRefreshIndicatorText: document.querySelector("#dataRefreshIndicatorText"),
   webVersionBadge: document.querySelector("#webVersionBadge"),
@@ -441,19 +808,40 @@ elements.openPlanningViewButton.addEventListener("click", () => {
   }
 
   state.activeView = "planning";
+  state.isPreventivePlanningEditMode = false;
+  state.preventivePlanningEditor = null;
+  state.isPreventivePlanningHistoryPickerOpen = false;
   clearPeriodMode();
   render();
   loadPlanningRowsFromFirestore({ force: true });
+  requestAnimationFrame(() => window.scrollTo(0, 0));
+});
+elements.openPreventivePlanningViewButton?.addEventListener("click", () => {
+  if (!canCurrentUserAccessPlanning()) {
+    return;
+  }
+  state.activeView = "preventive-planning";
+  state.isPlanningEditMode = false;
+  state.planningEditor = null;
+  state.isPlanningHistoryPickerOpen = false;
+  clearPeriodMode();
+  render();
+  ensurePreventivePlanningMirrorScopeSynced();
   requestAnimationFrame(() => window.scrollTo(0, 0));
 });
 
 function showNotesView() {
   state.activeView = "notes";
   state.isPlanningEditMode = false;
+  state.isPreventivePlanningEditMode = false;
   state.planningEditor = null;
+  state.preventivePlanningEditor = null;
+  state.isPlanningHistoryPickerOpen = false;
+  state.isPreventivePlanningHistoryPickerOpen = false;
   closePlanningDateWheel();
   closePlanningTimeWheel();
   closePlanningTechnicianMenu();
+  refreshLocalPreventivePlanningMirrorNotes();
   render();
   requestAnimationFrame(() => window.scrollTo(0, 0));
 }
@@ -667,6 +1055,15 @@ elements.noteGroups.addEventListener("click", (event) => {
     return;
   }
 
+  if (state.activeView === "preventive-planning") {
+    openPreventivePlanningDateWheel(event);
+    if (handlePreventivePlanningEditorClick(event)) {
+      return;
+    }
+    handlePreventivePlanningTableClick(event);
+    return;
+  }
+
   if (event.target.closest("[data-tag-note-id]")) {
     event.preventDefault();
     event.stopPropagation();
@@ -689,6 +1086,13 @@ elements.noteGroups.addEventListener("click", (event) => {
 });
 
 elements.noteGroups.addEventListener("input", (event) => {
+  if (state.activeView === "preventive-planning") {
+    if (event.target.closest("[data-preventive-planning-editor]")) {
+      handlePreventivePlanningEditorFieldEdit(event);
+    }
+    return;
+  }
+
   if (state.activeView !== "planning") {
     return;
   }
@@ -701,6 +1105,18 @@ elements.noteGroups.addEventListener("input", (event) => {
 });
 
 elements.noteGroups.addEventListener("change", (event) => {
+  if (state.activeView === "preventive-planning") {
+    if (event.target.matches("[data-preventive-planning-history-year]")) {
+      handlePreventivePlanningHistoryYearChange(event.target);
+      return;
+    }
+
+    if (event.target.closest("[data-preventive-planning-editor]")) {
+      handlePreventivePlanningEditorFieldEdit(event);
+    }
+    return;
+  }
+
   if (state.activeView !== "planning") {
     return;
   }
@@ -1427,6 +1843,7 @@ function startAuthenticatedDataSync() {
   fetchPlanningTechniciansIfNeeded();
   startPlanningFirestoreSyncTimer();
   loadPlanningRowsFromFirestore();
+  ensurePreventivePlanningMirrorScopeSynced();
   recordLoginAppearance();
 }
 
@@ -1446,6 +1863,7 @@ function handleAppBecameVisible() {
   detachAuthenticatedDataSync({ keepsInitialDataRefresh: true });
   attachFirebaseListeners();
   restartDailyTagsListener();
+  ensurePreventivePlanningMirrorScopeSynced();
   saveLastActiveTimestamp();
 
   if (shouldRefreshAfterWake) {
@@ -1939,11 +2357,18 @@ async function loadPlanningRowsFromFirestore({ force = false, includeHistory = s
 
   state.isPlanningFirestoreLoading = true;
   try {
+    await repairRegulatoryPlanningSimulatorNamesIfNeeded();
     const response = await getRegulatoryPlanningEvents({ includeHistory });
     const events = Array.isArray(response?.data?.events) ? response.data.events : [];
     if (events.length) {
-      state.planningRows = events.map(normalizePlanningRow);
+      const firestoreRows = events.map((event) => ({
+        ...normalizePlanningRow(event),
+        firestoreSource: true
+      }));
+      state.planningRows = planningRowsWithImportedFallback(firestoreRows);
       state.isPlanningFirestoreLoaded = true;
+      importMissingRegulatoryPlanningRowsIfNeeded(firestoreRows);
+      refreshRegulatoryPlanningMirrorLabelsIfNeeded();
       savePlanningRowsLocal();
       if (!state.activePlanningSort) {
         sortPlanningRowsByDate();
@@ -2649,13 +3074,15 @@ function renderSession() {
 
 function renderViewNavigation() {
   const canAccessPlanning = canCurrentUserAccessPlanning();
-  if (!canAccessPlanning && state.activeView === "planning") {
+  if (!canAccessPlanning && ["planning", "preventive-planning"].includes(state.activeView)) {
     state.activeView = "notes";
   }
   elements.openNotesViewButton?.classList.toggle("hidden", !canAccessPlanning);
   elements.openNotesViewButton?.classList.toggle("active", state.activeView === "notes");
   elements.openPlanningViewButton?.classList.toggle("hidden", !canAccessPlanning);
   elements.openPlanningViewButton?.classList.toggle("active", state.activeView === "planning");
+  elements.openPreventivePlanningViewButton?.classList.toggle("hidden", !canAccessPlanning);
+  elements.openPreventivePlanningViewButton?.classList.toggle("active", state.activeView === "preventive-planning");
 }
 
 function canCurrentUserAccessPlanning() {
@@ -2702,7 +3129,7 @@ function updateLoginLockState(requiresLogin) {
 function render() {
   renderSession();
   renderDataRefreshIndicator();
-  document.body.classList.toggle("planning-view", state.activeView === "planning" && Boolean(state.currentUser));
+  document.body.classList.toggle("planning-view", ["planning", "preventive-planning"].includes(state.activeView) && Boolean(state.currentUser));
   elements.emptyState.textContent = "Aucune consigne à afficher pour cette sélection.";
   const filtersDisabled = Boolean(state.periodStartDate);
   elements.showTaggedToggle.checked = state.showTagged;
@@ -2738,6 +3165,12 @@ function render() {
 
   if (state.activeView === "planning") {
     renderPlanningTable();
+    refreshDetail();
+    return;
+  }
+
+  if (state.activeView === "preventive-planning") {
+    renderPreventivePlanningTable();
     refreshDetail();
     return;
   }
@@ -2791,7 +3224,10 @@ function renderPlanningTable() {
     <section class="planning-board" aria-label="Planning réglementaire des visites et reunions">
       <div class="planning-sticky-banner">
         <div class="planning-banner-top">
-          <h1>Planning réglementaire</h1>
+          <div class="planning-title-line">
+            <h1>Planning réglementaire</h1>
+            <span class="planning-visible-count">${rows.length} visite${rows.length > 1 ? "s" : ""}</span>
+          </div>
           ${planningEditActionsHTML()}
         </div>
         ${planningHeaderRowHTML()}
@@ -2819,6 +3255,280 @@ function renderPlanningTable() {
       ${renderPlanningHistoryPicker()}
       ${renderPlanningEditor()}
     </section>
+  `;
+}
+
+function renderPreventivePlanningTable() {
+  if (!state.activePreventivePlanningSort) {
+    sortPreventivePlanningRowsByDate();
+  }
+  const rows = visiblePreventivePlanningRows();
+  const nextPreventivePlanningRowID = nextUpcomingPreventivePlanningRowID(rows);
+
+  elements.pageTitle.classList.add("planning-title");
+  elements.pageTitle.textContent = "Planning Préventif";
+  elements.pageSubtitle.textContent = "";
+  elements.pageSubtitle.classList.add("hidden");
+  elements.emptyState.classList.add("hidden");
+  elements.simulatorShortcutGrid.innerHTML = "";
+
+  elements.noteGroups.innerHTML = `
+    <section class="planning-board preventive-planning-board" aria-label="Planning préventif">
+      <div class="planning-sticky-banner">
+        <div class="planning-banner-top">
+          <div class="planning-title-line">
+            <h1>Planning Préventif</h1>
+            <span class="planning-visible-count">${rows.length} élément${rows.length > 1 ? "s" : ""}</span>
+          </div>
+          ${preventivePlanningEditActionsHTML()}
+        </div>
+        ${preventivePlanningHeaderRowHTML()}
+      </div>
+      <div class="planning-table-wrap">
+        <table class="planning-table preventive-planning-table">
+          <colgroup>
+            <col class="planning-col-status">
+            <col class="preventive-col-simu">
+            <col class="preventive-col-event">
+            <col class="preventive-col-date">
+            <col class="preventive-col-date">
+            <col class="preventive-col-team">
+            <col class="preventive-col-date">
+            <col class="preventive-col-remark">
+            <col class="planning-col-actions">
+          </colgroup>
+          <tbody>
+            ${rows.map((row, index) => renderPreventivePlanningRowWithActivity(row, nextPreventivePlanningRowID, index)).join("")}
+          </tbody>
+        </table>
+      </div>
+      ${renderPreventivePlanningHistoryPicker()}
+      ${renderPreventivePlanningEditor()}
+    </section>
+  `;
+}
+
+function preventivePlanningEditActionsHTML() {
+  const canEditPlanning = canCurrentUserEditPlanning();
+  const returnButton = `<button class="planning-return-button" type="button" data-preventive-planning-action="return-notes">Retour Consignes</button>`;
+  const historyButton = `
+    <button
+      class="planning-history-button${state.showsPreventivePlanningHistory ? " active" : ""}"
+      type="button"
+      data-preventive-planning-action="toggle-history"
+      aria-pressed="${state.showsPreventivePlanningHistory ? "true" : "false"}"
+      title="${state.showsPreventivePlanningHistory ? "Masquer l'historique" : "Afficher l'historique"}"
+    >Historique</button>
+  `;
+
+  if (!state.isPreventivePlanningEditMode) {
+    return `
+      <div class="planning-edit-actions">
+        ${returnButton}
+        ${canEditPlanning ? `<button class="planning-edit-button" type="button" data-preventive-planning-action="enter-edit">Modifier</button>` : ""}
+        ${historyButton}
+      </div>
+    `;
+  }
+
+  return `
+    <div class="planning-edit-actions">
+      ${returnButton}
+      <button class="planning-add-button" type="button" data-preventive-planning-action="add-row">+ Ajouter</button>
+      <button class="planning-exit-button" type="button" data-preventive-planning-action="exit-edit">Quitter Modification</button>
+      ${historyButton}
+    </div>
+  `;
+}
+
+function renderPreventivePlanningHistoryPicker() {
+  if (!state.isPreventivePlanningHistoryPickerOpen) {
+    return "";
+  }
+
+  const years = preventivePlanningArchiveYears();
+  const hasYears = years.length > 0;
+  const hasSelectedAllYears = hasYears && years.every((year) => state.selectedPreventivePlanningHistoryYears.has(year));
+  const selectAllLabel = hasSelectedAllYears ? "Désélectionner tout" : "Sélectionner tout";
+  const yearList = years.length
+    ? years.map((year) => `
+        <label class="planning-history-year-option">
+          <input
+            type="checkbox"
+            data-preventive-planning-history-year="${year}"
+            ${state.selectedPreventivePlanningHistoryYears.has(year) ? "checked" : ""}
+          >
+          <span>${year}</span>
+        </label>
+      `).join("")
+    : `<p class="planning-history-empty">Aucune archive disponible</p>`;
+
+  return `
+    <div class="planning-history-modal-backdrop" data-preventive-planning-history-backdrop>
+      <div class="planning-history-modal" role="dialog" aria-modal="true" aria-label="Historique planning préventif">
+        <h2>Historique</h2>
+        <div class="planning-history-years">
+          ${yearList}
+        </div>
+        <div class="planning-history-modal-actions">
+          <button class="planning-history-select-all-button" type="button" data-preventive-planning-action="toggle-history-years" ${hasYears ? "" : "disabled"}>${selectAllLabel}</button>
+          <button class="planning-history-cancel-button" type="button" data-preventive-planning-action="cancel-history-picker">Annuler</button>
+          <button class="planning-history-show-button" type="button" data-preventive-planning-action="show-history-picker" ${state.selectedPreventivePlanningHistoryYears.size ? "" : "disabled"}>Afficher</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function preventivePlanningHeaderRowHTML() {
+  return `
+    <div class="planning-header-row preventive-planning-header-row" role="row">
+      <div class="planning-col-status" role="columnheader"></div>
+      <div class="preventive-col-simu" role="columnheader">
+        <button class="planning-sort-button${state.activePreventivePlanningSort === "simulator" ? " active" : ""}" type="button" data-preventive-planning-action="sort-simulator" title="Trier par simulateur puis date">Simu</button>
+      </div>
+      <div class="preventive-col-event" role="columnheader">
+        <button class="planning-sort-button${state.activePreventivePlanningSort === "event" ? " active" : ""}" type="button" data-preventive-planning-action="sort-event" title="Trier par événement puis date">Événement</button>
+      </div>
+      <div class="preventive-col-date" role="columnheader">
+        <button class="planning-sort-button${(state.activePreventivePlanningSort || "date") === "date" ? " active" : ""}" type="button" data-preventive-planning-action="sort-date" title="Trier par date">Début</button>
+      </div>
+      <div class="preventive-col-date" role="columnheader">Fin</div>
+      <div class="preventive-col-team" role="columnheader">Équipe</div>
+      <div class="preventive-col-date" role="columnheader">Date IT CARL</div>
+      <div class="preventive-col-remark" role="columnheader">Remarque</div>
+      <div class="planning-col-actions" role="columnheader"></div>
+    </div>
+  `;
+}
+
+function renderPreventivePlanningRow(row, nextPreventivePlanningRowID = "", index = 0) {
+  const normalizedRow = normalizePreventivePlanningRow(row);
+  const canOpenEditor = state.isPreventivePlanningEditMode && canCurrentUserEditPlanning();
+  const activityHasModification = (state.planningActivityByRowID.get(normalizedRow.id) || []).some((activity) => activity.action === "updated");
+  const hasModifications = normalizedRow.hasModifications || activityHasModification;
+  return `
+    <tr class="planning-row read-only${index % 2 ? " planning-row-alternate" : ""}${canOpenEditor ? " planning-row-selectable" : ""}" data-preventive-planning-row-id="${escapeAttribute(normalizedRow.id)}">
+      <td class="planning-col-status">${preventivePlanningStatusIconsHTML(normalizedRow, nextPreventivePlanningRowID)}</td>
+      <td class="preventive-col-simu"><span>${escapeHtml(normalizedRow.simulatorName || "Simu")}</span></td>
+      <td class="preventive-col-event"><span class="${normalizedRow.event ? "" : "planning-empty-read"}">${escapeHtml(preventivePlanningEventLabel(normalizedRow.event) || "Événement")}</span></td>
+      <td class="preventive-col-date"><span class="${normalizedRow.startDate ? "" : "planning-empty-read"}">${escapeHtml(normalizedRow.startDate ? planningDateDisplay(normalizedRow.startDate) : "Date")}</span></td>
+      <td class="preventive-col-date"><span class="${normalizedRow.endDate ? "" : "planning-empty-read"}">${escapeHtml(normalizedRow.endDate ? planningDateDisplay(normalizedRow.endDate) : "Date")}</span></td>
+      <td class="preventive-col-team">${preventivePlanningTeamHTML(normalizedRow)}</td>
+      <td class="preventive-col-date"><span class="${normalizedRow.itCarlDate ? "" : "planning-empty-read"}">${escapeHtml(normalizedRow.itCarlDate ? planningDateDisplay(normalizedRow.itCarlDate) : "Date")}</span></td>
+      <td class="preventive-col-remark"><span>${escapeHtml(normalizedRow.remark || "Remarque")}</span></td>
+      <td class="planning-col-actions planning-actions-cell">
+        <button class="planning-icon-button planning-history-clock ${hasModifications ? "modified" : "clean"}" type="button" data-preventive-planning-action="show-activity" title="${hasModifications ? "Suivi : modification existante" : "Suivi : aucune modification"}">◷</button>
+      </td>
+    </tr>
+  `;
+}
+
+function preventivePlanningStatusIconsHTML(row, nextPreventivePlanningRowID = "") {
+  const isPast = isPreventivePlanningPast(row);
+  const isNext = row.id === nextPreventivePlanningRowID;
+  if (!isPast && !isNext) {
+    return "";
+  }
+
+  return `
+    <div class="planning-status-icons">
+      ${isPast ? `<span class="planning-status-icon past" title="Date passée" aria-label="Date passée">✓</span>` : ""}
+      ${isNext ? `<span class="planning-status-icon next" title="Prochain événement à venir" aria-label="Prochain événement à venir">➜</span>` : ""}
+    </div>
+  `;
+}
+
+function renderPreventivePlanningRowWithActivity(row, nextPreventivePlanningRowID = "", index = 0) {
+  return `${renderPreventivePlanningRow(row, nextPreventivePlanningRowID, index)}${renderPreventivePlanningActivityRow(row)}`;
+}
+
+function renderPreventivePlanningActivityRow(row) {
+  if (!state.planningActivityByRowID.has(row.id) && !state.planningActivityLoadingIDs.has(row.id)) {
+    return "";
+  }
+
+  const activities = state.planningActivityByRowID.get(row.id) || [];
+  const content = state.planningActivityLoadingIDs.has(row.id)
+    ? "<span>Chargement du suivi...</span>"
+    : (activities.length
+      ? activities.map(renderPlanningActivityItem).join("")
+      : "<span>Aucune action enregistrée.</span>");
+  return `
+    <tr class="planning-activity-row" data-preventive-planning-activity-row-id="${escapeAttribute(row.id)}">
+      <td colspan="9">
+        <div class="planning-activity-panel">${content}</div>
+      </td>
+    </tr>
+  `;
+}
+
+function renderPreventivePlanningEditor() {
+  if (!state.preventivePlanningEditor) {
+    return "";
+  }
+
+  const row = normalizePreventivePlanningRow(state.preventivePlanningEditor.draft);
+  state.preventivePlanningEditor.draft = row;
+  const isCreate = state.preventivePlanningEditor.mode === "create";
+  const simulatorOptions = planningSimulatorOptions(row.simulatorName);
+  const canValidate = canValidatePreventivePlanningEditorRow(row);
+  const duplicateRow = preventivePlanningDuplicateRow(row);
+  const waitsForDeleteConfirmation = state.preventivePlanningEditor.confirmDelete === true;
+
+  return `
+    <div class="planning-editor-backdrop" data-preventive-planning-editor>
+      <section class="planning-editor-panel preventive-planning-editor-panel" aria-label="${isCreate ? "Créer une maintenance préventive" : "Modifier une maintenance préventive"}">
+        <div class="planning-editor-title">
+          <strong>${isCreate ? "Nouvelle maintenance préventive" : "Modifier la maintenance préventive"}</strong>
+          <button type="button" class="planning-icon-button danger" data-preventive-planning-editor-action="cancel" title="Annuler">×</button>
+        </div>
+        <div class="planning-editor-grid preventive-planning-editor-grid">
+          <label class="planning-editor-field preventive-editor-simu">Simu
+            <select class="${row.simulatorName ? "" : "planning-empty-select"}" data-preventive-planning-editor-field="simulatorName">
+              ${planningPlaceholderOptionHTML("Simu", row.simulatorName)}
+              ${simulatorOptions.map((simulator) => planningOptionHTML(simulator.name, simulator.name, row.simulatorName)).join("")}
+            </select>
+          </label>
+          <label class="planning-editor-field preventive-editor-event">Événement
+            <select class="${row.event ? "" : "planning-empty-select"}" data-preventive-planning-editor-field="event">
+              ${planningPlaceholderOptionHTML("Événement", row.event)}
+              ${preventivePlanningEvents.map((item) => planningOptionHTML(item.value, item.label, row.event)).join("")}
+            </select>
+          </label>
+          <label class="planning-editor-field preventive-editor-start">Date début
+            ${preventivePlanningDateDisplayButtonHTML(row, "startDate")}
+          </label>
+          <label class="planning-editor-field preventive-editor-end">Date fin
+            ${preventivePlanningDateDisplayButtonHTML(row, "endDate")}
+          </label>
+          <label class="planning-editor-field preventive-editor-team">Équipe
+            <div class="planning-editor-team-preview">${preventivePlanningTeamHTML(row)}</div>
+          </label>
+          <label class="planning-editor-field preventive-editor-itcarl">Date IT CARL
+            ${preventivePlanningDateDisplayButtonHTML(row, "itCarlDate")}
+          </label>
+          <label class="planning-editor-field preventive-editor-remark">Remarque
+            <textarea data-preventive-planning-editor-field="remark" placeholder="Remarque">${escapeHtml(row.remark)}</textarea>
+          </label>
+        </div>
+        <p class="planning-editor-warning${duplicateRow ? "" : " hidden"}" data-preventive-planning-duplicate-warning>
+          Une maintenance existe déjà pour ce simulateur, cet événement et cette date de début.
+        </p>
+        <div class="planning-editor-actions">
+          ${isCreate ? "" : `
+            <div class="planning-editor-delete-zone">
+              ${waitsForDeleteConfirmation ? `<span class="planning-editor-delete-confirm">Confirmer la suppression ?</span>` : ""}
+              <button type="button" class="planning-editor-delete${waitsForDeleteConfirmation ? " confirm" : ""}" data-preventive-planning-editor-action="delete">
+                ${waitsForDeleteConfirmation ? "Confirmer" : "Supprimer"}
+              </button>
+            </div>
+          `}
+          <button type="button" class="planning-editor-cancel" data-preventive-planning-editor-action="cancel">Annuler</button>
+          <button type="button" class="planning-editor-validate" data-preventive-planning-editor-action="validate" ${canValidate ? "" : "disabled"}>Valider</button>
+        </div>
+      </section>
+    </div>
   `;
 }
 
@@ -2861,6 +3571,9 @@ function renderPlanningHistoryPicker() {
   }
 
   const years = planningArchiveYears();
+  const hasYears = years.length > 0;
+  const hasSelectedAllYears = hasYears && years.every((year) => state.selectedPlanningHistoryYears.has(year));
+  const selectAllLabel = hasSelectedAllYears ? "Désélectionner tout" : "Sélectionner tout";
   const yearList = years.length
     ? years.map((year) => `
         <label class="planning-history-year-option">
@@ -2882,6 +3595,7 @@ function renderPlanningHistoryPicker() {
           ${yearList}
         </div>
         <div class="planning-history-modal-actions">
+          <button class="planning-history-select-all-button" type="button" data-planning-action="toggle-history-years" ${hasYears ? "" : "disabled"}>${selectAllLabel}</button>
           <button class="planning-history-cancel-button" type="button" data-planning-action="cancel-history-picker">Annuler</button>
           <button class="planning-history-show-button" type="button" data-planning-action="show-history-picker" ${state.selectedPlanningHistoryYears.size ? "" : "disabled"}>Afficher</button>
         </div>
@@ -3025,6 +3739,8 @@ function renderPlanningEditor() {
   const disablesEndTimeField = shouldDisablePlanningEndTime(row);
   const canValidate = canValidatePlanningEditorRow(row);
   const canEditTri = canEditPlanningTri(row);
+  const duplicateRow = planningDuplicateRow(row);
+  const waitsForDeleteConfirmation = state.planningEditor.confirmDelete === true;
   return `
     <div class="planning-editor-backdrop" data-planning-editor>
       <section class="planning-editor-panel" aria-label="${isCreate ? "Créer une visite réglementaire" : "Modifier une visite réglementaire"}">
@@ -3076,14 +3792,896 @@ function renderPlanningEditor() {
             <textarea data-planning-editor-field="notes" placeholder="Notes">${escapeHtml(row.notes)}</textarea>
           </label>
         </div>
+        <p class="planning-editor-warning${duplicateRow ? "" : " hidden"}" data-planning-duplicate-warning>
+          Une visite existe déjà pour ce simulateur, ce type et cette date.
+        </p>
         <div class="planning-editor-actions">
-          ${isCreate ? "" : `<button type="button" class="planning-editor-delete" data-planning-editor-action="delete">Supprimer</button>`}
+          ${isCreate ? "" : `
+            <div class="planning-editor-delete-zone">
+              ${waitsForDeleteConfirmation ? `<span class="planning-editor-delete-confirm">Confirmer la suppression ?</span>` : ""}
+              <button type="button" class="planning-editor-delete${waitsForDeleteConfirmation ? " confirm" : ""}" data-planning-editor-action="delete">
+                ${waitsForDeleteConfirmation ? "Confirmer" : "Supprimer"}
+              </button>
+            </div>
+          `}
           <button type="button" class="planning-editor-cancel" data-planning-editor-action="cancel">Annuler</button>
           <button type="button" class="planning-editor-validate" data-planning-editor-action="validate" ${canValidate ? "" : "disabled"}>Valider</button>
         </div>
       </section>
     </div>
   `;
+}
+
+function preventivePlanningDateDisplayButtonHTML(row, field) {
+  const value = stringValue(row[field]);
+  const hasValue = /^\d{4}-\d{2}-\d{2}$/.test(value);
+  return `
+    <button
+      class="planning-date-display-button ${hasValue ? "" : "planning-empty-select"}"
+      type="button"
+      data-preventive-planning-date-open="${escapeAttribute(field)}"
+      aria-label="${field === "startDate" ? "Date de début" : field === "endDate" ? "Date de fin" : "Date IT CARL"}"
+    >
+      ${escapeHtml(hasValue ? planningDateDisplay(value) : "Date")}
+    </button>
+  `;
+}
+
+function normalizedPreventivePlanningRows() {
+  state.preventivePlanningRows = Array.isArray(state.preventivePlanningRows)
+    ? state.preventivePlanningRows.map(normalizePreventivePlanningRow)
+    : [];
+  return state.preventivePlanningRows;
+}
+
+function visiblePreventivePlanningRows() {
+  const rows = normalizedPreventivePlanningRows();
+  if (!state.showsPreventivePlanningHistory) {
+    return rows.filter((row) => !isPreventivePlanningPast(row));
+  }
+
+  return rows.filter((row) => {
+    if (!isPreventivePlanningPast(row)) {
+      return true;
+    }
+
+    const year = preventivePlanningArchiveYear(row);
+    return year && state.selectedPreventivePlanningHistoryYears.has(year);
+  });
+}
+
+function preventivePlanningArchiveYears() {
+  return [...new Set(normalizedPreventivePlanningRows()
+    .filter((row) => isPreventivePlanningPast(row))
+    .map(preventivePlanningArchiveYear)
+    .filter(Boolean))]
+    .sort((first, second) => first - second);
+}
+
+function preventivePlanningArchiveYear(row) {
+  const match = /^(\d{4})-\d{2}-\d{2}$/.exec(row.startDate || row.endDate || "");
+  return match ? Number(match[1]) : null;
+}
+
+function handlePreventivePlanningHistoryYearChange(input) {
+  const selectedYear = Number(input.dataset.preventivePlanningHistoryYear);
+  if (!Number.isInteger(selectedYear)) {
+    return;
+  }
+
+  if (input.checked) {
+    state.selectedPreventivePlanningHistoryYears.add(selectedYear);
+  } else {
+    state.selectedPreventivePlanningHistoryYears.delete(selectedYear);
+  }
+
+  renderPreventivePlanningTable();
+}
+
+function toggleAllPreventivePlanningHistoryYears() {
+  const years = preventivePlanningArchiveYears();
+  const hasSelectedAllYears = years.length > 0 && years.every((year) => state.selectedPreventivePlanningHistoryYears.has(year));
+  if (hasSelectedAllYears) {
+    state.selectedPreventivePlanningHistoryYears.clear();
+    return;
+  }
+
+  years.forEach((year) => state.selectedPreventivePlanningHistoryYears.add(year));
+}
+
+function normalizePreventivePlanningRow(row = {}) {
+  const rowID = stringValue(row.id) || crypto.randomUUID();
+  const mirrorNoteID = stringValue(row.mirrorNoteID);
+  return {
+    id: rowID,
+    simulatorName: normalizePlanningSimulatorName(row.simulatorName),
+    event: normalizePreventivePlanningEvent(row.event),
+    startDate: /^\d{4}-\d{2}-\d{2}$/.test(row.startDate) ? row.startDate : "",
+    endDate: /^\d{4}-\d{2}-\d{2}$/.test(row.endDate) ? row.endDate : "",
+    itCarlDate: /^\d{4}-\d{2}-\d{2}$/.test(row.itCarlDate) ? row.itCarlDate : "",
+    remark: normalizePlanningSingleLineText(row.remark),
+    mirrorNoteID: isUUIDString(mirrorNoteID) ? mirrorNoteID : preventivePlanningMirrorNoteID(rowID),
+    hasModifications: row.hasModifications === true
+  };
+}
+
+function createPreventivePlanningRow() {
+  return {
+    id: crypto.randomUUID(),
+    simulatorName: "",
+    event: "",
+    startDate: "",
+    endDate: "",
+    itCarlDate: "",
+    remark: "",
+    mirrorNoteID: "",
+    hasModifications: false
+  };
+}
+
+function normalizePreventivePlanningEvent(value) {
+  const normalized = normalizeKey(value);
+  const match = preventivePlanningEvents.find((event) => normalizeKey(event.value) === normalized || normalizeKey(event.label) === normalized);
+  return match?.value || "";
+}
+
+function preventivePlanningEventLabel(value) {
+  return preventivePlanningEvents.find((event) => event.value === value)?.label || "";
+}
+
+function loadPreventivePlanningRows() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(preventivePlanningStorageKey) || "[]");
+    return Array.isArray(parsed) ? parsed.map(normalizePreventivePlanningRow) : [];
+  } catch {
+    return [];
+  }
+}
+
+function savePreventivePlanningRowsLocal() {
+  try {
+    localStorage.setItem(preventivePlanningStorageKey, JSON.stringify(normalizedPreventivePlanningRows()));
+  } catch (error) {
+    setStatus(error.message || "Planning préventif non enregistré");
+  }
+}
+
+function preventivePlanningMirrorNoteID(rowID) {
+  return isUUIDString(rowID) ? stringValue(rowID) : "";
+}
+
+function legacyPreventivePlanningMirrorNoteID(rowID) {
+  return rowID ? `preventive-planning-${rowID}` : "";
+}
+
+function isUUIDString(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(stringValue(value));
+}
+
+function shouldMirrorPreventivePlanningRow(row) {
+  const normalizedRow = normalizePreventivePlanningRow(row);
+  const simulatorKey = normalizeKey(normalizedRow.simulatorName);
+  const excludedSimulatorKeys = new Set([normalizeKey(generalName), normalizeKey("REX Application")]);
+  return simulatorKey
+    && !excludedSimulatorKeys.has(simulatorKey)
+    && /^\d{4}-\d{2}-\d{2}$/.test(normalizedRow.startDate)
+    && !isPreventivePlanningPast(normalizedRow);
+}
+
+function preventivePlanningMirrorTitle(row) {
+  const normalizedRow = normalizePreventivePlanningRow(row);
+  const eventLabel = preventivePlanningEventLabel(normalizedRow.event) || "Événement";
+  const startLabel = normalizedRow.startDate ? planningWeekdayDateDisplay(normalizedRow.startDate) : "Date début";
+  const endLabel = normalizedRow.endDate ? planningWeekdayDateDisplay(normalizedRow.endDate) : "Date fin";
+  return normalizedRow.startDate && normalizedRow.startDate === normalizedRow.endDate
+    ? `${eventLabel} ${startLabel}`
+    : `${eventLabel} ${startLabel}, ${endLabel}`;
+}
+
+function defaultPreventivePlanningEndDate(row) {
+  const normalizedRow = normalizePreventivePlanningRow(row);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedRow.startDate)) {
+    return "";
+  }
+
+  return normalizedRow.event === "annuelle"
+    ? isoDate(addDays(parseDateInput(normalizedRow.startDate), 1))
+    : normalizedRow.startDate;
+}
+
+function preventivePlanningMirrorNote(row) {
+  const normalizedRow = normalizePreventivePlanningRow(row);
+  const mirrorNoteID = normalizedRow.mirrorNoteID || preventivePlanningMirrorNoteID(normalizedRow.id);
+  const displayDate = startOfDay(parseDateInput(normalizedRow.startDate));
+  const simulatorName = normalizePlanningSimulatorName(normalizedRow.simulatorName);
+  const now = new Date();
+  return {
+    id: mirrorNoteID,
+    title: preventivePlanningMirrorTitle(normalizedRow),
+    text: normalizedRow.remark,
+    author: "Planning Préventif",
+    authorIdentifier: state.currentUser?.id || "planning-preventif",
+    createdAt: now,
+    updatedAt: now,
+    contentModifiedAt: null,
+    syncState: "active",
+    lastRealtimeRelevantAt: displayDate,
+    realtimeActiveUntil: activeRealtimeUntil,
+    deletedAt: null,
+    displayDate,
+    firstDisplayDate: displayDate,
+    isGeneral: false,
+    simulatorNames: simulatorName ? [simulatorName] : [],
+    priority: "urgent",
+    regulatoryPlanningMirror: false,
+    regulatoryPlanningEventID: "",
+    preventivePlanningMirror: true,
+    preventivePlanningEventID: normalizedRow.id,
+    handwritingData: "",
+    handwritingPreviewImageData: "",
+    handwritingClearedAt: null,
+    richTextData: "",
+    richTextHTML: "",
+    completedContexts: [],
+    completions: [],
+    completionCancellations: [],
+    revisions: [],
+    reports: [],
+    acknowledgements: []
+  };
+}
+
+function upsertLocalPreventivePlanningMirrorNote(row) {
+  const note = preventivePlanningMirrorNote(row);
+  if (!note.id || !note.displayDate) {
+    return null;
+  }
+
+  state.fetchedNotesByID.set(note.id, note);
+  state.notes = Array.from(new Map(state.notes.map((candidate) => [candidate.id, candidate])).set(note.id, note).values());
+  renderSimulators();
+  if (state.activeView === "notes") {
+    render();
+  }
+  return note;
+}
+
+function removeLocalPreventivePlanningMirrorNote(row) {
+  const normalizedRow = normalizePreventivePlanningRow(row);
+  const mirrorNoteID = normalizedRow.mirrorNoteID || preventivePlanningMirrorNoteID(normalizedRow.id);
+  if (!mirrorNoteID) {
+    return;
+  }
+
+  state.fetchedNotesByID.delete(mirrorNoteID);
+  state.notes = state.notes.filter((note) => note.id !== mirrorNoteID);
+  renderSimulators();
+  if (state.activeView === "notes") {
+    render();
+  }
+}
+
+function refreshLocalPreventivePlanningMirrorNotes() {
+  for (const row of normalizedPreventivePlanningRows()) {
+    if (shouldMirrorPreventivePlanningRow(row)) {
+      upsertLocalPreventivePlanningMirrorNote(row);
+    } else if (row.mirrorNoteID || preventivePlanningMirrorNoteID(row.id)) {
+      removeLocalPreventivePlanningMirrorNote(row);
+    }
+  }
+}
+
+async function syncPreventivePlanningMirrorNote(row, { refetch = true } = {}) {
+  const normalizedRow = normalizePreventivePlanningRow(row);
+  const mirrorNoteID = normalizedRow.mirrorNoteID || preventivePlanningMirrorNoteID(normalizedRow.id);
+  const legacyMirrorNoteID = legacyPreventivePlanningMirrorNoteID(normalizedRow.id);
+  const simulatorName = normalizePlanningSimulatorName(normalizedRow.simulatorName);
+  if (!mirrorNoteID) {
+    return;
+  }
+
+  if (!shouldMirrorPreventivePlanningRow(normalizedRow)) {
+    removeLocalPreventivePlanningMirrorNote(normalizedRow);
+    await deletePreventivePlanningMirrorNote(normalizedRow);
+    return;
+  }
+
+  const note = upsertLocalPreventivePlanningMirrorNote(normalizedRow);
+  if (!state.authReady || shouldSuspendFirestoreSync() || !canCurrentUserAccessPlanning()) {
+    return;
+  }
+
+  const title = note.title;
+  const text = note.text;
+  const payload = {
+    id: mirrorNoteID,
+    title,
+    text,
+    author: note.author,
+    authorIdentifier: note.authorIdentifier,
+    createdAt: note.createdAt,
+    updatedAt: note.updatedAt,
+    displayDate: note.displayDate,
+    firstDisplayDate: note.firstDisplayDate,
+    isGeneral: false,
+    simulatorNamesStorage: simulatorName,
+    richTextHTML: "",
+    richTextData: "",
+    priorityRawValue: "urgent",
+    completedContextsStorage: "",
+    acknowledgementHistoryData: "",
+    completionHistoryData: "",
+    completionCancellationHistoryData: "",
+    revisionHistoryData: "",
+    preventivePlanningMirror: true,
+    preventivePlanningEventID: normalizedRow.id,
+    searchKeywords: searchKeywordsForNote({ title, text })
+  };
+  Object.assign(payload, handoverIndexFields({
+    ...payload,
+    simulatorNames: simulatorName ? [simulatorName] : [],
+    priority: "urgent",
+    deletedAt: null,
+    contentModifiedAt: null,
+    completedContexts: [],
+    completions: [],
+    completionCancellations: [],
+    revisions: [],
+    acknowledgements: []
+  }));
+
+  await setDoc(doc(db, "handoverNotes", mirrorNoteID), payload, { merge: true });
+  if (legacyMirrorNoteID && legacyMirrorNoteID !== mirrorNoteID) {
+    await setDoc(doc(db, "handoverNoteDeletions", legacyMirrorNoteID), {
+      noteID: legacyMirrorNoteID,
+      deletedAt: new Date(),
+      deletedBy: currentDisplayName(),
+      deletedByIdentifier: state.currentUser?.id || ""
+    }, { merge: true });
+    await deleteDoc(doc(db, "handoverNotes", legacyMirrorNoteID));
+  }
+  normalizedRow.mirrorNoteID = mirrorNoteID;
+  const localRow = state.preventivePlanningRows.find((candidate) => candidate.id === normalizedRow.id);
+  if (localRow) {
+    localRow.mirrorNoteID = mirrorNoteID;
+  }
+  savePreventivePlanningRowsLocal();
+  if (refetch) {
+    await fetchNoteByID(mirrorNoteID);
+    if (state.activeView === "notes") {
+      render();
+    }
+  }
+}
+
+async function ensurePreventivePlanningMirrorScopeSynced() {
+  if (!state.authReady || shouldSuspendFirestoreSync() || !canCurrentUserAccessPlanning()) {
+    return;
+  }
+
+  try {
+    if (localStorage.getItem(preventivePlanningMirrorScopeStorageKey) === preventivePlanningMirrorScopeVersion) {
+      return;
+    }
+  } catch {}
+
+  const rowsToSync = normalizedPreventivePlanningRows().filter(shouldMirrorPreventivePlanningRow);
+  if (!rowsToSync.length) {
+    try {
+      localStorage.setItem(preventivePlanningMirrorScopeStorageKey, preventivePlanningMirrorScopeVersion);
+    } catch {}
+    return;
+  }
+
+  try {
+    for (const row of rowsToSync) {
+      await syncPreventivePlanningMirrorNote(row, { refetch: false });
+    }
+    refreshLocalPreventivePlanningMirrorNotes();
+    try {
+      localStorage.setItem(preventivePlanningMirrorScopeStorageKey, preventivePlanningMirrorScopeVersion);
+    } catch {}
+    if (state.activeView === "notes") {
+      render();
+    }
+  } catch (error) {
+    setStatus(error.message || "Synchronisation des consignes préventives incomplète");
+  }
+}
+
+async function deletePreventivePlanningMirrorNote(row) {
+  const normalizedRow = normalizePreventivePlanningRow(row);
+  const mirrorNoteID = normalizedRow.mirrorNoteID || preventivePlanningMirrorNoteID(normalizedRow.id);
+  const legacyMirrorNoteID = legacyPreventivePlanningMirrorNoteID(normalizedRow.id);
+  if (!mirrorNoteID) {
+    return;
+  }
+
+  removeLocalPreventivePlanningMirrorNote(normalizedRow);
+  if (!state.authReady || shouldSuspendFirestoreSync() || !canCurrentUserAccessPlanning()) {
+    return;
+  }
+
+  await setDoc(doc(db, "handoverNoteDeletions", mirrorNoteID), {
+    noteID: mirrorNoteID,
+    deletedAt: new Date(),
+    deletedBy: currentDisplayName(),
+    deletedByIdentifier: state.currentUser?.id || ""
+  }, { merge: true });
+  await deleteDoc(doc(db, "handoverNotes", mirrorNoteID));
+  if (legacyMirrorNoteID && legacyMirrorNoteID !== mirrorNoteID) {
+    await deleteDoc(doc(db, "handoverNotes", legacyMirrorNoteID));
+  }
+}
+
+function canValidatePreventivePlanningEditorRow(row) {
+  const normalizedRow = normalizePreventivePlanningRow(row);
+  return Boolean(
+    normalizedRow.simulatorName
+    && normalizedRow.event
+    && /^\d{4}-\d{2}-\d{2}$/.test(normalizedRow.startDate)
+    && /^\d{4}-\d{2}-\d{2}$/.test(normalizedRow.endDate)
+    && !preventivePlanningDuplicateRow(normalizedRow)
+  );
+}
+
+function preventivePlanningDuplicateRow(row) {
+  const normalizedRow = normalizePreventivePlanningRow(row);
+  if (!normalizedRow.simulatorName || !normalizedRow.event || !normalizedRow.startDate) {
+    return null;
+  }
+
+  const rowKey = [
+    normalizeKey(normalizedRow.simulatorName),
+    normalizeKey(normalizedRow.event),
+    normalizedRow.startDate
+  ].join("|");
+
+  return normalizedPreventivePlanningRows().find((candidate) => {
+    const normalizedCandidate = normalizePreventivePlanningRow(candidate);
+    if (normalizedCandidate.id === normalizedRow.id) {
+      return false;
+    }
+
+    return [
+      normalizeKey(normalizedCandidate.simulatorName),
+      normalizeKey(normalizedCandidate.event),
+      normalizedCandidate.startDate
+    ].join("|") === rowKey;
+  }) || null;
+}
+
+function isPreventivePlanningPast(row) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(row.endDate || row.startDate)) {
+    return false;
+  }
+  const end = parseDateInput(row.endDate || row.startDate);
+  end.setHours(23, 59, 59, 999);
+  return end < new Date();
+}
+
+function nextUpcomingPreventivePlanningRowID(rows) {
+  const now = new Date();
+  const upcomingRows = rows
+    .map((row) => {
+      const normalizedRow = normalizePreventivePlanningRow(row);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedRow.startDate) || isPreventivePlanningPast(normalizedRow)) {
+        return null;
+      }
+      const start = parseDateInput(normalizedRow.startDate);
+      start.setHours(0, 0, 0, 0);
+      return { row: normalizedRow, start };
+    })
+    .filter(Boolean)
+    .filter((entry) => entry.start >= now || !isPreventivePlanningPast(entry.row))
+    .sort((first, second) => first.start - second.start);
+  return upcomingRows[0]?.row.id || "";
+}
+
+function sortPreventivePlanningRowsByDate() {
+  state.preventivePlanningRows = normalizedPreventivePlanningRows().sort(comparePreventivePlanningRowsByDate);
+}
+
+function sortPreventivePlanningRowsBySimulator() {
+  state.preventivePlanningRows = normalizedPreventivePlanningRows().sort((first, second) => {
+    const simulatorOrder = planningSimulatorSortValue(first.simulatorName) - planningSimulatorSortValue(second.simulatorName)
+      || first.simulatorName.localeCompare(second.simulatorName, "fr", { sensitivity: "base" });
+    return simulatorOrder || comparePreventivePlanningRowsByDate(first, second);
+  });
+}
+
+function sortPreventivePlanningRowsByEvent() {
+  state.preventivePlanningRows = normalizedPreventivePlanningRows().sort((first, second) => {
+    const eventOrder = preventivePlanningEventLabel(first.event).localeCompare(preventivePlanningEventLabel(second.event), "fr", { sensitivity: "base" });
+    return eventOrder || comparePreventivePlanningRowsByDate(first, second);
+  });
+}
+
+function comparePreventivePlanningRowsByDate(first, second) {
+  return preventivePlanningSortTime(first) - preventivePlanningSortTime(second)
+    || first.simulatorName.localeCompare(second.simulatorName, "fr", { sensitivity: "base" })
+    || first.id.localeCompare(second.id);
+}
+
+function preventivePlanningSortTime(row) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(row.startDate)
+    ? parseDateInput(row.startDate).getTime()
+    : Number.MAX_SAFE_INTEGER;
+}
+
+function preventivePlanningTeamHTML(row) {
+  const slots = preventivePlanningTeamSlots(row);
+  if (!slots.length) {
+    return "<span class=\"planning-team-empty\">-</span>";
+  }
+
+  return `
+    <div class="planning-team-list preventive-team-list">
+      ${slots.map((slot) => {
+        const team = teamInfo(slot.teamID);
+        return `<span class="planning-team-pill ${escapeAttribute(slot.shiftID)}">${escapeHtml(team.title.replace("Equipe ", ""))}</span>`;
+      }).join("")}
+    </div>
+  `;
+}
+
+function preventivePlanningTeamSlots(row) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(row.startDate)) {
+    return [];
+  }
+
+  const start = parseDateInput(row.startDate);
+  const end = /^\d{4}-\d{2}-\d{2}$/.test(row.endDate) ? parseDateInput(row.endDate) : start;
+  const last = end < start ? start : end;
+  const slots = [];
+  const seen = new Set();
+  for (let day = startOfDay(start); day <= last; day = addDays(day, 1)) {
+    const weekend = isWeekendDay(day);
+    planningTeamSlotsForDay(day)
+      .filter((slot) => slot.shiftID === "morning" || slot.shiftID === "evening" || (weekend && slot.shiftID === "night"))
+      .forEach((slot) => {
+        const key = `${slot.shiftID}-${slot.teamID}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          slots.push({ teamID: slot.teamID, shiftID: slot.shiftID });
+        }
+      });
+  }
+  return slots;
+}
+
+function openPreventivePlanningEditor(row, { mode = "edit" } = {}) {
+  const draft = normalizePreventivePlanningRow(row);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(draft.startDate) && !/^\d{4}-\d{2}-\d{2}$/.test(draft.endDate)) {
+    draft.endDate = defaultPreventivePlanningEndDate(draft);
+  }
+  state.preventivePlanningEditor = {
+    mode,
+    original: mode === "edit" ? normalizePreventivePlanningRow(row) : null,
+    draft
+  };
+}
+
+function closePreventivePlanningEditor() {
+  state.preventivePlanningEditor = null;
+  closePlanningDateWheel();
+}
+
+function handlePreventivePlanningTableClick(event) {
+  const action = event.target.closest("[data-preventive-planning-action]")?.dataset.preventivePlanningAction;
+
+  if (action === "return-notes") {
+    showNotesView();
+    return;
+  }
+
+  if (action === "enter-edit") {
+    if (!canCurrentUserEditPlanning()) return;
+    state.isPreventivePlanningEditMode = true;
+    renderPreventivePlanningTable();
+    return;
+  }
+
+  if (action === "exit-edit") {
+    state.isPreventivePlanningEditMode = false;
+    closePreventivePlanningEditor();
+    renderPreventivePlanningTable();
+    return;
+  }
+
+  if (action === "toggle-history") {
+    if (state.showsPreventivePlanningHistory) {
+      state.showsPreventivePlanningHistory = false;
+      state.selectedPreventivePlanningHistoryYears.clear();
+      state.isPreventivePlanningHistoryPickerOpen = false;
+      renderPreventivePlanningTable();
+      return;
+    }
+
+    state.isPreventivePlanningHistoryPickerOpen = true;
+    renderPreventivePlanningTable();
+    return;
+  }
+
+  if (action === "cancel-history-picker") {
+    state.isPreventivePlanningHistoryPickerOpen = false;
+    if (!state.showsPreventivePlanningHistory) {
+      state.selectedPreventivePlanningHistoryYears.clear();
+    }
+    renderPreventivePlanningTable();
+    return;
+  }
+
+  if (action === "show-history-picker") {
+    state.showsPreventivePlanningHistory = true;
+    state.isPreventivePlanningHistoryPickerOpen = false;
+    renderPreventivePlanningTable();
+    return;
+  }
+
+  if (action === "toggle-history-years") {
+    toggleAllPreventivePlanningHistoryYears();
+    renderPreventivePlanningTable();
+    return;
+  }
+
+  if (action === "add-row") {
+    if (!state.isPreventivePlanningEditMode || !canCurrentUserEditPlanning()) return;
+    openPreventivePlanningEditor(createPreventivePlanningRow(), { mode: "create" });
+    renderPreventivePlanningTable();
+    return;
+  }
+
+  if (action === "sort-date") {
+    state.activePreventivePlanningSort = "date";
+    sortPreventivePlanningRowsByDate();
+    savePreventivePlanningRowsLocal();
+    renderPreventivePlanningTable();
+    return;
+  }
+
+  if (action === "sort-simulator") {
+    state.activePreventivePlanningSort = "simulator";
+    sortPreventivePlanningRowsBySimulator();
+    savePreventivePlanningRowsLocal();
+    renderPreventivePlanningTable();
+    return;
+  }
+
+  if (action === "sort-event") {
+    state.activePreventivePlanningSort = "event";
+    sortPreventivePlanningRowsByEvent();
+    savePreventivePlanningRowsLocal();
+    renderPreventivePlanningTable();
+    return;
+  }
+
+  const rowID = event.target.closest("[data-preventive-planning-row-id]")?.dataset.preventivePlanningRowId;
+  if (action === "show-activity" && rowID) {
+    togglePreventivePlanningActivity(rowID);
+    return;
+  }
+
+  if (!action && rowID && state.isPreventivePlanningEditMode && canCurrentUserEditPlanning()) {
+    const row = state.preventivePlanningRows.find((candidate) => candidate.id === rowID);
+    if (row) {
+      openPreventivePlanningEditor(row, { mode: "edit" });
+      renderPreventivePlanningTable();
+    }
+  }
+}
+
+function handlePreventivePlanningEditorClick(event) {
+  const editorAction = event.target.closest("[data-preventive-planning-editor-action]")?.dataset.preventivePlanningEditorAction;
+  if (!editorAction) {
+    return Boolean(event.target.closest("[data-preventive-planning-editor]"));
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  if (editorAction === "cancel") {
+    closePreventivePlanningEditor();
+    renderPreventivePlanningTable();
+    return true;
+  }
+
+  if (editorAction === "validate") {
+    validatePreventivePlanningEditor();
+    return true;
+  }
+
+  if (editorAction === "delete") {
+    deletePreventivePlanningEditorRow();
+    return true;
+  }
+
+  return true;
+}
+
+function handlePreventivePlanningEditorFieldEdit(event) {
+  const field = event.target?.dataset?.preventivePlanningEditorField || "";
+  const editor = state.preventivePlanningEditor;
+  if (!field || !editor || !state.isPreventivePlanningEditMode || !canCurrentUserEditPlanning()) {
+    return;
+  }
+
+  editor.draft[field] = event.target.value;
+  refreshPlanningEmptyFieldState(event.target);
+  if (field === "event" && editor.draft.event === "annuelle" && /^\d{4}-\d{2}-\d{2}$/.test(editor.draft.startDate)) {
+    editor.draft.endDate = defaultPreventivePlanningEndDate(editor.draft);
+  }
+  if (field === "remark" && event.type === "input") {
+    return;
+  }
+  if (field === "remark") {
+    editor.draft.remark = normalizePlanningSingleLineText(editor.draft.remark);
+    event.target.value = editor.draft.remark;
+  }
+  refreshPreventivePlanningEditorDerivedFields(event.target.closest("[data-preventive-planning-editor]"), editor.draft);
+}
+
+function validatePreventivePlanningEditor() {
+  const editor = state.preventivePlanningEditor;
+  if (!editor || !canCurrentUserEditPlanning()) {
+    return;
+  }
+
+  const row = normalizePreventivePlanningRow(editor.draft);
+  if (preventivePlanningDuplicateRow(row)) {
+    setStatus("Doublon : même simulateur, événement et date de début");
+    refreshPreventivePlanningEditorDerivedFields(document.querySelector("[data-preventive-planning-editor]"), row);
+    return;
+  }
+  if (!canValidatePreventivePlanningEditorRow(row)) {
+    setStatus("Simu, événement, date début et date fin sont obligatoires");
+    return;
+  }
+
+  const previousRow = editor.mode === "edit" ? normalizePreventivePlanningRow(editor.original || {}) : null;
+  const changedFields = editor.mode === "edit"
+    ? preventivePlanningChangedFields(row, previousRow)
+    : preventivePlanningTrackedFields();
+
+  if (editor.mode === "create") {
+    state.preventivePlanningRows.unshift(row);
+  } else {
+    const index = state.preventivePlanningRows.findIndex((candidate) => candidate.id === row.id);
+    if (index >= 0) {
+      state.preventivePlanningRows[index] = row;
+    }
+  }
+  row.hasModifications = editor.mode === "edit" && (previousRow?.hasModifications === true || changedFields.length > 0);
+  const localRow = state.preventivePlanningRows.find((candidate) => candidate.id === row.id);
+  if (localRow) {
+    localRow.hasModifications = row.hasModifications;
+  }
+  if (changedFields.length || editor.mode === "create") {
+    state.planningActivityByRowID.delete(row.id);
+    recordPreventivePlanningActivityFromEditor(row, {
+      previousRow,
+      changedFields,
+      action: editor.mode === "create" ? "created" : "updated"
+    });
+  }
+  savePreventivePlanningRowsLocal();
+  closePreventivePlanningEditor();
+  renderPreventivePlanningTable();
+  syncPreventivePlanningMirrorNote(row).catch((error) => {
+    setStatus(error.message || "Consigne miroir préventive non synchronisée");
+  });
+}
+
+function deletePreventivePlanningEditorRow() {
+  const editor = state.preventivePlanningEditor;
+  if (!editor || editor.mode === "create" || !canCurrentUserEditPlanning()) {
+    return;
+  }
+
+  if (editor.confirmDelete !== true) {
+    editor.confirmDelete = true;
+    renderPreventivePlanningTable();
+    return;
+  }
+
+  const row = normalizePreventivePlanningRow(editor.original || editor.draft);
+  state.preventivePlanningRows = state.preventivePlanningRows.filter((candidate) => candidate.id !== row.id);
+  savePreventivePlanningRowsLocal();
+  closePreventivePlanningEditor();
+  renderPreventivePlanningTable();
+  state.planningActivityByRowID.delete(row.id);
+  recordPreventivePlanningActivityFromEditor(row, {
+    previousRow: row,
+    changedFields: preventivePlanningTrackedFields(),
+    action: "deleted"
+  });
+  deletePreventivePlanningMirrorNote(row).catch((error) => {
+    setStatus(error.message || "Consigne miroir préventive non supprimée");
+  });
+}
+
+function openPreventivePlanningDateWheel(event) {
+  if (!state.isPreventivePlanningEditMode || !canCurrentUserEditPlanning()) {
+    return;
+  }
+
+  const trigger = event.target.closest("[data-preventive-planning-date-open]");
+  const editorElement = trigger?.closest("[data-preventive-planning-editor]");
+  const editor = state.preventivePlanningEditor;
+  if (!trigger || !editorElement || !editor) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  closePlanningDateWheel();
+  closePlanningTimeWheel();
+
+  const field = trigger.dataset.preventivePlanningDateOpen;
+  const rect = trigger.getBoundingClientRect();
+  const popover = document.createElement("div");
+  popover.className = "planning-date-wheel-popover";
+  popover.style.visibility = "hidden";
+  popover.innerHTML = planningDateWheelHTML(editor.draft[field]);
+
+  const updateDateValue = () => {
+    editor.draft[field] = planningDateFromWheel(popover);
+    if (field === "startDate") {
+      editor.draft.endDate = defaultPreventivePlanningEndDate(editor.draft);
+      const endButton = editorElement.querySelector("[data-preventive-planning-date-open='endDate']");
+      if (endButton) {
+        endButton.textContent = planningDateDisplay(editor.draft.endDate);
+        endButton.classList.remove("planning-empty-select");
+      }
+    }
+    trigger.textContent = planningDateDisplay(editor.draft[field]);
+    trigger.classList.remove("planning-empty-select");
+    refreshPreventivePlanningEditorDerivedFields(editorElement, editor.draft);
+  };
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(editor.draft[field])) {
+    updateDateValue();
+  }
+  popover.addEventListener("change", updateDateValue);
+  popover.addEventListener("click", (popoverEvent) => popoverEvent.stopPropagation());
+  document.body.append(popover);
+
+  const popoverRect = popover.getBoundingClientRect();
+  const left = Math.max(8, Math.min(rect.left, window.innerWidth - popoverRect.width - 8));
+  const belowTop = rect.bottom + 4;
+  const aboveTop = rect.top - popoverRect.height - 4;
+  const top = belowTop + popoverRect.height > window.innerHeight - 8 && aboveTop >= 8
+    ? aboveTop
+    : Math.min(belowTop, Math.max(8, window.innerHeight - popoverRect.height - 8));
+  popover.style.left = `${left}px`;
+  popover.style.top = `${top}px`;
+  popover.style.visibility = "";
+  window.requestAnimationFrame(() => popover.querySelector("select")?.focus());
+}
+
+function refreshPreventivePlanningEditorDerivedFields(editorElement, row) {
+  if (!editorElement) {
+    return;
+  }
+  const teamPreview = editorElement.querySelector(".planning-editor-team-preview");
+  if (teamPreview) {
+    teamPreview.innerHTML = preventivePlanningTeamHTML(row);
+  }
+  const endButton = editorElement.querySelector("[data-preventive-planning-date-open='endDate']");
+  if (endButton) {
+    const hasEndDate = /^\d{4}-\d{2}-\d{2}$/.test(row.endDate);
+    endButton.textContent = hasEndDate ? planningDateDisplay(row.endDate) : "Date";
+    endButton.classList.toggle("planning-empty-select", !hasEndDate);
+  }
+  const duplicateRow = preventivePlanningDuplicateRow(row);
+  const duplicateWarning = editorElement.querySelector("[data-preventive-planning-duplicate-warning]");
+  if (duplicateWarning) {
+    duplicateWarning.classList.toggle("hidden", !duplicateRow);
+  }
+  const validateButton = editorElement.querySelector("[data-preventive-planning-editor-action='validate']");
+  if (validateButton) {
+    validateButton.disabled = !canValidatePreventivePlanningEditorRow(row);
+  }
 }
 
 function planningActivityActionLabel(action) {
@@ -3197,6 +4795,15 @@ function planningDateDisplay(value) {
   }
   const [year, month, day] = value.split("-");
   return `${day}/${month}/${year}`;
+}
+
+function planningWeekdayDateDisplay(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return "Date";
+  }
+
+  const dayName = new Intl.DateTimeFormat("fr-FR", { weekday: "long" }).format(parseDateInput(value));
+  return `${dayName} ${planningDateDisplay(value)}`;
 }
 
 function planningMonthDisplay(value) {
@@ -3345,6 +4952,12 @@ function handlePlanningTableClick(event) {
     return;
   }
 
+  if (action === "toggle-history-years") {
+    toggleAllPlanningHistoryYears();
+    renderPlanningTable();
+    return;
+  }
+
   if (action === "add-row") {
     if (!state.isPlanningEditMode || !canCurrentUserEditPlanning()) {
       return;
@@ -3422,6 +5035,10 @@ function handlePlanningTableClick(event) {
     }
     const row = state.planningRows.find((candidate) => candidate.id === rowID);
     if (!row || !isPlanningDraftRow(row)) {
+      return;
+    }
+    if (planningDuplicateRow(row)) {
+      setStatus("Doublon : même simulateur, type et date");
       return;
     }
     row.isDraft = false;
@@ -3645,7 +5262,7 @@ function refreshPlanningEmptyFieldState(fieldElement) {
   fieldElement.classList.toggle("planning-empty-select", !fieldElement.value);
 }
 
-function canValidatePlanningEditorRow(row) {
+function hasRequiredPlanningEditorFields(row) {
   const normalizedRow = normalizePlanningRow(row);
   const hasDateValue = normalizedRow.dateMode === "month"
     ? /^\d{4}-\d{2}$/.test(normalizedRow.month)
@@ -3653,8 +5270,43 @@ function canValidatePlanningEditorRow(row) {
   return Boolean(normalizedRow.simulatorName && normalizedRow.type && hasDateValue);
 }
 
+function canValidatePlanningEditorRow(row) {
+  const normalizedRow = normalizePlanningRow(row);
+  return hasRequiredPlanningEditorFields(normalizedRow) && !planningDuplicateRow(normalizedRow);
+}
+
+function planningDuplicateRow(row) {
+  const normalizedRow = normalizePlanningRow(row);
+  if (!hasRequiredPlanningEditorFields(normalizedRow)) {
+    return null;
+  }
+
+  const dateValue = normalizedRow.dateMode === "month" ? normalizedRow.month : normalizedRow.date;
+  const rowKey = [
+    normalizeKey(normalizedRow.simulatorName),
+    normalizeKey(normalizedRow.type),
+    normalizedRow.dateMode,
+    dateValue
+  ].join("|");
+
+  return normalizedPlanningRows().find((candidate) => {
+    const normalizedCandidate = normalizePlanningRow(candidate);
+    if (normalizedCandidate.id === normalizedRow.id || isPlanningDraftRow(normalizedCandidate)) {
+      return false;
+    }
+
+    const candidateDateValue = normalizedCandidate.dateMode === "month" ? normalizedCandidate.month : normalizedCandidate.date;
+    return [
+      normalizeKey(normalizedCandidate.simulatorName),
+      normalizeKey(normalizedCandidate.type),
+      normalizedCandidate.dateMode,
+      candidateDateValue
+    ].join("|") === rowKey;
+  }) || null;
+}
+
 function canEditPlanningTri(row) {
-  return canValidatePlanningEditorRow(row);
+  return hasRequiredPlanningEditorFields(row);
 }
 
 function validatePlanningEditor() {
@@ -3664,7 +5316,13 @@ function validatePlanningEditor() {
   }
 
   const row = normalizePlanningRow(editor.draft);
+  if (planningDuplicateRow(row)) {
+    setStatus("Doublon : même simulateur, type et date");
+    refreshPlanningEditorDerivedFields(document.querySelector("[data-planning-editor]"), row);
+    return;
+  }
   if (!canValidatePlanningEditorRow(row)) {
+    setStatus("Simu, type et date sont obligatoires");
     return;
   }
 
@@ -3696,6 +5354,12 @@ function validatePlanningEditor() {
 function deletePlanningEditorRow() {
   const editor = state.planningEditor;
   if (!editor || editor.mode === "create" || !canCurrentUserEditPlanning()) {
+    return;
+  }
+
+  if (editor.confirmDelete !== true) {
+    editor.confirmDelete = true;
+    renderPlanningTable();
     return;
   }
 
@@ -4122,6 +5786,12 @@ function refreshPlanningEditorDerivedFields(editorElement, row) {
     triInput.classList.toggle("planning-tri-alert", shouldHighlightMissingPlanningTri(row));
   }
 
+  const duplicateRow = planningDuplicateRow(row);
+  const duplicateWarning = editorElement.querySelector("[data-planning-duplicate-warning]");
+  if (duplicateWarning) {
+    duplicateWarning.classList.toggle("hidden", !duplicateRow);
+  }
+
   const validateButton = editorElement.querySelector("[data-planning-editor-action='validate']");
   if (validateButton) {
     validateButton.disabled = !canValidatePlanningEditorRow(row);
@@ -4151,6 +5821,87 @@ async function togglePlanningActivity(rowID) {
   } finally {
     state.planningActivityLoadingIDs.delete(rowID);
     renderPlanningTable();
+  }
+}
+
+function preventivePlanningTrackedFields() {
+  return ["simulatorName", "event", "startDate", "endDate", "itCarlDate", "remark"];
+}
+
+function preventivePlanningChangedFields(row, previousRow) {
+  const normalizedRow = normalizePreventivePlanningRow(row);
+  const normalizedPrevious = normalizePreventivePlanningRow(previousRow || {});
+  return preventivePlanningTrackedFields().filter((field) => stringValue(normalizedRow[field]) !== stringValue(normalizedPrevious[field]));
+}
+
+function preventivePlanningFirestorePayload(row) {
+  const normalizedRow = normalizePreventivePlanningRow(row);
+  return {
+    id: normalizedRow.id,
+    simulatorName: normalizedRow.simulatorName,
+    event: normalizedRow.event,
+    startDate: normalizedRow.startDate,
+    endDate: normalizedRow.endDate,
+    itCarlDate: normalizedRow.itCarlDate,
+    remark: normalizedRow.remark,
+    mirrorNoteID: normalizedRow.mirrorNoteID,
+    hasModifications: normalizedRow.hasModifications === true,
+    sortDate: normalizedRow.startDate || "9999-12-31",
+    simulatorKey: normalizeKey(normalizedRow.simulatorName),
+    eventKey: normalizeKey(normalizedRow.event)
+  };
+}
+
+function recordPreventivePlanningActivityFromEditor(row, { previousRow = null, changedFields = [], action = "updated" } = {}) {
+  if (!row || !state.authReady || shouldSuspendFirestoreSync() || !canCurrentUserEditPlanning()) {
+    return;
+  }
+
+  recordPreventivePlanningActivity({
+    event: preventivePlanningFirestorePayload(row),
+    previousEvent: previousRow ? preventivePlanningFirestorePayload(previousRow) : null,
+    changedFields,
+    action
+  }).then((result) => {
+    const hasModifications = result?.data?.hasModifications;
+    if (typeof hasModifications === "boolean") {
+      const localRow = state.preventivePlanningRows.find((candidate) => candidate.id === row.id);
+      if (localRow) {
+        localRow.hasModifications = hasModifications || localRow.hasModifications === true;
+      }
+      savePreventivePlanningRowsLocal();
+      if (state.activeView === "preventive-planning") {
+        renderPreventivePlanningTable();
+      }
+    }
+  }).catch((error) => {
+    setStatus(error.message || "Suivi préventif non enregistré");
+  });
+}
+
+async function togglePreventivePlanningActivity(rowID) {
+  if (state.planningActivityByRowID.has(rowID)) {
+    state.planningActivityByRowID.delete(rowID);
+    renderPreventivePlanningTable();
+    return;
+  }
+
+  if (state.planningActivityLoadingIDs.has(rowID)) {
+    return;
+  }
+
+  state.planningActivityLoadingIDs.add(rowID);
+  renderPreventivePlanningTable();
+  try {
+    const response = await getPreventivePlanningActivity({ eventID: rowID, limit: 25 });
+    const activities = Array.isArray(response?.data?.activities) ? response.data.activities : [];
+    state.planningActivityByRowID.set(rowID, activities);
+  } catch (error) {
+    setStatus(error.message || "Suivi préventif indisponible");
+    state.planningActivityByRowID.set(rowID, []);
+  } finally {
+    state.planningActivityLoadingIDs.delete(rowID);
+    renderPreventivePlanningTable();
   }
 }
 
@@ -4195,7 +5946,7 @@ function visiblePlanningRows() {
 }
 
 function planningArchiveYears() {
-  return [...new Set(normalizedPlanningRows()
+  return [...new Set(planningRowsWithImportedFallback(normalizedPlanningRows())
     .filter((row) => isPlanningEventPast(row))
     .map(planningArchiveYear)
     .filter(Boolean))]
@@ -4209,27 +5960,39 @@ function planningArchiveYear(row) {
 }
 
 function handlePlanningHistoryYearChange(input) {
-  const years = planningArchiveYears();
-  const checkedYears = [...elements.noteGroups.querySelectorAll("[data-planning-history-year]:checked")]
-    .map((checkbox) => Number(checkbox.dataset.planningHistoryYear))
-    .filter(Number.isInteger);
+  const selectedYear = Number(input.dataset.planningHistoryYear);
+  if (!Number.isInteger(selectedYear)) {
+    return;
+  }
 
-  state.selectedPlanningHistoryYears.clear();
-  checkedYears.forEach((checkedYear) => {
-    years
-      .filter((year) => year >= checkedYear)
-      .forEach((year) => state.selectedPlanningHistoryYears.add(year));
-  });
+  if (input.checked) {
+    state.selectedPlanningHistoryYears.add(selectedYear);
+  } else {
+    state.selectedPlanningHistoryYears.delete(selectedYear);
+  }
 
   renderPlanningTable();
+}
+
+function toggleAllPlanningHistoryYears() {
+  const years = planningArchiveYears();
+  const hasSelectedAllYears = years.length > 0 && years.every((year) => state.selectedPlanningHistoryYears.has(year));
+  if (hasSelectedAllYears) {
+    state.selectedPlanningHistoryYears.clear();
+    return;
+  }
+
+  years.forEach((year) => state.selectedPlanningHistoryYears.add(year));
 }
 
 function normalizePlanningRow(row) {
   const isDraft = row?.isDraft === true;
   const dateMode = row.dateMode === "month" ? "month" : "date";
   const hasValidDate = /^\d{4}-\d{2}-\d{2}$/.test(row.date);
+  const rowID = stringValue(row.id) || crypto.randomUUID();
+  const mirrorNoteID = stringValue(row.mirrorNoteID);
   return {
-    id: stringValue(row.id) || crypto.randomUUID(),
+    id: rowID,
     simulatorName: normalizePlanningSimulatorName(row.simulatorName),
     type: isDraft && !row.type ? "" : normalizePlanningType(row.type),
     dateMode,
@@ -4240,7 +6003,8 @@ function normalizePlanningRow(row) {
     participants: stringValue(row.participants),
     tri: stringValue(row.tri),
     notes: normalizePlanningSingleLineText(row.notes),
-    mirrorNoteID: stringValue(row.mirrorNoteID),
+    firestoreSource: row.firestoreSource === true,
+    mirrorNoteID: isUUIDString(mirrorNoteID) ? mirrorNoteID : planningMirrorNoteID(rowID),
     hasModifications: row.hasModifications === true,
     isDraft
   };
@@ -4259,6 +6023,7 @@ function createPlanningRow({ draft = false } = {}) {
     participants: "",
     tri: "",
     notes: "",
+    firestoreSource: false,
     mirrorNoteID: "",
     hasModifications: false,
     isDraft: draft
@@ -4618,7 +6383,7 @@ function planningTechnicianDisplayName(user) {
   const lastName = stringValue(user.lastName).trim();
   const firstName = stringValue(user.firstName).trim();
   if (firstName && lastName) {
-    return `${firstName.slice(0, 1).toLocaleUpperCase("fr")}. ${lastName}`;
+    return `${planningFirstNameInitials(firstName)}. ${lastName}`;
   }
 
   return lastName || firstName || currentDisplayNameForUser(user);
@@ -4673,9 +6438,20 @@ function planningSimulatorOptions(selectedName = "") {
 }
 
 function normalizePlanningSimulatorName(value) {
-  const name = stringValue(value).trim();
+  const name = canonicalPlanningSimulatorName(value);
   const key = normalizeKey(name);
   return key && key !== normalizeKey(generalName) && key !== normalizeKey("REX Application") ? name : "";
+}
+
+function canonicalPlanningSimulatorName(value) {
+  return stringValue(value).trim()
+    .replace(/^A22?0?FD$/i, "A220FTD")
+    .replace(/^A220TD$/i, "A220FTD")
+    .replace(/^A320TD$/i, "A320FTD")
+    .replace(/^A350TD$/i, "A350FTD")
+    .replace(/^B777TD$/i, "B777FTD")
+    .replace(/^B77FF([1-4])$/i, (_, number) => `B777FFS${number}`)
+    .replace(/^B777FF([1-4])$/i, (_, number) => `B777FFS${number}`);
 }
 
 function defaultPlanningSimulatorName() {
@@ -4692,7 +6468,126 @@ function savePlanningRowsLocal() {
 }
 
 function planningMirrorNoteID(rowID) {
+  return isUUIDString(rowID) ? stringValue(rowID) : "";
+}
+
+function legacyPlanningMirrorNoteID(rowID) {
   return rowID ? `regulatory-planning-${rowID}` : "";
+}
+
+function planningRowsWithImportedFallback(rows) {
+  const normalizedRows = Array.isArray(rows) ? rows.map(normalizePlanningRow) : [];
+  const existingKeys = new Set(normalizedRows.map(planningImportComparisonKey));
+  const missingImportedRows = importedRegulatoryPlanningRows
+    .map(normalizePlanningRow)
+    .filter((row) => !existingKeys.has(planningImportComparisonKey(row)));
+
+  return [...normalizedRows, ...missingImportedRows];
+}
+
+async function importMissingRegulatoryPlanningRowsIfNeeded(existingRows = normalizedPlanningRows()) {
+  if (
+    state.isImportingPlanningRows
+    || localStorage.getItem(planningFirestoreImportVersionStorageKey) === regulatoryPlanningImportVersion
+    || !state.authReady
+    || shouldSuspendFirestoreSync()
+    || !canCurrentUserEditPlanning()
+  ) {
+    return;
+  }
+
+  const existingKeys = new Set(existingRows.map(normalizePlanningRow).map(planningImportComparisonKey));
+  const missingRows = importedRegulatoryPlanningRows
+    .map(normalizePlanningRow)
+    .filter((row) => !existingKeys.has(planningImportComparisonKey(row)));
+
+  if (!missingRows.length) {
+    localStorage.setItem(planningFirestoreImportVersionStorageKey, regulatoryPlanningImportVersion);
+    return;
+  }
+
+  state.isImportingPlanningRows = true;
+  setStatus(`Import archives planning (${missingRows.length})...`);
+
+  try {
+    for (const row of missingRows) {
+      await saveRegulatoryPlanningEvent({
+        event: planningFirestorePayload(row),
+        previousEvent: null,
+        changedFields: Object.keys(planningFirestorePayload(row)),
+        action: "imported"
+      });
+      row.firestoreSource = true;
+      const rowKey = planningImportComparisonKey(row);
+      const existingLocalRow = state.planningRows.find((candidate) => planningImportComparisonKey(candidate) === rowKey);
+      if (existingLocalRow) {
+        existingLocalRow.firestoreSource = true;
+      } else {
+        state.planningRows.push(row);
+      }
+    }
+    localStorage.setItem(planningFirestoreImportVersionStorageKey, regulatoryPlanningImportVersion);
+    savePlanningRowsLocal();
+    setStatus("Archives planning importées");
+    if (state.activeView === "planning") {
+      renderPlanningTable();
+    }
+  } catch (error) {
+    setStatus(error.message || "Import archives planning impossible");
+  } finally {
+    state.isImportingPlanningRows = false;
+  }
+}
+
+async function refreshRegulatoryPlanningMirrorLabelsIfNeeded() {
+  if (
+    localStorage.getItem(planningMirrorLabelSyncStorageKey) === regulatoryPlanningMirrorLabelVersion
+    || !state.authReady
+    || shouldSuspendFirestoreSync()
+    || !canCurrentUserEditPlanning()
+  ) {
+    return;
+  }
+
+  try {
+    await refreshRegulatoryPlanningMirrorLabels({ version: regulatoryPlanningMirrorLabelVersion });
+    localStorage.setItem(planningMirrorLabelSyncStorageKey, regulatoryPlanningMirrorLabelVersion);
+  } catch (error) {
+    console.warn("Regulatory planning mirror label refresh skipped", error);
+  }
+}
+
+async function repairRegulatoryPlanningSimulatorNamesIfNeeded() {
+  if (
+    localStorage.getItem(planningSimulatorRepairStorageKey) === regulatoryPlanningSimulatorRepairVersion
+    || !state.authReady
+    || shouldSuspendFirestoreSync()
+    || !canCurrentUserEditPlanning()
+  ) {
+    return;
+  }
+
+  try {
+    await repairRegulatoryPlanningSimulatorNames({ version: regulatoryPlanningSimulatorRepairVersion });
+    localStorage.setItem(planningSimulatorRepairStorageKey, regulatoryPlanningSimulatorRepairVersion);
+  } catch (error) {
+    console.warn("Regulatory planning simulator repair skipped", error);
+  }
+}
+
+function planningImportComparisonKey(row) {
+  const normalizedRow = normalizePlanningRow(row);
+  return [
+    normalizedRow.simulatorName,
+    normalizedRow.type,
+    normalizedRow.dateMode,
+    normalizedRow.dateMode === "month" ? normalizedRow.month : normalizedRow.date,
+    normalizedRow.startTime,
+    normalizedRow.endTime,
+    normalizeKey(normalizedRow.participants),
+    normalizeKey(normalizedRow.tri),
+    normalizeKey(normalizedRow.notes)
+  ].join("|");
 }
 
 function savePlanningRows(row = null, { before = null, changedFields = [], action = "updated" } = {}) {
@@ -4703,6 +6598,7 @@ function savePlanningRows(row = null, { before = null, changedFields = [], actio
 
   const normalizedRow = normalizePlanningRow(row);
   const previousMirrorNoteID = normalizedRow.mirrorNoteID || planningMirrorNoteID(normalizedRow.id);
+  const previousLegacyMirrorNoteID = legacyPlanningMirrorNoteID(normalizedRow.id);
   saveRegulatoryPlanningEvent({
     event: planningFirestorePayload(normalizedRow),
     previousEvent: before ? planningFirestorePayload(normalizePlanningRow(before)) : null,
@@ -4715,7 +6611,9 @@ function savePlanningRows(row = null, { before = null, changedFields = [], actio
     const localRow = state.planningRows.find((candidate) => candidate.id === row.id);
     if (localRow) {
       localRow.mirrorNoteID = nextMirrorNoteID;
+      localRow.firestoreSource = true;
     }
+    row.firestoreSource = true;
 
     if (nextMirrorNoteID) {
       await fetchNoteByID(nextMirrorNoteID);
@@ -4723,6 +6621,10 @@ function savePlanningRows(row = null, { before = null, changedFields = [], actio
     if (previousMirrorNoteID && previousMirrorNoteID !== nextMirrorNoteID) {
       state.fetchedNotesByID.delete(previousMirrorNoteID);
       state.notes = state.notes.filter((note) => note.id !== previousMirrorNoteID);
+    }
+    if (previousLegacyMirrorNoteID && previousLegacyMirrorNoteID !== nextMirrorNoteID) {
+      state.fetchedNotesByID.delete(previousLegacyMirrorNoteID);
+      state.notes = state.notes.filter((note) => note.id !== previousLegacyMirrorNoteID);
     }
 
     if (typeof result?.data?.hasModifications === "boolean") {
@@ -4751,10 +6653,14 @@ function deletePlanningRowFromFirestore(row) {
 
   deleteRegulatoryPlanningEvent({ id: row.id })
     .then(() => {
-      const mirrorNoteID = normalizePlanningRow(row).mirrorNoteID || planningMirrorNoteID(row.id);
-      if (mirrorNoteID) {
-        state.fetchedNotesByID.delete(mirrorNoteID);
-        state.notes = state.notes.filter((note) => note.id !== mirrorNoteID);
+      const normalizedRow = normalizePlanningRow(row);
+      const mirrorNoteID = normalizedRow.mirrorNoteID || planningMirrorNoteID(normalizedRow.id);
+      const legacyMirrorNoteID = legacyPlanningMirrorNoteID(normalizedRow.id);
+      const mirrorNoteIDs = [mirrorNoteID, legacyMirrorNoteID].filter(Boolean);
+      if (mirrorNoteIDs.length) {
+        const mirrorNoteIDSet = new Set(mirrorNoteIDs);
+        mirrorNoteIDs.forEach((noteID) => state.fetchedNotesByID.delete(noteID));
+        state.notes = state.notes.filter((note) => !mirrorNoteIDSet.has(note.id));
         if (state.activeView === "notes") {
           render();
         }
@@ -5247,9 +7153,11 @@ function noteFromSnapshot(id, data) {
   const revisions = decodeRecordArray(data.revisionHistoryData);
   const reports = decodeRecordArray(data.reportHistoryData);
   const acknowledgements = decodeRecordArray(data.acknowledgementHistoryData);
+  const isRegulatoryPlanningMirror = data.regulatoryPlanningMirror === true;
+  const isPreventivePlanningMirror = data.preventivePlanningMirror === true;
   return {
     id,
-    title: stringValue(data.title),
+    title: isRegulatoryPlanningMirror ? normalizeRegulatoryPlanningMirrorTitle(stringValue(data.title)) : stringValue(data.title),
     text: stringValue(data.text),
     author: stringValue(data.author),
     authorIdentifier: stringValue(data.authorIdentifier),
@@ -5267,8 +7175,10 @@ function noteFromSnapshot(id, data) {
     isGeneral: Boolean(data.isGeneral),
     simulatorNames: destinationSimulatorNamesFromData(data),
     priority: stringValue(data.priorityRawValue),
-    regulatoryPlanningMirror: data.regulatoryPlanningMirror === true,
+    regulatoryPlanningMirror: isRegulatoryPlanningMirror,
     regulatoryPlanningEventID: stringValue(data.regulatoryPlanningEventID),
+    preventivePlanningMirror: isPreventivePlanningMirror,
+    preventivePlanningEventID: stringValue(data.preventivePlanningEventID),
     handwritingData: stringValue(data.handwritingData),
     handwritingPreviewImageData: stringValue(data.handwritingPreviewImageData),
     handwritingClearedAt: dateValue(data.handwritingClearedAt),
@@ -5282,6 +7192,10 @@ function noteFromSnapshot(id, data) {
     reports,
     acknowledgements
   };
+}
+
+function normalizeRegulatoryPlanningMirrorTitle(value) {
+  return stringValue(value).replace(/\bFly Out\b/g, "Fly-Out");
 }
 
 function openDetail(noteId, context, options = {}) {
@@ -6052,10 +7966,10 @@ function destinationSimulatorNamesFromData(data) {
   const storageNames = stringValue(data.simulatorNamesStorage)
     .replaceAll("\\n", "\n")
     .split("\n")
-    .map((name) => name.trim())
+    .map(canonicalPlanningSimulatorName)
     .filter(Boolean);
   const arrayNames = Array.isArray(data.simulatorNames)
-    ? data.simulatorNames.map((name) => stringValue(name).trim()).filter(Boolean)
+    ? data.simulatorNames.map(canonicalPlanningSimulatorName).filter(Boolean)
     : [];
 
   return uniqueStrings([...storageNames, ...arrayNames]);
@@ -6892,12 +8806,12 @@ function renderAdminUsers() {
           </select>
         </label>
         <label class="admin-checkbox-field">
-          <span>Planning réglementaire</span>
           <input id="newUserCanViewPlanning" type="checkbox">
+          <span>Consulter planning</span>
         </label>
         <label class="admin-checkbox-field">
-          <span>Modifier planning réglementaire</span>
           <input id="newUserCanEditPlanning" type="checkbox">
+          <span>Modifier Plannings</span>
         </label>
       </div>
       <div class="admin-actions create-user-actions">
@@ -6980,12 +8894,12 @@ function renderAdminUserCard(user) {
           </select>
         </label>
         <label class="admin-checkbox-field">
-          <span>Planning réglementaire</span>
           <input data-field="canViewPlanning" type="checkbox" ${canViewPlanning ? "checked" : ""} ${isAdminUser ? "disabled" : ""}>
+          <span>Consulter planning</span>
         </label>
         <label class="admin-checkbox-field">
-          <span>Modifier planning réglementaire</span>
           <input data-field="canEditPlanning" type="checkbox" ${canEditPlanning ? "checked" : ""} ${isAdminUser ? "disabled" : ""}>
+          <span>Modifier Plannings</span>
         </label>
       </div>
       <div class="admin-actions">
@@ -9327,6 +11241,7 @@ async function saveDetailEdit(note, options = {}) {
       await updateNote(note.id, patch);
       if (textChanged) {
         await syncPlanningNotesFromMirrorNoteIfNeeded(note, text);
+        await syncPreventivePlanningRemarkFromMirrorNoteIfNeeded(note, text);
       }
       await recordNoteEditActivity(note, context, {
         textChanged,
@@ -10131,6 +12046,25 @@ async function syncPlanningNotesFromMirrorNoteIfNeeded(note, nextText) {
     if (state.activeView === "planning") {
       renderPlanningTable();
     }
+  }
+}
+
+async function syncPreventivePlanningRemarkFromMirrorNoteIfNeeded(note, nextText) {
+  if (!note?.preventivePlanningMirror || !note.preventivePlanningEventID) {
+    return;
+  }
+
+  const rowID = stringValue(note.preventivePlanningEventID);
+  const row = state.preventivePlanningRows.find((candidate) => candidate.id === rowID);
+  if (!row) {
+    return;
+  }
+
+  row.remark = normalizePlanningSingleLineText(nextText);
+  row.mirrorNoteID = note.id;
+  savePreventivePlanningRowsLocal();
+  if (state.activeView === "preventive-planning") {
+    renderPreventivePlanningTable();
   }
 }
 

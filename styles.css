@@ -982,17 +982,23 @@ body.requires-login .login-panel > :not(.sidebar-login-button) {
   gap: 8px;
 }
 
+.sidebar-planning-buttons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
 .sidebar-nav-button {
   width: 100%;
   min-height: 30px;
-  padding: 7px 16px;
-  margin-bottom: 8px;
+  padding: 6px 8px;
+  margin-bottom: 0;
   border: 1px solid rgba(47, 128, 237, 0.18);
   border-radius: 8px;
   color: var(--blue-dark);
   background: rgba(255, 255, 255, 0.62);
-  text-align: left;
-  font-size: 13px;
+  text-align: center;
+  font-size: 11px;
   font-weight: 850;
 }
 
@@ -1040,6 +1046,12 @@ body.planning-view .note-groups {
 }
 
 body.planning-view .topbar {
+  display: none;
+}
+
+body.planning-view #planningSidebarNav,
+body.planning-view #notesFilterSection,
+body.planning-view #notesSearchSection {
   display: none;
 }
 
@@ -1146,11 +1158,25 @@ h1:empty + p {
   gap: 16px;
 }
 
+.planning-title-line {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 10px;
+}
+
 .planning-banner-top h1 {
   margin: 0;
   color: var(--ink);
   font-size: clamp(22px, 3vw, 31px);
   line-height: 1.16;
+  white-space: nowrap;
+}
+
+.planning-visible-count {
+  color: rgba(15, 23, 42, 0.62);
+  font-size: 11px;
+  font-weight: 850;
   white-space: nowrap;
 }
 
@@ -1213,40 +1239,43 @@ h1:empty + p {
   width: min(360px, calc(100vw - 36px));
   border: 1px solid rgba(15, 23, 42, 0.12);
   border-radius: 10px;
-  padding: 16px;
+  padding: 14px 16px;
   background: #ffffff;
   box-shadow: 0 18px 42px rgba(15, 23, 42, 0.24);
 }
 
 .planning-history-modal h2 {
-  margin: 0 0 12px;
+  margin: 0 0 10px;
   color: var(--ink);
-  font-size: 22px;
+  font-size: 20px;
   line-height: 1.1;
 }
 
 .planning-history-years {
   display: grid;
-  gap: 8px;
-  margin-bottom: 16px;
+  gap: 5px;
+  max-height: 290px;
+  margin-bottom: 14px;
+  overflow-y: auto;
 }
 
 .planning-history-year-option {
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-height: 42px;
+  gap: 8px;
+  min-height: 28px;
   border: 1px solid rgba(15, 23, 42, 0.12);
-  border-radius: 8px;
-  padding: 8px 10px;
+  border-radius: 6px;
+  padding: 4px 8px;
   color: var(--ink);
   background: rgba(239, 246, 255, 0.74);
-  font-weight: 800;
+  font-size: 12px;
+  font-weight: 850;
 }
 
 .planning-history-year-option input {
-  width: 20px;
-  height: 20px;
+  width: 16px;
+  height: 16px;
   margin: 0;
   accent-color: #2563eb;
 }
@@ -1259,15 +1288,35 @@ h1:empty + p {
 
 .planning-history-modal-actions {
   display: flex;
+  flex-wrap: nowrap;
   justify-content: flex-end;
   gap: 8px;
 }
 
+.planning-history-select-all-button,
 .planning-history-cancel-button,
 .planning-history-show-button {
-  min-width: 104px;
+  min-width: 0;
   min-height: 38px;
   border-radius: 8px;
+}
+
+.planning-history-select-all-button {
+  flex: 1 1 auto;
+  padding: 0 12px;
+  color: #1d4ed8;
+  background: #dbeafe;
+}
+
+.planning-history-cancel-button,
+.planning-history-show-button {
+  flex: 0 0 88px;
+}
+
+.planning-history-select-all-button:disabled {
+  cursor: not-allowed;
+  color: #94a3b8;
+  background: #e2e8f0;
 }
 
 .planning-history-cancel-button {
@@ -1318,6 +1367,10 @@ h1:empty + p {
   border-bottom: 0;
   border-radius: 6px 6px 0 0;
   background: rgba(244, 248, 252, 0.98);
+}
+
+.preventive-planning-header-row {
+  grid-template-columns: 24px 92px 92px 112px 112px 128px 112px minmax(220px, 1fr) 50px;
 }
 
 .planning-header-row > div {
@@ -1482,6 +1535,56 @@ h1:empty + p {
 .planning-col-actions {
   width: 50px;
   min-width: 50px;
+}
+
+.preventive-planning-table {
+  min-width: 922px;
+}
+
+.preventive-planning-table td {
+  color: rgba(51, 65, 85, 0.88);
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.preventive-planning-table td > span {
+  display: block;
+  min-width: 0;
+  min-height: 24px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 24px;
+}
+
+.preventive-col-simu {
+  width: 92px;
+  min-width: 92px;
+}
+
+.preventive-col-date {
+  width: 112px;
+  min-width: 112px;
+}
+
+.preventive-col-event {
+  width: 92px;
+  min-width: 92px;
+}
+
+.preventive-col-team {
+  width: 128px;
+  min-width: 128px;
+}
+
+.preventive-col-remark {
+  width: auto;
+  min-width: 220px;
+}
+
+.planning-empty-read {
+  color: #8a94a6;
 }
 
 .planning-status-icons {
@@ -1762,6 +1865,10 @@ h1:empty + p {
   box-shadow: 0 22px 55px rgba(15, 23, 42, 0.24);
 }
 
+.preventive-planning-editor-panel {
+  width: min(900px, calc(100vw - 36px));
+}
+
 .planning-editor-title,
 .planning-editor-actions {
   display: flex;
@@ -1781,6 +1888,10 @@ h1:empty + p {
   grid-template-columns: minmax(104px, 0.75fr) minmax(148px, 1fr) minmax(70px, 0.45fr) minmax(70px, 0.45fr) minmax(64px, 0.38fr);
   gap: 10px 12px;
   margin-top: 14px;
+}
+
+.preventive-planning-editor-grid {
+  grid-template-columns: minmax(124px, 1fr) minmax(128px, 1fr) minmax(104px, 0.82fr) minmax(104px, 0.82fr) minmax(72px, 0.55fr) minmax(124px, 0.95fr);
 }
 
 .planning-editor-field {
@@ -1916,6 +2027,34 @@ h1:empty + p {
   grid-column: 1 / -1;
 }
 
+.preventive-editor-simu {
+  grid-column: 1 / 2;
+}
+
+.preventive-editor-event {
+  grid-column: 2 / 3;
+}
+
+.preventive-editor-start {
+  grid-column: 3 / 4;
+}
+
+.preventive-editor-end {
+  grid-column: 4 / 5;
+}
+
+.preventive-editor-team {
+  grid-column: 5 / 6;
+}
+
+.preventive-editor-itcarl {
+  grid-column: 6 / 7;
+}
+
+.preventive-editor-remark {
+  grid-column: 1 / -1;
+}
+
 .planning-editor-grid textarea {
   min-height: 76px;
   padding: 8px;
@@ -1925,6 +2064,17 @@ h1:empty + p {
 .planning-editor-actions {
   justify-content: flex-end;
   margin-top: 14px;
+}
+
+.planning-editor-warning {
+  margin: 10px 0 0;
+  border: 1px solid rgba(245, 158, 11, 0.55);
+  border-radius: 7px;
+  padding: 8px 10px;
+  color: #92400e;
+  background: rgba(245, 158, 11, 0.14);
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .planning-editor-validate,
@@ -1953,10 +2103,26 @@ h1:empty + p {
   background: rgba(226, 232, 240, 0.9);
 }
 
-.planning-editor-delete {
+.planning-editor-delete-zone {
+  display: flex;
   margin-right: auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.planning-editor-delete-confirm {
+  color: #991b1b;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.planning-editor-delete {
   color: #ffffff;
   background: #ef4444;
+}
+
+.planning-editor-delete.confirm {
+  background: #b91c1c;
 }
 
 @media (max-width: 720px) {
@@ -3043,10 +3209,10 @@ mark {
 
 .admin-form-grid .admin-checkbox-field {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   min-height: 58px;
-  gap: 12px;
+  gap: 6px;
   padding: 8px 0;
 }
 
