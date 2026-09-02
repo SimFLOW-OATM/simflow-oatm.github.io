@@ -30,7 +30,7 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
-const WEB_APP_VERSION = "1.89";
+const WEB_APP_VERSION = "1.89a";
 const userGuideURL = "./assets/Guide%20utilisateur%20SimFLOW.pdf";
 const deletedLegacySimulatorNames = new Set(["Simu", "Simu 1", "Simu 2", "Simu 3", "Simu 4", "Simu Tes", "Simu test 2", "Simu Test 2"]);
 const sessionStorageKey = "simflow.web.currentUser";
@@ -10610,29 +10610,13 @@ async function toggleAcknowledgement(note, context) {
     return;
   }
 
-  const scopeType = "user";
-  const scopeID = state.currentUser.id;
   const now = new Date();
   const alreadyAcknowledged = note.acknowledgements.some((acknowledgement) => {
     return acknowledgement.context === context
-      && acknowledgement.scopeType === scopeType
-      && acknowledgement.scopeID === scopeID;
+      && acknowledgement.scopeType === "user"
+      && acknowledgement.scopeID === state.currentUser.id;
   });
-  const acknowledgements = alreadyAcknowledged
-    ? note.acknowledgements.filter((acknowledgement) => {
-        return !(acknowledgement.context === context
-          && acknowledgement.scopeType === scopeType
-          && acknowledgement.scopeID === scopeID);
-      })
-    : [...note.acknowledgements, {
-        id: crypto.randomUUID(),
-        context,
-        scopeType,
-        scopeID,
-        author: currentDisplayName(),
-        authorIdentifier: state.currentUser.id,
-        date: now
-      }];
+  const acknowledgements = updatedAcknowledgementState(note, context, !alreadyAcknowledged, now);
 
   await updateNote(note.id, {
     acknowledgementHistoryData: acknowledgements.length ? encodeRecordArray(acknowledgements) : deleteField(),
@@ -11987,8 +11971,9 @@ function updatedCompletionState(note, context, shouldBeDone, completionDate, com
 function updatedAcknowledgementState(note, context, shouldBeAcknowledged, now) {
   const scopeType = "user";
   const scopeID = state.currentUser.id;
+  const targetContexts = acknowledgementTargetContexts(note, context);
   const withoutCurrent = note.acknowledgements.filter((acknowledgement) => {
-    return !(acknowledgement.context === context
+    return !(targetContexts.includes(acknowledgement.context)
       && acknowledgement.scopeType === scopeType
       && acknowledgement.scopeID === scopeID);
   });
@@ -11997,15 +11982,26 @@ function updatedAcknowledgementState(note, context, shouldBeAcknowledged, now) {
     return withoutCurrent;
   }
 
-  return [...withoutCurrent, {
+  return [...withoutCurrent, ...targetContexts.map((targetContext) => ({
     id: crypto.randomUUID(),
-    context,
+    context: targetContext,
     scopeType,
     scopeID,
     author: currentDisplayName(),
     authorIdentifier: state.currentUser.id,
     date: now
-  }];
+  }))];
+}
+
+function acknowledgementTargetContexts(note, context) {
+  if (note?.isGeneral) {
+    return [generalName];
+  }
+
+  const names = Array.isArray(note?.simulatorNames)
+    ? uniqueStrings(note.simulatorNames.map((name) => stringValue(name)).filter(Boolean))
+    : [];
+  return names.length > 1 ? names : [context].filter(Boolean);
 }
 
 async function updateNote(noteID, patch) {
@@ -13935,6 +13931,9 @@ async function recordActivityEvent(action, note, context = "") {
     return;
   }
 
+  const simulatorNames = ["acknowledged", "acknowledgementCancelled"].includes(action)
+    ? acknowledgementTargetContexts(note, context || (note.isGeneral ? generalName : note.simulatorNames?.[0] || ""))
+    : context ? [context] : activitySimulatorNames(note);
   const id = crypto.randomUUID();
   await setDoc(doc(db, "activityEvents", id), {
     id,
@@ -13944,7 +13943,7 @@ async function recordActivityEvent(action, note, context = "") {
     actionTitle: activityActionTitles[action] || action,
     noteID: note.id,
     noteTitle: note.title || "",
-    simulatorNames: context ? [context] : activitySimulatorNames(note),
+    simulatorNames,
     context: context || "",
     createdAt: new Date()
   });
