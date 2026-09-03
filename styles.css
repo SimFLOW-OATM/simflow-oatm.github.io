@@ -3579,7 +3579,7 @@ mark {
 .detail-body {
   align-content: start;
   gap: 20px;
-  padding: 0 14px 34px;
+  padding: 12px 14px 34px;
   background: #38383d;
 }
 
@@ -3875,7 +3875,8 @@ mark {
 .detail-top-pills-section {
   background: transparent;
   box-shadow: none;
-  padding: 0;
+  padding: 4px 0 8px;
+  overflow: visible;
 }
 
 .detail-main-value {
@@ -3890,6 +3891,8 @@ mark {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  align-items: center;
+  overflow: visible;
 }
 
 .detail-simulator-pill {
@@ -3901,12 +3904,25 @@ mark {
   color: #ffffff;
   font-size: 20px;
   font-weight: 850;
-  line-height: 1;
+  line-height: 1.12;
 }
 
 .detail-top-pills-section .detail-simulator-pill {
   min-height: 40px;
   font-size: 22px;
+}
+
+.detail-top-pills-section .detail-simulator-pill.secondary-context {
+  min-height: 28px;
+  padding: 0 11px;
+  font-size: 13px;
+  font-weight: 760;
+  opacity: 0.58;
+  align-self: center;
+}
+
+.detail-top-pills-section .detail-simulator-pill.current-context {
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.92), 0 6px 16px rgba(15, 23, 42, 0.22);
 }
 
 .detail-subsection {
@@ -4122,18 +4138,28 @@ mark {
   line-height: 1.25;
 }
 
-.date-confirm-choice {
+.date-confirm-choice,
+.delete-confirm-choice {
   position: relative;
   z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 100%;
   min-height: 44px;
   border-radius: 999px;
   padding: 0 14px;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 850;
+  line-height: 1.15;
+  text-align: center;
+  box-shadow: none;
+}
+
+.date-confirm-choice {
   color: #111827;
   background: rgba(209, 209, 214, 0.78);
-  font-size: 14px;
-  font-weight: 850;
-  box-shadow: none;
 }
 
 .date-confirm-choice + .date-confirm-choice {
@@ -4142,7 +4168,6 @@ mark {
 
 .date-confirm-choice.primary {
   background: rgba(198, 198, 203, 0.9);
-  font-size: 16px;
 }
 
 .delete-confirm-popover {
@@ -4188,17 +4213,8 @@ mark {
 }
 
 .delete-confirm-choice {
-  position: relative;
-  z-index: 1;
-  width: 100%;
-  min-height: 44px;
-  border-radius: 999px;
-  padding: 0 14px;
   color: #ff2d2d;
   background: rgba(209, 209, 214, 0.82);
-  font-size: 14px;
-  font-weight: 850;
-  box-shadow: none;
 }
 
 .delete-confirm-choice + .delete-confirm-choice {

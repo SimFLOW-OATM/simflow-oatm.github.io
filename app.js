@@ -30,7 +30,7 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
-const WEB_APP_VERSION = "1.89a";
+const WEB_APP_VERSION = "1.90";
 const userGuideURL = "./assets/Guide%20utilisateur%20SimFLOW.pdf";
 const deletedLegacySimulatorNames = new Set(["Simu", "Simu 1", "Simu 2", "Simu 3", "Simu 4", "Simu Tes", "Simu test 2", "Simu Test 2"]);
 const sessionStorageKey = "simflow.web.currentUser";
@@ -54,10 +54,13 @@ const activeRealtimeUntil = new Date("2100-01-01T00:00:00.000Z");
 const webDeviceStorageKey = "simflow.web.deviceIdentifier";
 const sessionDurationMs = 30 * 24 * 60 * 60 * 1000;
 const staleDataRefreshThresholdMs = 24 * 60 * 60 * 1000;
-const staleDataRefreshWarningThresholdMs = 30 * 60 * 1000;
+const staleDataRefreshWarningThresholdMs = 12 * 60 * 60 * 1000;
 const wakeAutoDataRefreshThresholdMs = 12 * 60 * 60 * 1000;
+const wakeHeartbeatIntervalMs = 60 * 1000;
+const wakeHeartbeatGapThresholdMs = 5 * 60 * 1000;
+const wakeHeartbeatRefreshCooldownMs = 10 * 60 * 1000;
 const activeLoginSessionWindowMs = 90 * 1000;
-const loginPresenceRefreshMs = 2 * 1000;
+const loginPresenceRefreshMs = 15 * 1000;
 const firestoreReadStatsFlushMs = 5 * 1000;
 const planningFirestoreSyncIntervalMs = 60 * 60 * 1000;
 const planningTypes = [
@@ -624,6 +627,8 @@ const state = {
   adminMessageSendsToAll: false,
   adminMessageRecipientIDs: new Set(),
   lastLoginEventAt: 0,
+  lastWakeHeartbeatAt: Date.now(),
+  lastWakeHeartbeatRefreshAt: 0,
   initialDataRefreshVisible: false,
   pendingInitialDataRefreshResources: new Set(),
   lastSuccessfulDataRefreshAt: readStoredDataRefreshDate(),
@@ -893,6 +898,7 @@ window.addEventListener("beforeunload", () => {
 });
 window.setInterval(renderDataRefreshIndicator, 60 * 1000);
 window.setInterval(refreshAdminConnectionsPresence, loginPresenceRefreshMs);
+window.setInterval(checkWakeHeartbeat, wakeHeartbeatIntervalMs);
 elements.userSummaryButton.addEventListener("click", () => {
   elements.userMenu.classList.toggle("hidden");
 });
@@ -1214,7 +1220,12 @@ elements.detailOverlay.addEventListener("click", (event) => {
   if (action === "toggle-done") {
     toggleDraftDoneButton(event.target.closest("[data-detail-action]"));
   } else if (action === "toggle-ack") {
-    toggleDraftAcknowledgementButton(event.target.closest("[data-detail-action]"));
+    const button = event.target.closest("[data-detail-action]");
+    if (shouldAskAcknowledgementScope(note, state.selectedDetail.context)) {
+      showAcknowledgementScopeConfirmation(note, state.selectedDetail.context, button);
+    } else {
+      toggleDraftAcknowledgementButton(button, note, state.selectedDetail.context, "one");
+    }
   } else if (action === "save-edit") {
     saveDetailEdit(note);
   } else if (action === "resync-note") {
@@ -1773,11 +1784,6 @@ async function flushFirestoreReadStats() {
     window.clearTimeout(state.firestoreReadStatsFlushTimer);
     state.firestoreReadStatsFlushTimer = null;
   }
-  if (state.planningFirestoreSyncTimer) {
-    window.clearInterval(state.planningFirestoreSyncTimer);
-    state.planningFirestoreSyncTimer = null;
-  }
-
   if (shouldSuspendFirestoreSync()) {
     state.firestoreReadStatsBuffer.clear();
     return;
@@ -1852,6 +1858,7 @@ function handleAppBecameVisible() {
     return;
   }
 
+  checkWakeHeartbeat();
   const shouldRefreshAfterWake = shouldShowWakeAutoDataRefresh();
   recordLoginAppearance();
   if (!shouldRefreshAfterWake && !shouldShowStaleDataRefresh()) {
@@ -1883,6 +1890,35 @@ function shouldShowStaleDataRefresh() {
 function shouldShowWakeAutoDataRefresh() {
   const lastActiveAt = Number(localStorage.getItem(lastActiveStorageKey) || 0);
   return lastActiveAt > 0 && Date.now() - lastActiveAt >= wakeAutoDataRefreshThresholdMs;
+}
+
+function checkWakeHeartbeat() {
+  const now = Date.now();
+  const gap = now - state.lastWakeHeartbeatAt;
+
+  if (document.visibilityState === "hidden") {
+    if (gap < wakeHeartbeatGapThresholdMs) {
+      state.lastWakeHeartbeatAt = now;
+    }
+    return;
+  }
+
+  state.lastWakeHeartbeatAt = now;
+
+  if (gap < wakeHeartbeatGapThresholdMs) {
+    return;
+  }
+
+  if (!state.authReady || !state.currentUser || shouldSuspendFirestoreSync()) {
+    return;
+  }
+
+  if (now - state.lastWakeHeartbeatRefreshAt < wakeHeartbeatRefreshCooldownMs) {
+    return;
+  }
+
+  state.lastWakeHeartbeatRefreshAt = now;
+  refreshDataAfterWake();
 }
 
 function prepareInitialDataRefreshIfNeeded() {
@@ -7372,7 +7408,7 @@ function renderCreate(context) {
   elements.detailContext.textContent = "Nouvelle consigne";
   elements.detailBody.innerHTML = `
     <section class="detail-section simulator-names-section detail-top-pills-section">
-      ${renderSimulatorNamePills(draftNote)}
+      ${renderSimulatorNamePills(draftNote, context)}
     </section>
 
     <section class="detail-section priority-section">
@@ -7441,7 +7477,7 @@ function renderDetail(note, context) {
   elements.detailContext.textContent = context;
   elements.detailBody.innerHTML = `
     <section class="detail-section simulator-names-section detail-top-pills-section">
-      ${renderSimulatorNamePills(note)}
+      ${renderSimulatorNamePills(note, context)}
     </section>
 
     <section class="detail-section action-section">
@@ -7554,13 +7590,14 @@ function toggleDraftDoneButton(button) {
   }
 }
 
-function toggleDraftAcknowledgementButton(button) {
+function toggleDraftAcknowledgementButton(button, note, context, acknowledgementScope = "one") {
   if (!button || button.disabled) {
     return;
   }
 
   const nextState = button.dataset.draftState !== "true";
   button.dataset.draftState = nextState ? "true" : "false";
+  button.dataset.ackScope = acknowledgementScope;
   button.classList.toggle("active-ack", nextState);
   button.innerHTML = `${renderIcon("badge-check", "action-icon")}${nextState ? "Annuler prise en compte" : "Pris en compte"}`;
 }
@@ -7810,19 +7847,23 @@ function simulatorColorForName(name) {
   return visibleSimulatorContexts().find((simulator) => normalizeKey(simulator.name) === normalizeKey(name))?.colorHex || "#6b7280";
 }
 
-function renderSimulatorNamePills(note) {
+function renderSimulatorNamePills(note, currentContext = "") {
   const names = simulatorNamesForPills(note);
   if (!names.length) {
     return `<p class="detail-main-value muted">${escapeHtml(simulatorNamesText(note))}</p>`;
   }
 
+  const hasCurrentContext = names.some((name) => normalizeKey(name) === normalizeKey(currentContext));
   return `
     <div class="detail-simulator-pill-row">
-      ${names.map((name) => `
-        <span class="detail-simulator-pill" style="background:${escapeAttribute(simulatorColorForName(name))}">
+      ${names.map((name) => {
+        const isCurrent = hasCurrentContext && normalizeKey(name) === normalizeKey(currentContext);
+        return `
+        <span class="detail-simulator-pill${hasCurrentContext && !isCurrent ? " secondary-context" : ""}${isCurrent ? " current-context" : ""}" style="background:${escapeAttribute(simulatorColorForName(name))}">
           ${escapeHtml(name)}
         </span>
-      `).join("")}
+      `;
+      }).join("")}
     </div>
   `;
 }
@@ -11034,6 +11075,45 @@ function showDoneDateConfirmation(note, selectedDoneDate, options = {}) {
   elements.detailBody.appendChild(popover);
 }
 
+function showAcknowledgementScopeConfirmation(note, context, button) {
+  elements.detailBody.querySelector(".date-confirm-popover")?.remove();
+  const popover = document.createElement("div");
+  const isCancelling = button?.dataset.draftState === "true";
+  popover.className = "date-confirm-popover";
+  popover.setAttribute("role", "dialog");
+  popover.setAttribute("aria-modal", "true");
+  popover.innerHTML = `
+    <strong>${isCancelling ? "Annuler la prise en compte" : "Prise en compte"} multi-simu</strong>
+    <p>Cette consigne concerne plusieurs simulateurs. Choisir la portée de l'action.</p>
+    <button type="button" class="date-confirm-choice" data-ack-scope-confirm="one">
+      ${isCancelling ? "Annuler pour" : "Prendre en compte pour"} ${escapeHtml(context)}
+    </button>
+    <button type="button" class="date-confirm-choice primary" data-ack-scope-confirm="all">
+      ${isCancelling ? "Annuler pour tous les simus" : "Prendre en compte pour tous les simus"}
+    </button>
+    <button type="button" class="date-confirm-choice" data-ack-scope-cancel>
+      Annuler
+    </button>
+  `;
+
+  popover.addEventListener("click", (event) => {
+    if (event.target.closest("[data-ack-scope-cancel]")) {
+      popover.remove();
+      return;
+    }
+
+    const scope = event.target.closest("[data-ack-scope-confirm]")?.dataset.ackScopeConfirm;
+    if (!scope) {
+      return;
+    }
+
+    popover.remove();
+    toggleDraftAcknowledgementButton(button, note, context, scope);
+  });
+
+  elements.detailBody.appendChild(popover);
+}
+
 async function saveDetailEdit(note, options = {}) {
   if (!canCurrentUserWrite() || state.isSaving) {
     return;
@@ -11052,6 +11132,7 @@ async function saveDetailEdit(note, options = {}) {
   const draftDone = doneButton?.dataset.draftState === "true";
   const initialAcknowledged = ackButton?.dataset.initialState === "true";
   const draftAcknowledged = ackButton?.dataset.draftState === "true";
+  const acknowledgementScope = options.acknowledgementScope || ackButton?.dataset.ackScope || "one";
   const selectedDoneDate = options.doneDate
     ? startOfDay(options.doneDate)
     : initialDone
@@ -11184,7 +11265,7 @@ async function saveDetailEdit(note, options = {}) {
   }
 
   if (acknowledgementChanged && !announcesContentModification) {
-    const acknowledgementUpdate = updatedAcknowledgementState(note, context, draftAcknowledged, now);
+    const acknowledgementUpdate = updatedAcknowledgementState(note, context, draftAcknowledged, now, acknowledgementScope);
     patch.acknowledgementHistoryData = acknowledgementUpdate.length ? encodeRecordArray(acknowledgementUpdate) : deleteField();
   }
 
@@ -11217,6 +11298,7 @@ async function saveDetailEdit(note, options = {}) {
         draftDone,
         acknowledgementChanged,
         draftAcknowledged,
+        acknowledgementScope,
         announcesContentModification,
         handwritingClearChanged,
         now
@@ -11236,7 +11318,8 @@ async function saveDetailEdit(note, options = {}) {
         doneChanged,
         draftDone,
         acknowledgementChanged,
-        draftAcknowledged
+        draftAcknowledged,
+        acknowledgementScope
       });
     }
     if (handwritingClearChanged) {
@@ -11285,7 +11368,10 @@ async function detachContextModification(note, context, draft) {
 
   let detachedAcknowledgements = currentContextAcknowledgements;
   if (draft.acknowledgementChanged && !draft.announcesContentModification) {
-    detachedAcknowledgements = contextRecords(updatedAcknowledgementState(note, context, draft.draftAcknowledged, draft.now), context);
+    detachedAcknowledgements = contextRecords(
+      updatedAcknowledgementState(note, context, draft.draftAcknowledged, draft.now, "one"),
+      context
+    );
   }
 
   const detachedID = crypto.randomUUID().toUpperCase();
@@ -11968,10 +12054,10 @@ function updatedCompletionState(note, context, shouldBeDone, completionDate, com
   return { completions, completionCancellations, completedContexts };
 }
 
-function updatedAcknowledgementState(note, context, shouldBeAcknowledged, now) {
+function updatedAcknowledgementState(note, context, shouldBeAcknowledged, now, acknowledgementScope = "one") {
   const scopeType = "user";
   const scopeID = state.currentUser.id;
-  const targetContexts = acknowledgementTargetContexts(note, context);
+  const targetContexts = acknowledgementTargetContexts(note, context, acknowledgementScope);
   const withoutCurrent = note.acknowledgements.filter((acknowledgement) => {
     return !(targetContexts.includes(acknowledgement.context)
       && acknowledgement.scopeType === scopeType
@@ -11993,7 +12079,7 @@ function updatedAcknowledgementState(note, context, shouldBeAcknowledged, now) {
   }))];
 }
 
-function acknowledgementTargetContexts(note, context) {
+function acknowledgementTargetContexts(note, context, acknowledgementScope = "one") {
   if (note?.isGeneral) {
     return [generalName];
   }
@@ -12001,7 +12087,19 @@ function acknowledgementTargetContexts(note, context) {
   const names = Array.isArray(note?.simulatorNames)
     ? uniqueStrings(note.simulatorNames.map((name) => stringValue(name)).filter(Boolean))
     : [];
-  return names.length > 1 ? names : [context].filter(Boolean);
+  return acknowledgementScope === "all" && names.length > 1 ? names : [context].filter(Boolean);
+}
+
+function shouldAskAcknowledgementScope(note, context) {
+  if (!context || context === generalName || note?.isGeneral) {
+    return false;
+  }
+
+  const names = Array.isArray(note?.simulatorNames)
+    ? uniqueStrings(note.simulatorNames.map((name) => stringValue(name)).filter(Boolean))
+    : [];
+  const contextKey = normalizeKey(context);
+  return names.length > 1 && names.some((name) => normalizeKey(name) === contextKey);
 }
 
 async function updateNote(noteID, patch) {
@@ -13922,17 +14020,23 @@ async function recordNoteEditActivity(note, context, changes) {
   }
 
   for (const action of actions) {
-    await recordActivityEvent(action, note, context);
+    await recordActivityEvent(action, note, context, {
+      acknowledgementScope: changes.acknowledgementScope || "one"
+    });
   }
 }
 
-async function recordActivityEvent(action, note, context = "") {
+async function recordActivityEvent(action, note, context = "", options = {}) {
   if (!state.authReady || !state.currentUser?.id || !note?.id) {
     return;
   }
 
   const simulatorNames = ["acknowledged", "acknowledgementCancelled"].includes(action)
-    ? acknowledgementTargetContexts(note, context || (note.isGeneral ? generalName : note.simulatorNames?.[0] || ""))
+    ? acknowledgementTargetContexts(
+        note,
+        context || (note.isGeneral ? generalName : note.simulatorNames?.[0] || ""),
+        options.acknowledgementScope || "one"
+      )
     : context ? [context] : activitySimulatorNames(note);
   const id = crypto.randomUUID();
   await setDoc(doc(db, "activityEvents", id), {
