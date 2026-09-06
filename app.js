@@ -30,7 +30,7 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
-const WEB_APP_VERSION = "1.90";
+const WEB_APP_VERSION = "1.91";
 const userGuideURL = "./assets/Guide%20utilisateur%20SimFLOW.pdf";
 const deletedLegacySimulatorNames = new Set(["Simu", "Simu 1", "Simu 2", "Simu 3", "Simu 4", "Simu Tes", "Simu test 2", "Simu Test 2"]);
 const sessionStorageKey = "simflow.web.currentUser";
@@ -320,8 +320,9 @@ const importedRegulatoryPlanningRows = [
 ];
 
 function importedPlanningRow(simulatorName, type, date, startTime, endTime, participants, tri, notes = "") {
+  const importKey = `import-${date.slice(0, 4) || "planning"}-${simulatorName}-${type}-${date}-${startTime || "day"}`.toLocaleLowerCase("fr").replace(/[^a-z0-9]+/g, "-");
   return {
-    id: `import-${date.slice(0, 4) || "planning"}-${simulatorName}-${type}-${date}-${startTime || "day"}`.toLocaleLowerCase("fr").replace(/[^a-z0-9]+/g, "-"),
+    id: deterministicUUIDFromText(`regulatory-planning:${importKey}`),
     simulatorName,
     type,
     dateMode: "date",
@@ -2172,7 +2173,10 @@ function isNoteCoveredByRealtimeFetch(note, displayWindow = realtimeDisplayWindo
 }
 
 async function fetchHandwritingNotesFromServer() {
-  const snapshot = await getDocs(collection(db, "handwritingNotes"));
+  const handwritingQuery = isAdminSession()
+    ? collection(db, "handwritingNotes")
+    : query(collection(db, "handwritingNotes"), where("authorIdentifier", "==", state.currentUser.id));
+  const snapshot = await getDocs(handwritingQuery);
   trackFirestoreRead("handwritingNotes", snapshot.docs.length);
   state.handwritingNotes = snapshot.docs
     .map((document) => handwritingNoteFromSnapshot(document.id, document.data()))
@@ -2272,7 +2276,10 @@ function attachFirebaseListeners() {
   }
 
   if (!state.unsubscribeHandwritingNotes) {
-    state.unsubscribeHandwritingNotes = onSnapshot(collection(db, "handwritingNotes"), (snapshot) => {
+    const handwritingQuery = isAdminSession()
+      ? collection(db, "handwritingNotes")
+      : query(collection(db, "handwritingNotes"), where("authorIdentifier", "==", state.currentUser.id));
+    state.unsubscribeHandwritingNotes = onSnapshot(handwritingQuery, (snapshot) => {
       trackFirestoreSnapshotRead("handwritingNotes", snapshot);
       state.handwritingNotes = snapshot.docs
         .map((doc) => handwritingNoteFromSnapshot(doc.id, doc.data()))
@@ -3992,6 +3999,31 @@ function legacyPreventivePlanningMirrorNoteID(rowID) {
 
 function isUUIDString(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(stringValue(value));
+}
+
+function deterministicUUIDFromText(value) {
+  let first = 0x811c9dc5;
+  let second = 0x811c9dc5 ^ 0x9e3779b9;
+  let third = 0x811c9dc5 ^ 0x85ebca6b;
+  let fourth = 0x811c9dc5 ^ 0xc2b2ae35;
+  const text = String(value || "");
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    first = Math.imul(first ^ code, 0x01000193);
+    second = Math.imul(second ^ code, 0x01000193);
+    third = Math.imul(third ^ code, 0x01000193);
+    fourth = Math.imul(fourth ^ code, 0x01000193);
+  }
+  const hex = [first, second, third, fourth]
+    .map((part) => (part >>> 0).toString(16).padStart(8, "0"))
+    .join("");
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    `5${hex.slice(13, 16)}`,
+    `${((parseInt(hex.slice(16, 18), 16) & 0x3f) | 0x80).toString(16).padStart(2, "0")}${hex.slice(18, 20)}`,
+    hex.slice(20, 32)
+  ].join("-");
 }
 
 function shouldMirrorPreventivePlanningRow(row) {
@@ -7467,7 +7499,7 @@ function renderDetail(note, context) {
   state.detailTimelineEvents = timeline;
   const canWrite = canCurrentUserWrite();
   const canEditDate = canCurrentUserEditDate();
-  const canToggleDone = canWrite;
+  const canToggleDone = canWrite && sameDay(state.selectedDate, new Date());
   const canToggleAcknowledgement = canWrite && !done && !note.priority && !isNew(note);
   const canDelete = canCurrentUserDeleteNote(note);
   const canPermanentlyDelete = state.currentUser?.role === "admin" && Boolean(note.deletedAt);
@@ -7510,7 +7542,7 @@ function renderDetail(note, context) {
         ` : ""}
       </div>
     </section>
-    ${detailActionHint(note, done, canWrite, canToggleAcknowledgement)}
+    ${detailActionHint(note, done, canWrite, canToggleDone, canToggleAcknowledgement)}
 
     <section class="detail-section priority-section">
       ${renderSectionTitle("priority", "Priorité")}
@@ -7571,6 +7603,11 @@ function renderDetail(note, context) {
 
 function toggleDraftDoneButton(button) {
   if (!button || button.disabled) {
+    return;
+  }
+
+  if (!sameDay(state.selectedDate, new Date())) {
+    setStatus("Solde possible uniquement à la date du jour");
     return;
   }
 
@@ -10584,9 +10621,13 @@ function appendTextToConsigneEditor(text) {
   editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
 }
 
-function detailActionHint(note, done, canWrite, canToggleAcknowledgement) {
+function detailActionHint(note, done, canWrite, canToggleDone, canToggleAcknowledgement) {
   if (!canWrite) {
     return `<p class="detail-action-hint">Connecte-toi avec ton code utilisateur pour solder ou prendre en compte une consigne.</p>`;
+  }
+
+  if (!canToggleDone) {
+    return `<p class="detail-action-hint">Une consigne ne peut être soldée ou désoldée qu'à la date du jour.</p>`;
   }
 
   if (canToggleAcknowledgement) {
@@ -10614,11 +10655,17 @@ async function toggleDone(note, context) {
   }
 
   const now = new Date();
-  const key = completionStorageKey(context, state.selectedDate);
+  const today = startOfDay(now);
+  if (!sameDay(state.selectedDate, today)) {
+    setStatus("Solde possible uniquement à la date du jour");
+    return;
+  }
+
+  const key = completionStorageKey(context, today);
   const alreadyDone = isDoneInContext(note, context);
-  const completionDate = dateWithTime(state.selectedDate, now);
+  const completionDate = dateWithTime(today, now);
   const removedCompletions = alreadyDone
-    ? activeCompletions(note).filter((completion) => completion.context === context && sameDay(completion.date, state.selectedDate))
+    ? activeCompletions(note).filter((completion) => completion.context === context && sameDay(completion.date, today))
     : [];
   const completions = alreadyDone
     ? note.completions
@@ -11049,10 +11096,7 @@ function showDoneDateConfirmation(note, selectedDoneDate, options = {}) {
   popover.setAttribute("aria-modal", "true");
   popover.innerHTML = `
     <strong>La clôture n'est pas saisie<br>à la date du jour</strong>
-    <p>Voulez-vous solder cette consigne à la date sélectionnée ou à la date du jour ?</p>
-    <button type="button" class="date-confirm-choice" data-done-date-confirm="keep">
-      Solder à la date du ${escapeHtml(formatLongDate(selectedDoneDate))}
-    </button>
+    <p>Cette consigne ne peut être soldée qu'à la date du jour.</p>
     <button type="button" class="date-confirm-choice primary" data-done-date-confirm="today">
       Solder à la date du jour
     </button>
@@ -11067,7 +11111,7 @@ function showDoneDateConfirmation(note, selectedDoneDate, options = {}) {
     popover.remove();
     saveDetailEdit(note, {
       ...options,
-      doneDate: choice === "today" ? new Date() : selectedDoneDate,
+      doneDate: new Date(),
       skipDoneDateConfirmation: true
     });
   });
@@ -11136,8 +11180,8 @@ async function saveDetailEdit(note, options = {}) {
   const selectedDoneDate = options.doneDate
     ? startOfDay(options.doneDate)
     : initialDone
-      ? visibleCompletionDayInContext(note, context, selectedModificationDate)
-      : selectedModificationDate;
+      ? visibleCompletionDayInContext(note, context, startOfDay(new Date()))
+      : startOfDay(new Date());
   const now = new Date();
   const modificationDate = dateWithTime(modificationDay, now);
   const revisions = [...note.revisions];
@@ -11160,8 +11204,14 @@ async function saveDetailEdit(note, options = {}) {
     return;
   }
 
+  if (doneChanged && !sameDay(state.selectedDate, new Date())) {
+    setStatus("Solde possible uniquement à la date du jour");
+    refreshDetail();
+    return;
+  }
+
   if (!options.skipDoneDateConfirmation && doneChanged && draftDone && !sameDay(selectedDoneDate, new Date())) {
-    showDoneDateConfirmation(note, selectedDoneDate, options);
+    showDoneDateConfirmation(note, startOfDay(new Date()), options);
     return;
   }
 
