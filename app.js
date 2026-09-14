@@ -13,7 +13,9 @@ import {
   onSnapshot,
   orderBy,
   query,
+  serverTimestamp,
   setDoc,
+  startAfter,
   updateDoc,
   where
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
@@ -30,7 +32,8 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
-const WEB_APP_VERSION = "1.91";
+const WEB_APP_VERSION = "V1.91.a";
+const WEB_APP_VERSION_DISPLAY = WEB_APP_VERSION;
 const userGuideURL = "./assets/Guide%20utilisateur%20SimFLOW.pdf";
 const deletedLegacySimulatorNames = new Set(["Simu", "Simu 1", "Simu 2", "Simu 3", "Simu 4", "Simu Tes", "Simu test 2", "Simu Test 2"]);
 const sessionStorageKey = "simflow.web.currentUser";
@@ -40,11 +43,13 @@ const planningImportVersionStorageKey = "simflow.web.mandatoryPlanningImportVers
 const planningFirestoreImportVersionStorageKey = "simflow.web.regulatoryPlanningImportVersion";
 const planningMirrorLabelSyncStorageKey = "simflow.web.regulatoryPlanningMirrorLabelSyncVersion";
 const planningSimulatorRepairStorageKey = "simflow.web.regulatoryPlanningSimulatorRepairVersion";
+const planningDuplicateRepairStorageKey = "simflow.web.regulatoryPlanningDuplicateRepairVersion";
 const preventivePlanningMirrorScopeStorageKey = "simflow.web.preventivePlanningMirrorScopeVersion";
 const planningFirestoreSyncStorageKey = "simflow.web.regulatoryPlanningLastSyncAt";
 const regulatoryPlanningImportVersion = "2026-regulatory-table-v7-canonical-simulators";
 const regulatoryPlanningMirrorLabelVersion = "fly-out-label-v2";
 const regulatoryPlanningSimulatorRepairVersion = "canonical-simulators-v5";
+const regulatoryPlanningDuplicateRepairVersion = "planning-duplicates-v2-all-history";
 const preventivePlanningMirrorScopeVersion = "all-simulators-v1";
 const firestoreSyncSuspendedStorageKey = "simflow.web.firestoreSyncSuspended";
 const lastActiveStorageKey = "simflow.web.lastActiveAt";
@@ -55,6 +60,9 @@ const webDeviceStorageKey = "simflow.web.deviceIdentifier";
 const sessionDurationMs = 30 * 24 * 60 * 60 * 1000;
 const staleDataRefreshThresholdMs = 24 * 60 * 60 * 1000;
 const staleDataRefreshWarningThresholdMs = 12 * 60 * 60 * 1000;
+const noteEvolutionCatchUpMarginMs = 10 * 60 * 1000;
+const selectedDateRefreshCooldownMs = 15 * 1000;
+const activityEvolutionCheckCooldownMs = 2 * 60 * 1000;
 const wakeAutoDataRefreshThresholdMs = 12 * 60 * 60 * 1000;
 const wakeHeartbeatIntervalMs = 60 * 1000;
 const wakeHeartbeatGapThresholdMs = 5 * 60 * 1000;
@@ -62,6 +70,7 @@ const wakeHeartbeatRefreshCooldownMs = 10 * 60 * 1000;
 const activeLoginSessionWindowMs = 90 * 1000;
 const loginPresenceRefreshMs = 15 * 1000;
 const firestoreReadStatsFlushMs = 5 * 1000;
+const userSyncStatusRefreshWriteThrottleMs = 60 * 1000;
 const planningFirestoreSyncIntervalMs = 60 * 60 * 1000;
 const planningTypes = [
   { value: "fly-out-part-a", label: "Fly-Out Part A" },
@@ -321,8 +330,10 @@ const importedRegulatoryPlanningRows = [
 
 function importedPlanningRow(simulatorName, type, date, startTime, endTime, participants, tri, notes = "") {
   const importKey = `import-${date.slice(0, 4) || "planning"}-${simulatorName}-${type}-${date}-${startTime || "day"}`.toLocaleLowerCase("fr").replace(/[^a-z0-9]+/g, "-");
+  const importSourceID = deterministicUUIDFromText(`regulatory-planning:${importKey}`);
   return {
-    id: deterministicUUIDFromText(`regulatory-planning:${importKey}`),
+    id: importSourceID,
+    importSourceID,
     simulatorName,
     type,
     dateMode: "date",
@@ -336,6 +347,8 @@ function importedPlanningRow(simulatorName, type, date, startTime, endTime, part
     firestoreSource: false
   };
 }
+
+const importedRegulatoryPlanningRowIDs = new Set(importedRegulatoryPlanningRows.map((row) => row.id));
 
 function importedPlanningRowsFromTSV(rawText) {
   const rows = stringValue(rawText)
@@ -562,6 +575,8 @@ const state = {
   showsPreventivePlanningHistory: false,
   isPlanningFirestoreLoaded: false,
   isPlanningFirestoreLoading: false,
+  isPreventivePlanningFirestoreLoaded: false,
+  isPreventivePlanningFirestoreLoading: false,
   planningFirestoreSyncTimer: null,
   planningActivityByRowID: new Map(),
   planningActivityLoadingIDs: new Set(),
@@ -570,12 +585,10 @@ const state = {
   isPreventivePlanningHistoryPickerOpen: false,
   selectedPreventivePlanningHistoryYears: new Set(),
   isImportingPlanningRows: false,
-  fetchedNoteDayKeys: new Set(),
+  fetchedNoteDayRefreshTimes: new Map(),
   fetchedNotesByID: new Map(),
   fetchedSearchKeys: new Set(),
   fetchedDeletedNotes: false,
-  fetchedAdminConnectionNotes: false,
-  isFetchingAdminConnectionNotes: false,
   globalSearchRequestID: 0,
   globalSearchTimer: null,
   handwritingNotes: [],
@@ -585,6 +598,7 @@ const state = {
   firestoreReadStats: [],
   userSyncStatuses: [],
   activityEvents: [],
+  latestActivityNoteChangeDate: null,
   adminMaintenanceAudit: null,
   adminMaintenanceStatus: "",
   isAdminMaintenanceScanning: false,
@@ -600,12 +614,14 @@ const state = {
   allSimulators: [],
   simulators: [],
   appSettings: {
-    requiredIOSAppVersion: ""
+    requiredIOSAppVersion: "",
+    latestNoteActivityAt: null
   },
   adminLoginDateInteracting: false,
   adminActivityDateInteracting: false,
   unsubscribeNotes: null,
   unsubscribeHandwritingNotes: null,
+  handwritingNotesMode: "",
   unsubscribeDailyTags: null,
   unsubscribeLoginEvents: null,
   loginEventsMode: "",
@@ -628,12 +644,17 @@ const state = {
   adminMessageSendsToAll: false,
   adminMessageRecipientIDs: new Set(),
   lastLoginEventAt: 0,
+  lastUserSyncStatusRefreshWriteAt: 0,
   lastWakeHeartbeatAt: Date.now(),
   lastWakeHeartbeatRefreshAt: 0,
   initialDataRefreshVisible: false,
   pendingInitialDataRefreshResources: new Set(),
   lastSuccessfulDataRefreshAt: readStoredDataRefreshDate(),
   isManualDataRefreshRunning: false,
+  isAutoDataRefreshQueued: false,
+  lastActivityEvolutionCheckAt: 0,
+  isActivityEvolutionCheckRunning: false,
+  localFirestoreReadCount: 0,
   firestoreReadStatsBuffer: new Map(),
   firestoreReadStatsFlushTimer: null,
   hasFetchedPlanningTechnicians: false,
@@ -651,12 +672,16 @@ const getPlanningTechnicians = httpsCallable(functions, "getPlanningTechnicians"
 const getRegulatoryPlanningEvents = httpsCallable(functions, "getRegulatoryPlanningEvents");
 const saveRegulatoryPlanningEvent = httpsCallable(functions, "saveRegulatoryPlanningEvent");
 const deleteRegulatoryPlanningEvent = httpsCallable(functions, "deleteRegulatoryPlanningEvent");
+const getPreventivePlanningEvents = httpsCallable(functions, "getPreventivePlanningEvents");
+const savePreventivePlanningEvent = httpsCallable(functions, "savePreventivePlanningEvent");
+const deletePreventivePlanningEvent = httpsCallable(functions, "deletePreventivePlanningEvent");
 const getRegulatoryPlanningActivity = httpsCallable(functions, "getRegulatoryPlanningActivity");
 const recordPreventivePlanningActivity = httpsCallable(functions, "recordPreventivePlanningActivity");
 const getPreventivePlanningActivity = httpsCallable(functions, "getPreventivePlanningActivity");
 const syncRegulatoryPlanningNotesFromMirrorNote = httpsCallable(functions, "syncRegulatoryPlanningNotesFromMirrorNote");
 const refreshRegulatoryPlanningMirrorLabels = httpsCallable(functions, "refreshRegulatoryPlanningMirrorLabels");
 const repairRegulatoryPlanningSimulatorNames = httpsCallable(functions, "repairRegulatoryPlanningSimulatorNames");
+const repairRegulatoryPlanningDuplicates = httpsCallable(functions, "repairRegulatoryPlanningDuplicates");
 const activityActionTitles = {
   created: "Creation",
   modified: "Modification",
@@ -683,6 +708,7 @@ const elements = {
   dataRefreshIndicator: document.querySelector("#dataRefreshIndicator"),
   dataRefreshIndicatorText: document.querySelector("#dataRefreshIndicatorText"),
   webVersionBadge: document.querySelector("#webVersionBadge"),
+  webUpdateAgeBadge: document.querySelector("#webUpdateAgeBadge"),
   userPanel: document.querySelector("#userPanel"),
   openLoginButton: document.querySelector("#openLoginButton"),
   codeModal: document.querySelector("#codeModal"),
@@ -738,6 +764,8 @@ const elements = {
   emptyState: document.querySelector("#emptyState"),
   noteGroups: document.querySelector("#noteGroups"),
   detailOverlay: document.querySelector("#detailOverlay"),
+  detailDebugHotspot: document.querySelector("#detailDebugHotspot"),
+  detailDebugIndicator: document.querySelector("#detailDebugIndicator"),
   detailCloseButton: document.querySelector("#detailCloseButton"),
   detailTitle: document.querySelector("#detailTitle"),
   detailContext: document.querySelector("#detailContext"),
@@ -759,8 +787,11 @@ const elements = {
 
 let pendingCenteredSimulatorBandAnchor = null;
 
-elements.webVersionBadge.textContent = `v${WEB_APP_VERSION}`;
-elements.webVersionBadge.title = `Version web ${WEB_APP_VERSION}`;
+if (elements.webVersionBadge) {
+  elements.webVersionBadge.textContent = WEB_APP_VERSION;
+  elements.webVersionBadge.removeAttribute("title");
+}
+renderWebUpdateAgeBadge();
 renderDataRefreshIndicator();
 elements.selectedDate.value = isoDate(state.selectedDate);
 restoreSavedSession();
@@ -832,7 +863,9 @@ elements.openPreventivePlanningViewButton?.addEventListener("click", () => {
   state.isPlanningHistoryPickerOpen = false;
   clearPeriodMode();
   render();
-  ensurePreventivePlanningMirrorScopeSynced();
+  loadPreventivePlanningRowsFromFirestore({ force: true })
+    .then(() => ensurePreventivePlanningMirrorScopeSynced())
+    .catch((error) => setStatus(error.message || "Planning préventif Firestore indisponible"));
   requestAnimationFrame(() => window.scrollTo(0, 0));
 });
 
@@ -851,7 +884,34 @@ function showNotesView() {
   render();
   requestAnimationFrame(() => window.scrollTo(0, 0));
 }
-elements.dataRefreshIndicator.addEventListener("click", refreshDataFromIndicator);
+let dataRefreshIndicatorLongPressTimer = null;
+let didOpenCounterDebugFromLongPress = false;
+function clearDataRefreshIndicatorLongPress() {
+  window.clearTimeout(dataRefreshIndicatorLongPressTimer);
+  dataRefreshIndicatorLongPressTimer = null;
+}
+elements.dataRefreshIndicator.addEventListener("pointerdown", () => {
+  if (!state.currentUser || state.isManualDataRefreshRunning) {
+    return;
+  }
+  didOpenCounterDebugFromLongPress = false;
+  clearDataRefreshIndicatorLongPress();
+  dataRefreshIndicatorLongPressTimer = window.setTimeout(() => {
+    didOpenCounterDebugFromLongPress = true;
+    openCounterDebugAttributes();
+  }, 2000);
+});
+["pointerup", "pointercancel", "pointerleave"].forEach((eventName) => {
+  elements.dataRefreshIndicator.addEventListener(eventName, clearDataRefreshIndicatorLongPress);
+});
+elements.dataRefreshIndicator.addEventListener("click", (event) => {
+  if (didOpenCounterDebugFromLongPress) {
+    event.preventDefault();
+    didOpenCounterDebugFromLongPress = false;
+    return;
+  }
+  refreshDataFromIndicator();
+});
 elements.openLoginButton.addEventListener("click", () => openCodeModal("login"));
 elements.loginButton.addEventListener("click", submitCodeModal);
 elements.cancelLoginButton.addEventListener("click", closeCodeModal);
@@ -1018,6 +1078,7 @@ elements.showDeletedToggle.addEventListener("change", () => {
   }
   if (!state.showDeleted) {
     state.showOnlyDeleted = false;
+    restartHandwritingNotesListener(true);
   }
   renderPreservingCenteredSimulatorBand(takePendingCenteredSimulatorBandAnchor());
 });
@@ -1027,6 +1088,7 @@ elements.showOnlyDeletedToggle.addEventListener("change", () => {
     state.showDeleted = true;
     fetchDeletedNotesIfNeeded();
   }
+  restartHandwritingNotesListener(true);
   renderPreservingCenteredSimulatorBand(takePendingCenteredSimulatorBandAnchor());
 });
 elements.searchInput.addEventListener("input", () => {
@@ -1153,12 +1215,83 @@ elements.noteGroups.addEventListener("focusin", (event) => {
 });
 
 let noteTagLongPressTimer = null;
+let detailDebugLongPressTimer = null;
+let detailDebugLongPressTriggered = false;
+let detailDebugPressStartedAt = 0;
+let suppressNextDetailCloseClick = false;
+let detailDebugHotspotClickCount = 0;
+let detailDebugHotspotResetTimer = null;
+let detailDebugIndicatorTimer = null;
 const clearNoteTagLongPressTimer = () => {
   if (noteTagLongPressTimer) {
     window.clearTimeout(noteTagLongPressTimer);
     noteTagLongPressTimer = null;
   }
 };
+
+const clearDetailDebugLongPressTimer = () => {
+  if (detailDebugLongPressTimer) {
+    window.clearTimeout(detailDebugLongPressTimer);
+    detailDebugLongPressTimer = null;
+  }
+};
+
+function startDetailDebugLongPress() {
+  detailDebugLongPressTriggered = false;
+  detailDebugPressStartedAt = Date.now();
+  clearDetailDebugLongPressTimer();
+  detailDebugLongPressTimer = window.setTimeout(() => {
+    detailDebugLongPressTriggered = true;
+    detailDebugLongPressTimer = null;
+    openDetailDebugAttributes();
+  }, 2000);
+}
+
+function recordDetailDebugHotspotClick(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  detailDebugHotspotClickCount += 1;
+  updateDetailDebugIndicator(detailDebugHotspotClickCount);
+  if (detailDebugHotspotResetTimer) {
+    window.clearTimeout(detailDebugHotspotResetTimer);
+  }
+  detailDebugHotspotResetTimer = window.setTimeout(() => {
+    detailDebugHotspotClickCount = 0;
+    detailDebugHotspotResetTimer = null;
+    updateDetailDebugIndicator(0);
+  }, 2500);
+  if (detailDebugHotspotClickCount >= 5) {
+    detailDebugHotspotClickCount = 0;
+    if (detailDebugHotspotResetTimer) {
+      window.clearTimeout(detailDebugHotspotResetTimer);
+      detailDebugHotspotResetTimer = null;
+    }
+    updateDetailDebugIndicator(5);
+    openDetailDebugAttributes();
+  }
+}
+
+function updateDetailDebugIndicator(count) {
+  if (!elements.detailDebugIndicator) {
+    return;
+  }
+  if (detailDebugIndicatorTimer) {
+    window.clearTimeout(detailDebugIndicatorTimer);
+    detailDebugIndicatorTimer = null;
+  }
+  if (!count) {
+    elements.detailDebugIndicator.classList.add("hidden");
+    elements.detailDebugIndicator.textContent = "";
+    return;
+  }
+  elements.detailDebugIndicator.textContent = `Debug ${Math.min(count, 5)}/5`;
+  elements.detailDebugIndicator.classList.remove("hidden");
+  detailDebugIndicatorTimer = window.setTimeout(() => {
+    elements.detailDebugIndicator.classList.add("hidden");
+    elements.detailDebugIndicator.textContent = "";
+    detailDebugIndicatorTimer = null;
+  }, 1600);
+}
 
 elements.noteGroups.addEventListener("pointerdown", (event) => {
   const tagTarget = event.target.closest("[data-tag-note-id]");
@@ -1177,7 +1310,66 @@ elements.noteGroups.addEventListener("pointerdown", (event) => {
 elements.noteGroups.addEventListener("pointerup", clearNoteTagLongPressTimer);
 elements.noteGroups.addEventListener("pointerleave", clearNoteTagLongPressTimer);
 elements.noteGroups.addEventListener("pointercancel", clearNoteTagLongPressTimer);
-elements.detailCloseButton.addEventListener("click", closeDetail);
+elements.detailDebugHotspot?.addEventListener("click", recordDetailDebugHotspotClick);
+elements.detailTitle.addEventListener("click", recordDetailDebugHotspotClick);
+document.addEventListener("pointerdown", (event) => {
+  if (event.target.closest("#detailCloseButton")) {
+    event.preventDefault();
+    startDetailDebugLongPress();
+  }
+}, true);
+document.addEventListener("pointerup", (event) => {
+  if (!detailDebugPressStartedAt) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  const pressDuration = Date.now() - detailDebugPressStartedAt;
+  detailDebugPressStartedAt = 0;
+  clearDetailDebugLongPressTimer();
+  suppressNextDetailCloseClick = true;
+  if (detailDebugLongPressTriggered || pressDuration >= 1900) {
+    detailDebugLongPressTriggered = false;
+    openDetailDebugAttributes();
+  } else {
+    closeDetail();
+  }
+}, true);
+document.addEventListener("pointercancel", () => {
+  detailDebugPressStartedAt = 0;
+  clearDetailDebugLongPressTimer();
+}, true);
+document.addEventListener("contextmenu", (event) => {
+  if (!event.target.closest("#detailCloseButton")) {
+    return;
+  }
+  event.preventDefault();
+  detailDebugLongPressTriggered = true;
+  clearDetailDebugLongPressTimer();
+  suppressNextDetailCloseClick = true;
+  openDetailDebugAttributes();
+}, true);
+document.addEventListener("click", (event) => {
+  if (!event.target.closest("#detailCloseButton")) {
+    return;
+  }
+  if (suppressNextDetailCloseClick) {
+    event.preventDefault();
+    event.stopPropagation();
+    suppressNextDetailCloseClick = false;
+    return;
+  }
+  const pressDuration = detailDebugPressStartedAt ? Date.now() - detailDebugPressStartedAt : 0;
+  detailDebugPressStartedAt = 0;
+  if (detailDebugLongPressTriggered || pressDuration >= 1900) {
+    event.preventDefault();
+    event.stopPropagation();
+    detailDebugLongPressTriggered = false;
+    openDetailDebugAttributes();
+    return;
+  }
+  closeDetail();
+}, true);
 elements.detailOverlay.addEventListener("click", (event) => {
   if (event.target === elements.detailOverlay) {
     closeDetail();
@@ -1747,6 +1939,7 @@ function trackFirestoreRead(collectionName, count, source = "web") {
     return;
   }
 
+  state.localFirestoreReadCount += readCount;
   const collectionKey = firestoreFieldKey(collectionName);
   const sourceKey = firestoreFieldKey(source || "web");
   const key = `${sourceKey}|${collectionKey}`;
@@ -1850,7 +2043,10 @@ function startAuthenticatedDataSync() {
   fetchPlanningTechniciansIfNeeded();
   startPlanningFirestoreSyncTimer();
   loadPlanningRowsFromFirestore();
-  ensurePreventivePlanningMirrorScopeSynced();
+  loadPreventivePlanningRowsFromFirestore()
+    .then(() => ensurePreventivePlanningMirrorScopeSynced())
+    .catch((error) => setStatus(error.message || "Planning préventif Firestore indisponible"));
+  checkLatestActivityAndRefreshIfNeeded();
   recordLoginAppearance();
 }
 
@@ -1860,6 +2056,7 @@ function handleAppBecameVisible() {
   }
 
   checkWakeHeartbeat();
+  checkLatestActivityAndRefreshIfNeeded();
   const shouldRefreshAfterWake = shouldShowWakeAutoDataRefresh();
   recordLoginAppearance();
   if (!shouldRefreshAfterWake && !shouldShowStaleDataRefresh()) {
@@ -1871,7 +2068,9 @@ function handleAppBecameVisible() {
   detachAuthenticatedDataSync({ keepsInitialDataRefresh: true });
   attachFirebaseListeners();
   restartDailyTagsListener();
-  ensurePreventivePlanningMirrorScopeSynced();
+  loadPreventivePlanningRowsFromFirestore({ force: true })
+    .then(() => ensurePreventivePlanningMirrorScopeSynced())
+    .catch((error) => setStatus(error.message || "Planning préventif Firestore indisponible"));
   saveLastActiveTimestamp();
 
   if (shouldRefreshAfterWake) {
@@ -1970,10 +2169,66 @@ function updateInitialDataRefreshOverlay() {
   elements.initialSyncOverlay?.setAttribute("aria-hidden", state.initialDataRefreshVisible ? "false" : "true");
 }
 
-function recordSuccessfulDataRefresh(date = new Date()) {
+function recordSuccessfulDataRefresh(date = new Date(), options = {}) {
   state.lastSuccessfulDataRefreshAt = date;
   localStorage.setItem(lastSuccessfulDataRefreshStorageKey, date.toISOString());
   renderDataRefreshIndicator();
+  if (options.remoteStatus) {
+    recordCurrentUserServerRefreshStatus(options);
+  }
+}
+
+async function recordCurrentUserServerRefreshStatus(options = {}) {
+  if (!state.authReady || !state.currentUser || shouldSuspendFirestoreSync()) {
+    return;
+  }
+
+  const now = Date.now();
+  if (!options.force && now - state.lastUserSyncStatusRefreshWriteAt < userSyncStatusRefreshWriteThrottleMs) {
+    return;
+  }
+
+  state.lastUserSyncStatusRefreshWriteAt = now;
+  const userIdentifier = stringValue(state.currentUser.id).trim();
+  if (!userIdentifier) {
+    return;
+  }
+
+  const deviceIdentifier = getWebDeviceIdentifier();
+  const documentID = firestoreDocumentID(userIdentifier);
+  const payload = {
+    id: userIdentifier,
+    userIdentifier,
+    displayName: currentDisplayName(),
+    firstName: stringValue(state.currentUser.firstName).trim(),
+    lastName: stringValue(state.currentUser.lastName).trim(),
+    role: stringValue(state.currentUser.role).trim(),
+    team: stringValue(state.currentUser.team).trim(),
+    source: "web",
+    appVersion: WEB_APP_VERSION,
+    deviceIdentifier,
+    deviceName: webDeviceName(),
+    lastSeenAt: serverTimestamp(),
+    lastSuccessfulRefreshAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  };
+
+  if (options.catchUpFrom instanceof Date && !Number.isNaN(options.catchUpFrom.getTime())) {
+    payload.lastCatchUpFrom = options.catchUpFrom;
+  }
+  if (Number.isFinite(options.catchUpChangedNotesCount)) {
+    payload.lastCatchUpChangedNotesCount = options.catchUpChangedNotesCount;
+  }
+  if (options.catchUpStatus) {
+    payload.lastCatchUpStatus = stringValue(options.catchUpStatus);
+    payload.lastSuccessfulCatchUpAt = serverTimestamp();
+  }
+
+  try {
+    await setDoc(doc(db, "userSyncStatus", documentID), payload, { merge: true });
+  } catch (error) {
+    console.warn("Firebase web sync status update failed:", error);
+  }
 }
 
 function readStoredDataRefreshDate() {
@@ -1993,22 +2248,82 @@ function renderDataRefreshIndicator() {
     elements.dataRefreshIndicator.classList.add("suspended");
     elements.dataRefreshIndicator.disabled = true;
     elements.dataRefreshIndicatorText.textContent = "Firestore suspendu";
-    elements.dataRefreshIndicator.title = "Synchronisation Firestore suspendue";
+    elements.dataRefreshIndicator.removeAttribute("title");
     return;
   }
 
-  const isStale = !state.lastSuccessfulDataRefreshAt
-    || Date.now() - state.lastSuccessfulDataRefreshAt.getTime() > staleDataRefreshWarningThresholdMs;
+  const isOutOfDate = isDataRefreshBehindLatestActivity();
   elements.dataRefreshIndicator.classList.remove("suspended");
   elements.dataRefreshIndicator.classList.toggle("info-only", !isAdmin);
-  elements.dataRefreshIndicator.classList.toggle("stale", isAdmin && isStale);
+  elements.dataRefreshIndicator.classList.toggle("stale", isOutOfDate);
   elements.dataRefreshIndicator.classList.toggle("syncing", state.isManualDataRefreshRunning);
-  elements.dataRefreshIndicator.disabled = !state.currentUser || state.isManualDataRefreshRunning || !isAdmin;
-  elements.dataRefreshIndicator.title = isAdmin
-    ? "Synchroniser les données"
-    : "Dernière synchronisation connue";
-  const prefix = isAdmin ? "MAJ" : "À jour";
-  elements.dataRefreshIndicatorText.textContent = `${prefix} ${lastSuccessfulDataRefreshText()} - ${activeCurrentDayNoteCount()} (${activeCurrentDayAverageCreationAgeText()})`;
+  elements.dataRefreshIndicator.disabled = !state.currentUser || state.isManualDataRefreshRunning;
+  elements.dataRefreshIndicator.removeAttribute("title");
+  elements.dataRefreshIndicatorText.textContent = `Nb ${activeCurrentDayNoteCount()} (${activeCurrentDayAverageCreationAgeText()}) - Sync ${activeCurrentDaySyncCodeText()}`;
+  renderWebUpdateAgeBadge();
+}
+
+function renderWebUpdateAgeBadge(date = new Date()) {
+  if (!elements.webUpdateAgeBadge) {
+    return;
+  }
+
+  const text = latestNoteUpdateAgeText(date);
+  elements.webUpdateAgeBadge.textContent = `UP ${text}`;
+  elements.webUpdateAgeBadge.removeAttribute("title");
+}
+
+function latestNoteUpdateAgeText(date = new Date()) {
+  const latestEvolutionDate = latestSeenNoteEvolutionDate();
+  if (!latestEvolutionDate) {
+    return "-";
+  }
+
+  const minutes = Math.max(0, Math.floor((date.getTime() - latestEvolutionDate.getTime()) / (60 * 1000)));
+  return `${minutes} min`;
+}
+
+function activeCurrentDaySyncCodeText() {
+  const entries = activeCurrentDayCounterEntries();
+  if (!entries.length) {
+    return "0000";
+  }
+
+  const tokens = entries
+    .map(({ note }) => {
+      const noteID = stringValue(note.id, note.documentID).toLocaleLowerCase("fr");
+      return `${noteID}|${syncTimestampKey(note.updatedAt)}`;
+    })
+    .sort();
+  const encoder = new TextEncoder();
+  let hash = 0;
+  for (const token of tokens) {
+    for (const byte of encoder.encode(token)) {
+      hash = (hash * 31 + byte) % 10000;
+    }
+  }
+  return String(hash).padStart(4, "0");
+}
+
+function syncDisplayText(value) {
+  return normalizeKey(value).replace(/\s+/g, " ");
+}
+
+function syncTimestampKey(date) {
+  return date ? String(dateSecondKey(date)) : "0";
+}
+
+function dateSecondKey(date) {
+  return date instanceof Date && !Number.isNaN(date.getTime())
+    ? Math.floor(date.getTime() / 1000)
+    : 0;
+}
+
+function isDateBeforeAtSecondPrecision(firstDate, secondDate) {
+  if (!(firstDate instanceof Date) || !(secondDate instanceof Date)) {
+    return false;
+  }
+  return dateSecondKey(firstDate) < dateSecondKey(secondDate);
 }
 
 function lastSuccessfulDataRefreshText() {
@@ -2018,6 +2333,10 @@ function lastSuccessfulDataRefreshText() {
 }
 
 function activeCurrentDayNoteEntries() {
+  return activeCurrentDayCounterEntries().map((entry) => entry.note);
+}
+
+function activeCurrentDayCounterEntries() {
   if (!state.currentUser) {
     return [];
   }
@@ -2028,12 +2347,35 @@ function activeCurrentDayNoteEntries() {
 
   for (const context of contexts) {
     contextDisplayNotes(state.notes.filter((note) => canCurrentUserSeeNote(note)), context)
-      .filter((note) => isActiveCurrentDayNote(note, context, today))
+      .filter((note) => matchesSelectionForCounter(note, context, today))
       .filter((note) => !isOnlyHandwrittenNoteForCurrentUser(note))
-      .forEach((note) => entries.push(note));
+      .sort((first, second) => compareNotesForContext(first, second, context))
+      .forEach((note) => entries.push({ context, note }));
   }
 
   return entries;
+}
+
+function matchesSelectionForCounter(note, context, day) {
+  if (state.showTagged && !matchesTaggedFilter(note, context)) {
+    return false;
+  }
+
+  if (!shouldShowDeletedNote(note)) {
+    return false;
+  }
+
+  if (state.showOnlyDeleted && state.currentUser?.role === "admin") {
+    return Boolean(note.deletedAt) && state.showDeleted && canCurrentUserViewDeletedNote(note);
+  }
+
+  if (sameDay(note.displayDate, day)) {
+    return true;
+  }
+
+  const noteDay = startOfDay(note.displayDate);
+  return noteDay < day
+    && (!isCompletedBefore(note, day, context) || isDoneBadgeVisibleInContext(note, context));
 }
 
 function activeCurrentDayNoteCount() {
@@ -2069,10 +2411,17 @@ function activeCurrentDayAverageCreationAgeText() {
 
 function isActiveCurrentDayNote(note, context, day) {
   const noteDay = startOfDay(note.displayDate);
+  const currentDay = startOfDay(new Date());
   return !note.deletedAt
     && canCurrentUserSeeNote(note)
-    && noteDay <= day
-    && !isCompletedBefore(note, day, context);
+    && (
+      sameDay(noteDay, day)
+      || (
+        noteDay < day
+        && day <= currentDay
+        && (!isCompletedBefore(note, day, context) || isDoneBadgeVisibleInContext(note, context))
+      )
+    );
 }
 
 async function refreshDataFromIndicator() {
@@ -2085,6 +2434,106 @@ async function refreshDataFromIndicator() {
 
 function refreshDataAfterWake() {
   refreshDataFromServer("Rattrapage après veille...", "Données synchronisées");
+}
+
+function isDataRefreshBehindLatestActivity(latestActivityDate = state.latestActivityNoteChangeDate) {
+  return Boolean(
+    latestActivityDate
+    && (!state.lastSuccessfulDataRefreshAt || isDateBeforeAtSecondPrecision(state.lastSuccessfulDataRefreshAt, latestActivityDate))
+  );
+}
+
+async function checkLatestActivityAndRefreshIfNeeded({ force = false } = {}) {
+  if (
+    !state.currentUser
+    || !state.authReady
+    || state.isManualDataRefreshRunning
+    || state.isAutoDataRefreshQueued
+    || state.isActivityEvolutionCheckRunning
+    || shouldSuspendFirestoreSync()
+  ) {
+    return;
+  }
+
+  const now = Date.now();
+  if (!force && now - state.lastActivityEvolutionCheckAt < activityEvolutionCheckCooldownMs) {
+    return;
+  }
+
+  state.lastActivityEvolutionCheckAt = now;
+  state.isActivityEvolutionCheckRunning = true;
+  try {
+    const latestActivityDate = state.appSettings.latestNoteActivityAt || state.latestActivityNoteChangeDate;
+    renderDataRefreshIndicator();
+    if (!isDataRefreshBehindLatestActivity(latestActivityDate)) {
+      return;
+    }
+    scheduleOutdatedDataRefresh(latestActivityDate);
+  } finally {
+    state.isActivityEvolutionCheckRunning = false;
+  }
+}
+
+function scheduleOutdatedDataRefresh(latestActivityDate = state.latestActivityNoteChangeDate) {
+  if (!state.currentUser || !state.authReady || state.isManualDataRefreshRunning || state.isAutoDataRefreshQueued || shouldSuspendFirestoreSync()) {
+    return;
+  }
+
+  state.isAutoDataRefreshQueued = true;
+  window.setTimeout(async () => {
+    if (
+      !latestActivityDate
+      || (state.lastSuccessfulDataRefreshAt && !isDateBeforeAtSecondPrecision(state.lastSuccessfulDataRefreshAt, latestActivityDate))
+    ) {
+      state.isAutoDataRefreshQueued = false;
+      renderDataRefreshIndicator();
+      return;
+    }
+    if (state.lastSuccessfulDataRefreshAt) {
+      await refreshChangedNotesSinceLastRefreshWithMargin();
+    } else {
+      try {
+        await refreshDataFromServer("Synchronisation des données...", "Données synchronisées");
+      } finally {
+        state.isAutoDataRefreshQueued = false;
+        renderDataRefreshIndicator();
+      }
+    }
+  }, 0);
+}
+
+async function refreshChangedNotesSinceLastRefreshWithMargin() {
+  if (!state.currentUser || !state.authReady || !state.lastSuccessfulDataRefreshAt || shouldSuspendFirestoreSync()) {
+    state.isAutoDataRefreshQueued = false;
+    renderDataRefreshIndicator();
+    return;
+  }
+
+  const since = new Date(state.lastSuccessfulDataRefreshAt.getTime() - noteEvolutionCatchUpMarginMs);
+  setStatus("Rattrapage consignes...");
+  renderDataRefreshIndicator();
+
+  try {
+    const updatedNotes = await fetchNotesUpdatedSince(since);
+    const notesByID = new Map(state.notes.map((note) => [note.id, note]));
+
+    updatedNotes.forEach((note) => {
+      state.fetchedNotesByID.set(note.id, note);
+      notesByID.set(note.id, note);
+    });
+
+    state.notes = Array.from(notesByID.values());
+    recordSuccessfulDataRefresh(new Date(), { remoteStatus: true, force: true });
+    setStatus(`Consignes rattrapées (${updatedNotes.length})`);
+    renderSimulators();
+    render();
+    fetchNotesForSelectedDateIfNeeded(state.selectedDate, { force: true, prunesMissingDocuments: true });
+  } catch (error) {
+    setStatus(error.message);
+  } finally {
+    state.isAutoDataRefreshQueued = false;
+    renderDataRefreshIndicator();
+  }
 }
 
 async function refreshDataFromServer(startMessage, successMessage) {
@@ -2107,7 +2556,13 @@ async function refreshDataFromServer(startMessage, successMessage) {
       fetchRealtimeNotesFromServer(),
       fetchHandwritingNotesFromServer()
     ]);
-    recordSuccessfulDataRefresh();
+    recordSuccessfulDataRefresh(new Date(), {
+      remoteStatus: true,
+      force: true,
+      catchUpFrom: since,
+      catchUpChangedNotesCount: updatedNotes.length,
+      catchUpStatus: "evolution"
+    });
     setStatus(successMessage);
     renderSimulators();
     render();
@@ -2160,6 +2615,38 @@ async function fetchRealtimeNotesFromServer() {
   state.notes = Array.from(notesByID.values());
 }
 
+async function fetchNotesUpdatedSince(since) {
+  const pageSize = 250;
+  const notesByID = new Map();
+  let lastDocument = null;
+
+  while (true) {
+    const constraints = [
+      where("updatedAt", ">", since),
+      orderBy("updatedAt"),
+      limit(pageSize)
+    ];
+    if (lastDocument) {
+      constraints.push(startAfter(lastDocument));
+    }
+
+    const snapshot = await getDocs(query(collection(db, "handoverNotes"), ...constraints));
+    trackFirestoreRead("handoverNotes", snapshot.docs.length);
+
+    snapshot.docs.forEach((document) => {
+      notesByID.set(document.id, noteFromSnapshot(document.id, document.data()));
+    });
+
+    if (snapshot.docs.length < pageSize) {
+      break;
+    }
+
+    lastDocument = snapshot.docs[snapshot.docs.length - 1];
+  }
+
+  return Array.from(notesByID.values());
+}
+
 function isNoteCoveredByRealtimeFetch(note, displayWindow = realtimeDisplayWindow()) {
   if (note.syncState === "active") {
     return note.displayDate < displayWindow.end;
@@ -2173,14 +2660,84 @@ function isNoteCoveredByRealtimeFetch(note, displayWindow = realtimeDisplayWindo
 }
 
 async function fetchHandwritingNotesFromServer() {
-  const handwritingQuery = isAdminSession()
-    ? collection(db, "handwritingNotes")
-    : query(collection(db, "handwritingNotes"), where("authorIdentifier", "==", state.currentUser.id));
+  const handwritingQuery = currentHandwritingNotesQuery();
+  if (!handwritingQuery) {
+    state.handwritingNotes = [];
+    return;
+  }
   const snapshot = await getDocs(handwritingQuery);
   trackFirestoreRead("handwritingNotes", snapshot.docs.length);
   state.handwritingNotes = snapshot.docs
     .map((document) => handwritingNoteFromSnapshot(document.id, document.data()))
     .sort((a, b) => (b.updatedAt?.getTime() || 0) - (a.updatedAt?.getTime() || 0));
+}
+
+function currentHandwritingNotesQuery() {
+  const userIdentifier = stringValue(state.currentUser?.id).trim();
+  if (!userIdentifier) {
+    return null;
+  }
+
+  if (shouldLoadGlobalAdminHandwritingNotes()) {
+    return collection(db, "handwritingNotes");
+  }
+
+  return query(collection(db, "handwritingNotes"), where("authorIdentifier", "==", userIdentifier));
+}
+
+function currentHandwritingNotesMode() {
+  const userIdentifier = stringValue(state.currentUser?.id).trim();
+  if (!userIdentifier) {
+    return "";
+  }
+
+  return shouldLoadGlobalAdminHandwritingNotes() ? "admin:global" : `user:${userIdentifier}`;
+}
+
+function shouldLoadGlobalAdminHandwritingNotes() {
+  return isAdminSession() && state.showOnlyDeleted;
+}
+
+function restartHandwritingNotesListener(force = false) {
+  if (!state.authReady || !state.currentUser || shouldSuspendFirestoreSync()) {
+    return;
+  }
+
+  const mode = currentHandwritingNotesMode();
+  if (!mode) {
+    return;
+  }
+
+  if (state.unsubscribeHandwritingNotes && state.handwritingNotesMode === mode && !force) {
+    return;
+  }
+
+  if (state.unsubscribeHandwritingNotes) {
+    state.unsubscribeHandwritingNotes();
+    state.unsubscribeHandwritingNotes = null;
+  }
+
+  const handwritingQuery = currentHandwritingNotesQuery();
+  if (!handwritingQuery) {
+    state.handwritingNotesMode = "";
+    state.handwritingNotes = [];
+    return;
+  }
+
+  state.handwritingNotesMode = mode;
+  state.handwritingNotes = [];
+  state.unsubscribeHandwritingNotes = onSnapshot(handwritingQuery, (snapshot) => {
+    trackFirestoreSnapshotRead("handwritingNotes", snapshot);
+    state.handwritingNotes = snapshot.docs
+      .map((doc) => handwritingNoteFromSnapshot(doc.id, doc.data()))
+      .sort((a, b) => (b.updatedAt?.getTime() || 0) - (a.updatedAt?.getTime() || 0));
+    setStatus("Données synchronisées");
+    render();
+    if (!snapshot.metadata.fromCache) {
+      recordSuccessfulDataRefresh();
+      completeInitialDataRefreshResource("handwritingNotes");
+    }
+  }, (error) => setStatus(error.message));
 }
 
 function attachFirebaseListeners() {
@@ -2255,51 +2812,54 @@ function attachFirebaseListeners() {
   }
 
   if (!state.unsubscribeNoteDeletions) {
-    state.unsubscribeNoteDeletions = onSnapshot(collection(db, "handoverNoteDeletions"), (snapshot) => {
+    state.unsubscribeNoteDeletions = onSnapshot(query(
+      collection(db, "handoverNoteDeletions"),
+      where("deletedAt", ">=", realtimeDisplayWindow().start)
+    ), (snapshot) => {
       trackFirestoreSnapshotRead("handoverNoteDeletions", snapshot);
       const deletedIDs = snapshot.docChanges()
         .filter((change) => change.type === "added" || change.type === "modified")
         .map((change) => stringValue(change.doc.data().noteID, change.doc.id))
         .filter(Boolean);
+      const deletedDocumentIDs = snapshot.docChanges()
+        .filter((change) => change.type === "added" || change.type === "modified")
+        .map((change) => stringValue(change.doc.data().documentID, change.doc.id))
+        .filter(Boolean);
 
-      if (!deletedIDs.length) {
+      if (!deletedIDs.length && !deletedDocumentIDs.length) {
         return;
       }
 
-      const deletedIDSet = new Set(deletedIDs);
-      state.notes = state.notes.filter((note) => !deletedIDSet.has(note.id));
+      const deletedIDSet = new Set(deletedIDs.map(normalizeKey));
+      const deletedDocumentIDSet = new Set(deletedDocumentIDs.map(normalizeKey));
+      const isDeletedNote = (note) => {
+        const noteID = normalizeKey(note.id);
+        const noteDocumentID = normalizeKey(note.documentID || note.id);
+        return deletedIDSet.has(noteID) || deletedDocumentIDSet.has(noteDocumentID);
+      };
+      const removedNoteIDs = new Set(state.notes.filter(isDeletedNote).map((note) => note.id));
+      state.notes = state.notes.filter((note) => !isDeletedNote(note));
       deletedIDs.forEach((noteID) => state.fetchedNotesByID.delete(noteID));
-      state.handwritingNotes = state.handwritingNotes.filter((note) => !deletedIDSet.has(note.noteID));
+      deletedDocumentIDs.forEach((documentID) => state.fetchedNotesByID.delete(documentID));
+      removedNoteIDs.forEach((noteID) => state.fetchedNotesByID.delete(noteID));
+      state.handwritingNotes = state.handwritingNotes.filter((note) => !deletedIDSet.has(normalizeKey(note.noteID)) && !removedNoteIDs.has(note.noteID));
       renderSimulators();
       render();
     }, (error) => setStatus(error.message));
   }
 
-  if (!state.unsubscribeHandwritingNotes) {
-    const handwritingQuery = isAdminSession()
-      ? collection(db, "handwritingNotes")
-      : query(collection(db, "handwritingNotes"), where("authorIdentifier", "==", state.currentUser.id));
-    state.unsubscribeHandwritingNotes = onSnapshot(handwritingQuery, (snapshot) => {
-      trackFirestoreSnapshotRead("handwritingNotes", snapshot);
-      state.handwritingNotes = snapshot.docs
-        .map((doc) => handwritingNoteFromSnapshot(doc.id, doc.data()))
-        .sort((a, b) => (b.updatedAt?.getTime() || 0) - (a.updatedAt?.getTime() || 0));
-      setStatus("Données synchronisées");
-      render();
-      if (!snapshot.metadata.fromCache) {
-        recordSuccessfulDataRefresh();
-        completeInitialDataRefreshResource("handwritingNotes");
-      }
-    }, (error) => setStatus(error.message));
-  }
+  restartHandwritingNotesListener();
 
   if (!state.unsubscribeAppSettings) {
     state.unsubscribeAppSettings = onSnapshot(doc(db, "appSettings", "global"), (snapshot) => {
       trackFirestoreDocumentRead("appSettings", snapshot);
       const data = snapshot.data() || {};
       state.appSettings = {
-        requiredIOSAppVersion: stringValue(data.requiredIOSAppVersion)
+        requiredIOSAppVersion: stringValue(data.requiredIOSAppVersion),
+        latestNoteActivityAt: dateValue(data.latestNoteActivityAt)
       };
+      state.latestActivityNoteChangeDate = state.appSettings.latestNoteActivityAt || state.latestActivityNoteChangeDate;
+      renderDataRefreshIndicator();
       renderAdminSettings();
     }, (error) => setStatus(error.message));
   }
@@ -2319,34 +2879,6 @@ function attachFirebaseListeners() {
         }
       }, (error) => setStatus(error.message));
     }
-  }
-
-  if (isAdminSession() && !state.unsubscribeUsers) {
-    state.unsubscribeUsers = onSnapshot(collection(db, "users"), (snapshot) => {
-      trackFirestoreSnapshotRead("users", snapshot);
-      state.users = deduplicatedUsers(snapshot.docs
-        .map((document) => userFromSnapshot(document.id, document.data())))
-        .sort(compareUsersByLastName);
-      syncCurrentUserFromUsersList();
-      renderAdminSettings();
-      render();
-    }, (error) => setStatus(error.message));
-  }
-
-  if (isAdminSession() && !state.unsubscribePasswordResetRequests) {
-    state.unsubscribePasswordResetRequests = onSnapshot(
-      query(collection(db, "passwordResetRequests"), where("status", "==", "pending")),
-      (snapshot) => {
-        trackFirestoreSnapshotRead("passwordResetRequests", snapshot);
-        state.passwordResetRequests = snapshot.docs
-          .map((document) => passwordResetRequestFromSnapshot(document.id, document.data()))
-          .filter(Boolean)
-          .sort((a, b) => (b.lastRequestedAt?.getTime() || 0) - (a.lastRequestedAt?.getTime() || 0));
-        maybeShowPasswordResetAdminAlert();
-        renderAdminSettings();
-      },
-      (error) => setStatus(error.message)
-    );
   }
 
   restartAdminTabListeners();
@@ -2400,6 +2932,7 @@ async function loadPlanningRowsFromFirestore({ force = false, includeHistory = s
 
   state.isPlanningFirestoreLoading = true;
   try {
+    await repairRegulatoryPlanningDuplicatesIfNeeded();
     await repairRegulatoryPlanningSimulatorNamesIfNeeded();
     const response = await getRegulatoryPlanningEvents({ includeHistory });
     const events = Array.isArray(response?.data?.events) ? response.data.events : [];
@@ -2436,6 +2969,61 @@ async function loadPlanningRowsFromFirestore({ force = false, includeHistory = s
     setStatus(error.message || "Planning Firestore indisponible");
   } finally {
     state.isPlanningFirestoreLoading = false;
+  }
+}
+
+async function loadPreventivePlanningRowsFromFirestore({ force = false, includeHistory = state.showsPreventivePlanningHistory } = {}) {
+  if (!state.authReady || !state.currentUser || shouldSuspendFirestoreSync() || !canCurrentUserAccessPlanning()) {
+    return;
+  }
+
+  if (state.isPreventivePlanningFirestoreLoading || (state.isPreventivePlanningFirestoreLoaded && !force)) {
+    return;
+  }
+
+  state.isPreventivePlanningFirestoreLoading = true;
+  try {
+    const response = await getPreventivePlanningEvents({ includeHistory });
+    const events = Array.isArray(response?.data?.events) ? response.data.events : [];
+    if (events.length) {
+      state.preventivePlanningRows = events.map((event) => ({
+        ...normalizePreventivePlanningRow(event),
+        firestoreSource: true
+      }));
+      state.isPreventivePlanningFirestoreLoaded = true;
+      savePreventivePlanningRowsLocal();
+      if (!state.activePreventivePlanningSort) {
+        sortPreventivePlanningRowsByDate();
+      }
+      refreshLocalPreventivePlanningMirrorNotes();
+      if (state.activeView === "preventive-planning") {
+        renderPreventivePlanningTable();
+      }
+      return;
+    }
+
+    if (!state.isPreventivePlanningFirestoreLoaded && canCurrentUserEditPlanning()) {
+      const localRows = normalizedPreventivePlanningRows().filter((row) => !isPreventivePlanningDraftRow(row));
+      for (const row of localRows) {
+        await savePreventivePlanningRowToFirestore(row, {
+          before: null,
+          changedFields: preventivePlanningTrackedFields(),
+          action: "imported",
+          refetchMirror: false,
+          renderAfterSave: false
+        });
+      }
+      state.isPreventivePlanningFirestoreLoaded = true;
+      if (localRows.length) {
+        setStatus(`Planning préventif importé (${localRows.length})`);
+      }
+    } else {
+      state.isPreventivePlanningFirestoreLoaded = true;
+    }
+  } catch (error) {
+    setStatus(error.message || "Planning préventif Firestore indisponible");
+  } finally {
+    state.isPreventivePlanningFirestoreLoading = false;
   }
 }
 
@@ -2489,22 +3077,24 @@ function isInRealtimeNoteDisplayWindow(date) {
   return day >= window.start && day < window.end;
 }
 
-async function fetchNotesForSelectedDateIfNeeded(date) {
+async function fetchNotesForSelectedDateIfNeeded(date, { force = false, prunesMissingDocuments = false } = {}) {
   if (!state.currentUser || !state.authReady || shouldSuspendFirestoreSync()) {
     return;
   }
 
   const day = startOfDay(date);
   if (isInRealtimeNoteDisplayWindow(day)) {
+    checkLatestActivityAndRefreshIfNeeded();
     return;
   }
 
   const dayKey = isoDate(day);
-  if (state.fetchedNoteDayKeys.has(dayKey)) {
+  const lastFetchAt = state.fetchedNoteDayRefreshTimes.get(dayKey) || 0;
+  if (!force && Date.now() - lastFetchAt < selectedDateRefreshCooldownMs) {
     return;
   }
 
-  state.fetchedNoteDayKeys.add(dayKey);
+  state.fetchedNoteDayRefreshTimes.set(dayKey, Date.now());
   const start = day;
   const end = addDays(day, 1);
 
@@ -2516,18 +3106,27 @@ async function fetchNotesForSelectedDateIfNeeded(date) {
     ));
     trackFirestoreRead("handoverNotes", snapshot.docs.length);
     const fetchedNotes = snapshot.docs.map((doc) => noteFromSnapshot(doc.id, doc.data()));
+    const fetchedNoteIDs = new Set(fetchedNotes.map((note) => note.id));
     const notesByID = new Map(state.notes.map((note) => [note.id, note]));
+    if (prunesMissingDocuments) {
+      state.notes
+        .filter((note) => sameDay(note.displayDate, day) && !fetchedNoteIDs.has(note.id))
+        .forEach((note) => {
+          notesByID.delete(note.id);
+          state.fetchedNotesByID.delete(note.id);
+        });
+    }
     fetchedNotes.forEach((note) => {
       state.fetchedNotesByID.set(note.id, note);
       notesByID.set(note.id, note);
     });
     state.notes = Array.from(notesByID.values());
-    recordSuccessfulDataRefresh();
+    recordSuccessfulDataRefresh(new Date(), { remoteStatus: true, force: true });
     setStatus("Données synchronisées");
     renderSimulators();
     render();
   } catch (error) {
-    state.fetchedNoteDayKeys.delete(dayKey);
+    state.fetchedNoteDayRefreshTimes.delete(dayKey);
     setStatus(error.message);
   }
 }
@@ -2552,43 +3151,13 @@ async function fetchDeletedNotesIfNeeded() {
       notesByID.set(note.id, note);
     });
     state.notes = Array.from(notesByID.values());
-    recordSuccessfulDataRefresh();
+    recordSuccessfulDataRefresh(new Date(), { remoteStatus: true, force: true });
     setStatus("Consignes supprimées synchronisées");
     renderSimulators();
     render();
   } catch (error) {
     state.fetchedDeletedNotes = false;
     setStatus(error.message);
-  }
-}
-
-async function fetchAdminConnectionNotesIfNeeded() {
-  if (!state.currentUser || !state.authReady || !isAdminSession() || shouldSuspendFirestoreSync() || state.fetchedAdminConnectionNotes || state.isFetchingAdminConnectionNotes) {
-    return;
-  }
-
-  state.isFetchingAdminConnectionNotes = true;
-
-  try {
-    const snapshot = await getDocs(collection(db, "handoverNotes"));
-    trackFirestoreRead("handoverNotes", snapshot.docs.length);
-    const fetchedNotes = snapshot.docs.map((doc) => noteFromSnapshot(doc.id, doc.data()));
-    const notesByID = new Map(state.notes.map((note) => [note.id, note]));
-    fetchedNotes.forEach((note) => {
-      state.fetchedNotesByID.set(note.id, note);
-      notesByID.set(note.id, note);
-    });
-    state.notes = Array.from(notesByID.values());
-    state.fetchedAdminConnectionNotes = true;
-    recordSuccessfulDataRefresh();
-    setStatus("Statistiques connexions synchronisées");
-    renderSimulators();
-    renderAdminSettings();
-    render();
-  } catch (error) {
-    setStatus(error.message);
-  } finally {
-    state.isFetchingAdminConnectionNotes = false;
   }
 }
 
@@ -2637,7 +3206,7 @@ async function fetchGlobalSearchNotesIfNeeded(searchText) {
       notesByID.set(note.id, note);
     });
     state.notes = Array.from(notesByID.values());
-    recordSuccessfulDataRefresh();
+    recordSuccessfulDataRefresh(new Date(), { remoteStatus: true, force: true });
     setStatus("Recherche synchronisée");
     renderSimulators();
     render();
@@ -2658,16 +3227,26 @@ function restartAdminTabListeners() {
 
 function startActiveAdminTabListener() {
   if (state.activeAdminTab === "users") {
+    restartUsersListener();
     restartUserStatsListener();
+  }
+
+  if (state.activeAdminTab === "messages") {
+    restartUsersListener();
+  }
+
+  if (state.activeAdminTab === "passwordResets") {
+    restartUsersListener();
+    restartPasswordResetRequestsListener();
   }
 
   if (state.activeAdminTab === "connections") {
     restartLoginEventsListener();
     restartFirestoreReadStatsListener();
-    fetchAdminConnectionNotesIfNeeded();
   }
 
   if (state.activeAdminTab === "activity") {
+    restartUsersListener();
     if (state.adminActivitySubTab === "sync") {
       restartUserSyncStatusesListener();
     } else {
@@ -2697,6 +3276,18 @@ function stopInactiveAdminTabListeners() {
     state.userStats = [];
   }
 
+  if (!["users", "messages", "passwordResets", "activity"].includes(state.activeAdminTab) && state.unsubscribeUsers) {
+    state.unsubscribeUsers();
+    state.unsubscribeUsers = null;
+    state.users = [];
+  }
+
+  if (state.activeAdminTab !== "passwordResets" && state.unsubscribePasswordResetRequests) {
+    state.unsubscribePasswordResetRequests();
+    state.unsubscribePasswordResetRequests = null;
+    state.passwordResetRequests = [];
+  }
+
   if ((state.activeAdminTab !== "activity" || state.adminActivitySubTab !== "activity") && state.unsubscribeActivityEvents) {
     state.unsubscribeActivityEvents();
     state.unsubscribeActivityEvents = null;
@@ -2708,6 +3299,69 @@ function stopInactiveAdminTabListeners() {
     state.unsubscribeUserSyncStatuses = null;
     state.userSyncStatuses = [];
   }
+}
+
+function restartUsersListener(force = false) {
+  if (!state.authReady || !isAdminSession() || shouldSuspendFirestoreSync()) {
+    return;
+  }
+
+  if (!["users", "messages", "passwordResets", "activity"].includes(state.activeAdminTab)) {
+    return;
+  }
+
+  if (state.unsubscribeUsers && !force) {
+    return;
+  }
+
+  if (state.unsubscribeUsers) {
+    state.unsubscribeUsers();
+    state.unsubscribeUsers = null;
+  }
+
+  state.users = [];
+  state.unsubscribeUsers = onSnapshot(collection(db, "users"), (snapshot) => {
+    trackFirestoreSnapshotRead("users", snapshot);
+    state.users = deduplicatedUsers(snapshot.docs
+      .map((document) => userFromSnapshot(document.id, document.data())))
+      .sort(compareUsersByLastName);
+    syncCurrentUserFromUsersList();
+    renderAdminSettings();
+    render();
+  }, (error) => setStatus(error.message));
+}
+
+function restartPasswordResetRequestsListener(force = false) {
+  if (!state.authReady || !isAdminSession() || shouldSuspendFirestoreSync()) {
+    return;
+  }
+
+  if (state.activeAdminTab !== "passwordResets") {
+    return;
+  }
+
+  if (state.unsubscribePasswordResetRequests && !force) {
+    return;
+  }
+
+  if (state.unsubscribePasswordResetRequests) {
+    state.unsubscribePasswordResetRequests();
+    state.unsubscribePasswordResetRequests = null;
+  }
+
+  state.passwordResetRequests = [];
+  state.unsubscribePasswordResetRequests = onSnapshot(
+    query(collection(db, "passwordResetRequests"), where("status", "==", "pending")),
+    (snapshot) => {
+      trackFirestoreSnapshotRead("passwordResetRequests", snapshot);
+      state.passwordResetRequests = snapshot.docs
+        .map((document) => passwordResetRequestFromSnapshot(document.id, document.data()))
+        .filter(Boolean)
+        .sort((a, b) => (b.lastRequestedAt?.getTime() || 0) - (a.lastRequestedAt?.getTime() || 0));
+      renderAdminSettings();
+    },
+    (error) => setStatus(error.message)
+  );
 }
 
 function restartLoginEventsListener(force = false) {
@@ -2802,13 +3456,13 @@ function restartUserStatsListener(force = false) {
     state.unsubscribeUserStats = null;
   }
 
-  state.loginEvents = [];
+  state.userStats = [];
   state.unsubscribeUserStats = onSnapshot(
-    collection(db, "loginEvents"),
+    collection(db, "userStats"),
     (snapshot) => {
-      trackFirestoreSnapshotRead("loginEvents", snapshot);
-      state.loginEvents = snapshot.docs
-        .map((document) => loginEventFromSnapshot(document.id, document.data()))
+      trackFirestoreSnapshotRead("userStats", snapshot);
+      state.userStats = snapshot.docs
+        .map((document) => userStatsFromSnapshot(document.id, document.data()))
         .filter(Boolean);
       renderAdminSettings();
     },
@@ -2850,6 +3504,7 @@ function restartActivityEventsListener(force = false) {
       state.activityEvents = snapshot.docs
         .map((document) => activityEventFromSnapshot(document.id, document.data()))
         .filter(Boolean);
+      state.latestActivityNoteChangeDate = latestNoteChangeActivityDateFromEvents(state.activityEvents) || state.latestActivityNoteChangeDate;
       renderAdminSettings();
     },
     (error) => setStatus(error.message)
@@ -2974,6 +3629,7 @@ function detachAuthenticatedDataSync({ keepsInitialDataRefresh = false, keepsDat
       state[key] = null;
     }
   });
+  state.handwritingNotesMode = "";
 
   if (!keepsInitialDataRefresh) {
     finishInitialDataRefresh();
@@ -2990,10 +3646,11 @@ function detachAuthenticatedDataSync({ keepsInitialDataRefresh = false, keepsDat
   }
 
   state.notes = [];
-  state.fetchedNoteDayKeys = new Set();
+  state.fetchedNoteDayRefreshTimes = new Map();
   state.fetchedNotesByID = new Map();
   state.fetchedSearchKeys = new Set();
   state.fetchedDeletedNotes = false;
+  state.handwritingNotesMode = "";
   state.globalSearchRequestID += 1;
   if (state.globalSearchTimer) {
     window.clearTimeout(state.globalSearchTimer);
@@ -3025,7 +3682,8 @@ function detachAuthenticatedDataSync({ keepsInitialDataRefresh = false, keepsDat
   state.allSimulators = [];
   state.simulators = [];
   state.appSettings = {
-    requiredIOSAppVersion: ""
+    requiredIOSAppVersion: "",
+    latestNoteActivityAt: null
   };
   state.detailTimelineEvents = [];
   state.selectedDetail = null;
@@ -3104,7 +3762,7 @@ function renderSession() {
 
   const displayName = [state.currentUser.firstName, state.currentUser.lastName].filter(Boolean).join(" ");
   elements.userName.textContent = displayName || state.currentUser.id;
-  elements.userMeta.innerHTML = userRoleMetaHTML(state.currentUser.role, state.currentUser.team);
+  elements.userMeta.innerHTML = userSessionMetaHTML(state.currentUser.role, state.currentUser.team);
   elements.changeCodeButton.classList.toggle("hidden", state.currentUser.role === "admin");
   elements.adminSettingsButton.classList.toggle("hidden", state.currentUser.role !== "admin");
   elements.adminFirestoreSyncButton.classList.toggle("hidden", state.currentUser.role !== "admin");
@@ -3944,8 +4602,19 @@ function normalizePreventivePlanningRow(row = {}) {
     itCarlDate: /^\d{4}-\d{2}-\d{2}$/.test(row.itCarlDate) ? row.itCarlDate : "",
     remark: normalizePlanningSingleLineText(row.remark),
     mirrorNoteID: isUUIDString(mirrorNoteID) ? mirrorNoteID : preventivePlanningMirrorNoteID(rowID),
-    hasModifications: row.hasModifications === true
+    hasModifications: row.hasModifications === true,
+    firestoreSource: row.firestoreSource === true
   };
+}
+
+function isPreventivePlanningDraftRow(row) {
+  const normalizedRow = normalizePreventivePlanningRow(row);
+  return !normalizedRow.simulatorName
+    && !normalizedRow.event
+    && !normalizedRow.startDate
+    && !normalizedRow.endDate
+    && !normalizedRow.itCarlDate
+    && !normalizedRow.remark;
 }
 
 function createPreventivePlanningRow() {
@@ -4202,7 +4871,7 @@ async function syncPreventivePlanningMirrorNote(row, { refetch = true } = {}) {
   if (legacyMirrorNoteID && legacyMirrorNoteID !== mirrorNoteID) {
     await setDoc(doc(db, "handoverNoteDeletions", legacyMirrorNoteID), {
       noteID: legacyMirrorNoteID,
-      deletedAt: new Date(),
+      deletedAt: serverTimestamp(),
       deletedBy: currentDisplayName(),
       deletedByIdentifier: state.currentUser?.id || ""
     }, { merge: true });
@@ -4272,7 +4941,7 @@ async function deletePreventivePlanningMirrorNote(row) {
 
   await setDoc(doc(db, "handoverNoteDeletions", mirrorNoteID), {
     noteID: mirrorNoteID,
-    deletedAt: new Date(),
+    deletedAt: serverTimestamp(),
     deletedBy: currentDisplayName(),
     deletedByIdentifier: state.currentUser?.id || ""
   }, { merge: true });
@@ -4626,17 +5295,18 @@ function validatePreventivePlanningEditor() {
   }
   if (changedFields.length || editor.mode === "create") {
     state.planningActivityByRowID.delete(row.id);
-    recordPreventivePlanningActivityFromEditor(row, {
-      previousRow,
-      changedFields,
-      action: editor.mode === "create" ? "created" : "updated"
-    });
   }
   savePreventivePlanningRowsLocal();
   closePreventivePlanningEditor();
   renderPreventivePlanningTable();
-  syncPreventivePlanningMirrorNote(row).catch((error) => {
-    setStatus(error.message || "Consigne miroir préventive non synchronisée");
+  savePreventivePlanningRowToFirestore(row, {
+    before: previousRow,
+    changedFields,
+    action: editor.mode === "create" ? "created" : "updated"
+  }).then(() => {
+    setStatus("Planning préventif enregistré");
+  }).catch((error) => {
+    setStatus(error.message || "Planning préventif non enregistré dans Firestore");
   });
 }
 
@@ -4658,13 +5328,10 @@ function deletePreventivePlanningEditorRow() {
   closePreventivePlanningEditor();
   renderPreventivePlanningTable();
   state.planningActivityByRowID.delete(row.id);
-  recordPreventivePlanningActivityFromEditor(row, {
-    previousRow: row,
-    changedFields: preventivePlanningTrackedFields(),
-    action: "deleted"
-  });
-  deletePreventivePlanningMirrorNote(row).catch((error) => {
-    setStatus(error.message || "Consigne miroir préventive non supprimée");
+  deletePreventivePlanningRowFromFirestore(row).then(() => {
+    setStatus("Ligne préventive supprimée");
+  }).catch((error) => {
+    setStatus(error.message || "Suppression planning préventif impossible");
   });
 }
 
@@ -5947,6 +6614,83 @@ function recordPreventivePlanningActivityFromEditor(row, { previousRow = null, c
   });
 }
 
+async function savePreventivePlanningRowToFirestore(row, {
+  before = null,
+  changedFields = [],
+  action = "updated",
+  refetchMirror = true,
+  renderAfterSave = true
+} = {}) {
+  if (!row || isPreventivePlanningDraftRow(row) || !state.authReady || shouldSuspendFirestoreSync() || !canCurrentUserEditPlanning()) {
+    return null;
+  }
+
+  const normalizedRow = normalizePreventivePlanningRow(row);
+  const previousMirrorNoteID = normalizedRow.mirrorNoteID || preventivePlanningMirrorNoteID(normalizedRow.id);
+  const previousLegacyMirrorNoteID = legacyPreventivePlanningMirrorNoteID(normalizedRow.id);
+  const result = await savePreventivePlanningEvent({
+    event: preventivePlanningFirestorePayload(normalizedRow),
+    previousEvent: before ? preventivePlanningFirestorePayload(normalizePreventivePlanningRow(before)) : null,
+    changedFields,
+    action
+  });
+
+  const nextMirrorNoteID = stringValue(result?.data?.mirrorNoteID);
+  normalizedRow.mirrorNoteID = nextMirrorNoteID;
+  normalizedRow.firestoreSource = true;
+  if (typeof result?.data?.hasModifications === "boolean") {
+    normalizedRow.hasModifications = result.data.hasModifications;
+  }
+
+  const localRow = state.preventivePlanningRows.find((candidate) => candidate.id === normalizedRow.id);
+  if (localRow) {
+    Object.assign(localRow, normalizedRow);
+  }
+
+  if (refetchMirror && nextMirrorNoteID) {
+    await fetchNoteByID(nextMirrorNoteID);
+  }
+  if (previousMirrorNoteID && previousMirrorNoteID !== nextMirrorNoteID) {
+    state.fetchedNotesByID.delete(previousMirrorNoteID);
+    state.notes = state.notes.filter((note) => note.id !== previousMirrorNoteID);
+  }
+  if (previousLegacyMirrorNoteID && previousLegacyMirrorNoteID !== nextMirrorNoteID) {
+    state.fetchedNotesByID.delete(previousLegacyMirrorNoteID);
+    state.notes = state.notes.filter((note) => note.id !== previousLegacyMirrorNoteID);
+  }
+
+  savePreventivePlanningRowsLocal();
+  state.isPreventivePlanningFirestoreLoaded = true;
+  if (renderAfterSave) {
+    if (state.activeView === "preventive-planning") {
+      renderPreventivePlanningTable();
+    } else if (state.activeView === "notes") {
+      render();
+    }
+  }
+  return normalizedRow;
+}
+
+async function deletePreventivePlanningRowFromFirestore(row) {
+  if (!state.authReady || shouldSuspendFirestoreSync() || !canCurrentUserEditPlanning()) {
+    return;
+  }
+
+  const normalizedRow = normalizePreventivePlanningRow(row);
+  await deletePreventivePlanningEvent({ id: normalizedRow.id });
+  const mirrorNoteID = normalizedRow.mirrorNoteID || preventivePlanningMirrorNoteID(normalizedRow.id);
+  const legacyMirrorNoteID = legacyPreventivePlanningMirrorNoteID(normalizedRow.id);
+  const mirrorNoteIDs = [mirrorNoteID, legacyMirrorNoteID].filter(Boolean);
+  if (mirrorNoteIDs.length) {
+    const mirrorNoteIDSet = new Set(mirrorNoteIDs);
+    mirrorNoteIDs.forEach((noteID) => state.fetchedNotesByID.delete(noteID));
+    state.notes = state.notes.filter((note) => !mirrorNoteIDSet.has(note.id));
+    if (state.activeView === "notes") {
+      render();
+    }
+  }
+}
+
 async function togglePreventivePlanningActivity(rowID) {
   if (state.planningActivityByRowID.has(rowID)) {
     state.planningActivityByRowID.delete(rowID);
@@ -5999,11 +6743,12 @@ function normalizedPlanningRows() {
 
 function visiblePlanningRows() {
   const rows = normalizedPlanningRows();
+  const deduplicatedRows = deduplicatePlanningRowsForDisplay(rows);
   if (!state.showsPlanningHistory) {
-    return rows.filter((row) => !isPlanningEventPast(row));
+    return deduplicatedRows.filter((row) => !isPlanningEventPast(row));
   }
 
-  return rows.filter((row) => {
+  return deduplicatedRows.filter((row) => {
     if (!isPlanningEventPast(row)) {
       return true;
     }
@@ -6011,6 +6756,40 @@ function visiblePlanningRows() {
     const year = planningArchiveYear(row);
     return year && state.selectedPlanningHistoryYears.has(year);
   });
+}
+
+function deduplicatePlanningRowsForDisplay(rows) {
+  const rowsByKey = new Map();
+  rows.forEach((row) => {
+    const normalizedRow = normalizePlanningRow(row);
+    const key = planningLegacyImportComparisonKey(normalizedRow);
+    const current = rowsByKey.get(key);
+    if (!current || comparePlanningRowsForDeduplication(normalizedRow, current) < 0) {
+      rowsByKey.set(key, normalizedRow);
+    }
+  });
+  return [...rowsByKey.values()];
+}
+
+function comparePlanningRowsForDeduplication(first, second) {
+  const firstScore = planningRowDeduplicationScore(first);
+  const secondScore = planningRowDeduplicationScore(second);
+  for (let index = 0; index < firstScore.length; index += 1) {
+    if (firstScore[index] !== secondScore[index]) {
+      return secondScore[index] - firstScore[index];
+    }
+  }
+  return first.id.localeCompare(second.id, "fr");
+}
+
+function planningRowDeduplicationScore(row) {
+  return [
+    row.hasModifications ? 1 : 0,
+    stringValue(row.participants) ? 1 : 0,
+    stringValue(row.notes) ? 1 : 0,
+    stringValue(row.importSourceID) ? 1 : 0,
+    stringValue(row.mirrorNoteID) ? 1 : 0
+  ];
 }
 
 function planningArchiveYears() {
@@ -6059,8 +6838,10 @@ function normalizePlanningRow(row) {
   const hasValidDate = /^\d{4}-\d{2}-\d{2}$/.test(row.date);
   const rowID = stringValue(row.id) || crypto.randomUUID();
   const mirrorNoteID = stringValue(row.mirrorNoteID);
+  const importSourceID = stringValue(row.importSourceID) || (importedRegulatoryPlanningRowIDs.has(rowID) ? rowID : "");
   return {
     id: rowID,
+    importSourceID,
     simulatorName: normalizePlanningSimulatorName(row.simulatorName),
     type: isDraft && !row.type ? "" : normalizePlanningType(row.type),
     dateMode,
@@ -6545,10 +7326,10 @@ function legacyPlanningMirrorNoteID(rowID) {
 
 function planningRowsWithImportedFallback(rows) {
   const normalizedRows = Array.isArray(rows) ? rows.map(normalizePlanningRow) : [];
-  const existingKeys = new Set(normalizedRows.map(planningImportComparisonKey));
+  const existingKeys = new Set(normalizedRows.flatMap(planningImportComparisonKeys));
   const missingImportedRows = importedRegulatoryPlanningRows
     .map(normalizePlanningRow)
-    .filter((row) => !existingKeys.has(planningImportComparisonKey(row)));
+    .filter((row) => planningImportComparisonKeys(row).every((key) => !existingKeys.has(key)));
 
   return [...normalizedRows, ...missingImportedRows];
 }
@@ -6564,10 +7345,10 @@ async function importMissingRegulatoryPlanningRowsIfNeeded(existingRows = normal
     return;
   }
 
-  const existingKeys = new Set(existingRows.map(normalizePlanningRow).map(planningImportComparisonKey));
+  const existingKeys = new Set(existingRows.map(normalizePlanningRow).flatMap(planningImportComparisonKeys));
   const missingRows = importedRegulatoryPlanningRows
     .map(normalizePlanningRow)
-    .filter((row) => !existingKeys.has(planningImportComparisonKey(row)));
+    .filter((row) => planningImportComparisonKeys(row).every((key) => !existingKeys.has(key)));
 
   if (!missingRows.length) {
     localStorage.setItem(planningFirestoreImportVersionStorageKey, regulatoryPlanningImportVersion);
@@ -6643,19 +7424,51 @@ async function repairRegulatoryPlanningSimulatorNamesIfNeeded() {
   }
 }
 
+async function repairRegulatoryPlanningDuplicatesIfNeeded() {
+  if (
+    localStorage.getItem(planningDuplicateRepairStorageKey) === regulatoryPlanningDuplicateRepairVersion
+    || !state.authReady
+    || shouldSuspendFirestoreSync()
+    || !canCurrentUserEditPlanning()
+  ) {
+    return;
+  }
+
+  try {
+    const result = await repairRegulatoryPlanningDuplicates({ version: regulatoryPlanningDuplicateRepairVersion });
+    localStorage.setItem(planningDuplicateRepairStorageKey, regulatoryPlanningDuplicateRepairVersion);
+    const deletedCount = Number(result?.data?.deletedCount || 0);
+    if (deletedCount > 0) {
+      setStatus(`Doublons planning corrigés (${deletedCount})`);
+    }
+  } catch (error) {
+    console.warn("Regulatory planning duplicate repair skipped", error);
+  }
+}
+
 function planningImportComparisonKey(row) {
+  const normalizedRow = normalizePlanningRow(row);
+  return normalizedRow.importSourceID || normalizedRow.id;
+}
+
+function planningLegacyImportComparisonKey(row) {
   const normalizedRow = normalizePlanningRow(row);
   return [
     normalizedRow.simulatorName,
     normalizedRow.type,
     normalizedRow.dateMode,
-    normalizedRow.dateMode === "month" ? normalizedRow.month : normalizedRow.date,
+    normalizedRow.date,
+    normalizedRow.month,
     normalizedRow.startTime,
-    normalizedRow.endTime,
-    normalizeKey(normalizedRow.participants),
-    normalizeKey(normalizedRow.tri),
-    normalizeKey(normalizedRow.notes)
-  ].join("|");
+    normalizedRow.endTime
+  ].map(normalizeKey).join("|");
+}
+
+function planningImportComparisonKeys(row) {
+  return [
+    planningImportComparisonKey(row),
+    planningLegacyImportComparisonKey(row)
+  ].filter(Boolean);
 }
 
 function savePlanningRows(row = null, { before = null, changedFields = [], action = "updated" } = {}) {
@@ -6675,9 +7488,15 @@ function savePlanningRows(row = null, { before = null, changedFields = [], actio
   }).then(async (result) => {
     state.planningActivityByRowID.delete(row.id);
     const nextMirrorNoteID = stringValue(result?.data?.mirrorNoteID);
+    const nextEventID = stringValue(result?.data?.eventID);
+    const previousRowID = row.id;
+    if (nextEventID && nextEventID !== row.id) {
+      row.id = nextEventID;
+    }
     row.mirrorNoteID = nextMirrorNoteID;
-    const localRow = state.planningRows.find((candidate) => candidate.id === row.id);
+    const localRow = state.planningRows.find((candidate) => candidate.id === previousRowID || candidate.id === row.id);
     if (localRow) {
+      localRow.id = row.id;
       localRow.mirrorNoteID = nextMirrorNoteID;
       localRow.firestoreSource = true;
     }
@@ -6742,6 +7561,7 @@ function planningFirestorePayload(row) {
   const normalizedRow = normalizePlanningRow(row);
   return {
     id: normalizedRow.id,
+    importSourceID: normalizedRow.importSourceID,
     simulatorName: normalizedRow.simulatorName,
     type: normalizedRow.type,
     dateMode: normalizedRow.dateMode,
@@ -7225,6 +8045,7 @@ function noteFromSnapshot(id, data) {
   const isPreventivePlanningMirror = data.preventivePlanningMirror === true;
   return {
     id,
+    documentID: id,
     title: isRegulatoryPlanningMirror ? normalizeRegulatoryPlanningMirrorTitle(stringValue(data.title)) : stringValue(data.title),
     text: stringValue(data.text),
     author: stringValue(data.author),
@@ -7299,6 +8120,513 @@ function closeDetail() {
     setStatus("Suppression manuscrite annulée");
     render();
   }
+}
+
+function currentDetailNote() {
+  if (!state.selectedDetail) {
+    return null;
+  }
+  return state.notes.find((candidate) => candidate.id === state.selectedDetail.noteId)
+    || state.fetchedNotesByID.get(state.selectedDetail.noteId)
+    || null;
+}
+
+function openDetailDebugAttributes() {
+  const note = currentDetailNote();
+  if (!note) {
+    setStatus("Consigne introuvable pour afficher les attributs");
+    return;
+  }
+
+  closeDetailDebugAttributes();
+  const appAttributes = noteDebugApplicationAttributes();
+  const diagnosticAttributes = noteDebugDiagnosticAttributes(note);
+  const attributes = noteDebugAttributes(note);
+  const overlay = document.createElement("div");
+  overlay.className = "note-debug-overlay";
+  overlay.dataset.noteDebugOverlay = "true";
+  overlay.innerHTML = `
+    <section class="note-debug-panel" role="dialog" aria-modal="true" aria-label="Attributs consigne">
+      <header class="note-debug-header">
+        <div>
+          <h2>Attributs consigne</h2>
+          <p>Valeurs non sensibles visibles par diagnostic.</p>
+        </div>
+        <button type="button" class="note-debug-close" data-note-debug-close aria-label="Fermer">×</button>
+      </header>
+      <div class="note-debug-list">
+        <div class="note-debug-section-title">Application</div>
+        ${appAttributes.map((attribute) => `
+          <div class="note-debug-row note-debug-app-row">
+            <strong>${escapeHtml(attribute.name)}</strong>
+            <span>${escapeHtml(attribute.value)}</span>
+          </div>
+        `).join("")}
+        <div class="note-debug-section-title">Diagnostic affichage</div>
+        ${diagnosticAttributes.map((attribute) => `
+          <div class="note-debug-row note-debug-diagnostic-row">
+            <strong>${escapeHtml(attribute.name)}</strong>
+            <span>${escapeHtml(attribute.value)}</span>
+          </div>
+        `).join("")}
+        <div class="note-debug-section-title">Consigne</div>
+        ${attributes.map((attribute) => `
+          <div class="note-debug-row">
+            <strong>${escapeHtml(attribute.name)}</strong>
+            <span>${escapeHtml(attribute.value)}</span>
+          </div>
+        `).join("")}
+      </div>
+      <footer class="note-debug-actions">
+        <button type="button" class="detail-top-button" data-note-debug-copy>Copier</button>
+        <button type="button" class="detail-top-button primary-save" data-note-debug-close>Fermer</button>
+      </footer>
+    </section>
+  `;
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay || event.target.closest("[data-note-debug-close]")) {
+      closeDetailDebugAttributes();
+      return;
+    }
+    if (event.target.closest("[data-note-debug-copy]")) {
+      copyTextToClipboard(noteDebugAttributesText([...appAttributes, ...diagnosticAttributes, ...attributes]));
+      setStatus("Attributs de la consigne copiés");
+    }
+  });
+  document.body.appendChild(overlay);
+}
+
+function closeDetailDebugAttributes() {
+  document.querySelector("[data-note-debug-overlay]")?.remove();
+}
+
+async function openCounterDebugAttributes() {
+  if (!state.currentUser) {
+    setStatus("Connecte-toi pour afficher le diagnostic compteur");
+    return;
+  }
+
+  closeCounterDebugAttributes();
+  const latestActivityNoteChangeDate = await fetchLatestActivityNoteChangeDate();
+  const entries = activeCurrentDayCounterEntries();
+  const attributes = counterDebugAttributes(entries, latestActivityNoteChangeDate);
+  const rows = entries
+    .map((entry, index) => counterDebugEntryText(entry, index + 1))
+    .map((text) => `
+      <div class="note-debug-row note-debug-diagnostic-row">
+        <strong>${escapeHtml(text.index)}</strong>
+        <span>${escapeHtml(text.value)}</span>
+      </div>
+    `)
+    .join("");
+  const overlay = document.createElement("div");
+  overlay.className = "note-debug-overlay";
+  overlay.dataset.counterDebugOverlay = "true";
+  overlay.innerHTML = `
+    <section class="note-debug-panel" role="dialog" aria-modal="true" aria-label="Diagnostic compteur">
+      <header class="note-debug-header">
+        <div>
+          <h2>Diagnostic compteur</h2>
+          <p>Entrées comptées dans la pastille verte.</p>
+        </div>
+        <button type="button" class="note-debug-close" data-counter-debug-close aria-label="Fermer">×</button>
+      </header>
+      <div class="note-debug-list">
+        <div class="note-debug-section-title">Résumé</div>
+        ${attributes.map((attribute) => `
+          <div class="note-debug-row note-debug-app-row">
+            <strong>${escapeHtml(attribute.name)}</strong>
+            <span>${escapeHtml(attribute.value)}</span>
+          </div>
+        `).join("")}
+        <div class="note-debug-section-title">Entrées</div>
+        ${rows || `
+          <div class="note-debug-row note-debug-diagnostic-row">
+            <strong>-</strong>
+            <span>Aucune entrée comptée</span>
+          </div>
+        `}
+      </div>
+      <footer class="note-debug-actions">
+        <button type="button" class="detail-top-button" data-counter-debug-copy>Copier</button>
+        <button type="button" class="detail-top-button primary-save" data-counter-debug-close>Fermer</button>
+      </footer>
+    </section>
+  `;
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay || event.target.closest("[data-counter-debug-close]")) {
+      closeCounterDebugAttributes();
+      return;
+    }
+    if (event.target.closest("[data-counter-debug-copy]")) {
+      copyTextToClipboard(counterDebugText(attributes, entries));
+      setStatus("Diagnostic compteur copié");
+    }
+  });
+  document.body.appendChild(overlay);
+}
+
+function closeCounterDebugAttributes() {
+  document.querySelector("[data-counter-debug-overlay]")?.remove();
+}
+
+async function fetchLatestActivityNoteChangeDate() {
+  if (!state.authReady || !state.currentUser || shouldSuspendFirestoreSync()) {
+    return state.latestActivityNoteChangeDate;
+  }
+
+  if (!isAdminSession()) {
+    return state.appSettings.latestNoteActivityAt || state.latestActivityNoteChangeDate;
+  }
+
+  try {
+    const snapshot = await getDocs(query(
+      collection(db, "activityEvents"),
+      orderBy("createdAt", "desc"),
+      limit(50)
+    ));
+    trackFirestoreRead("activityEvents", snapshot.docs.length);
+    const events = snapshot.docs
+      .map((document) => activityEventFromSnapshot(document.id, document.data()))
+      .filter(Boolean);
+    state.latestActivityNoteChangeDate = latestNoteChangeActivityDateFromEvents(events)
+      || state.latestActivityNoteChangeDate
+      || null;
+  } catch (error) {
+    setStatus(error.message || "Suivi d'activité indisponible");
+  }
+
+  return state.latestActivityNoteChangeDate;
+}
+
+function latestNoteChangeActivityDateFromEvents(events) {
+  const noteEvolutionActions = new Set([
+    "created",
+    "modified",
+    "destinationChanged",
+    "priorityChanged",
+    "assignedDateChanged",
+    "completed",
+    "completionCancelled",
+    "deleted",
+    "restored",
+    "permanentlyDeleted",
+    "planning.created",
+    "planning.imported",
+    "planning.updated",
+    "planning.deleted",
+    "preventivePlanning.created",
+    "preventivePlanning.updated",
+    "preventivePlanning.deleted"
+  ]);
+  return events
+    .filter((event) => noteEvolutionActions.has(event.action))
+    .map((event) => event.createdAt)
+    .filter(Boolean)
+    .sort((first, second) => second.getTime() - first.getTime())[0] || null;
+}
+
+function counterDebugAttributes(entries, latestActivityNoteChangeDate = state.latestActivityNoteChangeDate) {
+  return [
+    ["Date de calcul", debugDateTime(new Date())],
+    ["Utilisateur session", currentDisplayNameForUser(state.currentUser)],
+    ["Version web", WEB_APP_VERSION],
+    ["Total compteur", String(entries.length)],
+    ["Lectures Firestore", `${formatCompactNumber(state.localFirestoreReadCount)} lecture${state.localFirestoreReadCount > 1 ? "s" : ""}`],
+    ["Dernier refresh", debugDateTime(state.lastSuccessfulDataRefreshAt)],
+    ["Dernière activité consigne", debugDateTime(latestActivityNoteChangeDate)]
+  ].map(([name, value]) => ({ name, value }));
+}
+
+function counterDebugEntryText(entry, index) {
+  const note = entry.note;
+  const title = (note.title || note.text || "Sans titre").trim().replace(/\s+/g, " ");
+  return {
+    index: String(index),
+    value: [
+      entry.context,
+      note.id,
+      title,
+      `display=${debugDateTime(note.displayDate)}`,
+      `updated=${debugDateTime(note.updatedAt)}`
+    ].join(" | ")
+  };
+}
+
+function counterDebugText(attributes, entries) {
+  return [
+    ...attributes.map((attribute) => `${attribute.name}: ${attribute.value}`),
+    "",
+    "Entrées:",
+    ...entries.map((entry, index) => {
+      const row = counterDebugEntryText(entry, index + 1);
+      return `${row.index}: ${row.value}`;
+    })
+  ].join("\n");
+}
+
+function noteDebugAttributes(note) {
+  return [
+    ["documentID", note.id],
+    ["id", note.id],
+    ["title", safeDebugText(note.title)],
+    ["text", safeDebugText(note.text)],
+    ["richTextData", debugTextSize(note.richTextData)],
+    ["richTextHTML", debugTextSize(note.richTextHTML)],
+    ["author", safeDebugText(note.author)],
+    ["authorIdentifier", maskedDebugIdentifier(note.authorIdentifier)],
+    ["createdAt", debugDateTime(note.createdAt)],
+    ["updatedAt", debugDateTime(note.updatedAt)],
+    ["contentModifiedAt", debugDateTime(note.contentModifiedAt)],
+    ["syncState", safeDebugText(note.syncState)],
+    ["lastRealtimeRelevantAt", debugDateTime(note.lastRealtimeRelevantAt)],
+    ["realtimeActiveUntil", debugDateTime(note.realtimeActiveUntil)],
+    ["deletedAt", debugDateTime(note.deletedAt)],
+    ["deletedBy", safeDebugText(note.deletedBy)],
+    ["deletedByIdentifier", maskedDebugIdentifier(note.deletedByIdentifier)],
+    ["displayDate", debugDateTime(note.displayDate)],
+    ["firstDisplayDate", debugDateTime(note.firstDisplayDate)],
+    ["isGeneral", String(Boolean(note.isGeneral))],
+    ["simulatorNames", note.simulatorNames?.length ? note.simulatorNames.join(", ") : "-"],
+    ["priorityRawValue", safeDebugText(note.priority)],
+    ["regulatoryPlanningMirror", String(Boolean(note.regulatoryPlanningMirror))],
+    ["regulatoryPlanningEventID", safeDebugText(note.regulatoryPlanningEventID)],
+    ["preventivePlanningMirror", String(Boolean(note.preventivePlanningMirror))],
+    ["preventivePlanningEventID", safeDebugText(note.preventivePlanningEventID)],
+    ["handwritingData", debugTextSize(note.handwritingData)],
+    ["handwritingPreviewImageData", debugTextSize(note.handwritingPreviewImageData)],
+    ["handwritingAuthorIdentifier", maskedDebugIdentifier(note.handwritingAuthorIdentifier)],
+    ["handwritingClearedAt", debugDateTime(note.handwritingClearedAt)],
+    ["completedContexts", note.completedContexts?.length ? note.completedContexts.join(", ") : "-"],
+    ["completionHistoryData", `${note.completions?.length || 0} enregistrement(s)`],
+    ["completionCancellationHistoryData", `${note.completionCancellations?.length || 0} enregistrement(s)`],
+    ["revisionHistoryData", `${note.revisions?.length || 0} enregistrement(s)`],
+    ["reportHistoryData", `${note.reports?.length || 0} enregistrement(s)`],
+    ["acknowledgementHistoryData", `${note.acknowledgements?.length || 0} enregistrement(s)`]
+  ].map(([name, value]) => ({ name, value }));
+}
+
+function noteDebugApplicationAttributes() {
+  return [
+    ["Dernier refresh", debugDateTime(state.lastSuccessfulDataRefreshAt)],
+    ["Dernière consigne créée/modifiée vue", debugDateTime(latestSeenNoteChangeDate())]
+  ].map(([name, value]) => ({ name, value }));
+}
+
+function noteDebugDiagnosticAttributes(note) {
+  const context = state.selectedDetail?.context || "";
+  const belongsToContext = context ? noteBelongsToContext(note, context) : false;
+  const matchesFilters = context ? matchesSelection(note, context) : false;
+  const doneVisible = context ? isDoneBadgeVisibleInContext(note, context) : false;
+  const latestRemoteOrLocalDate = latestDate(note.lastRealtimeRelevantAt, note.updatedAt, note.createdAt);
+  return [
+    ["source", debugNoteSource(note)],
+    ["localStatus", debugNoteLocalStatus(note)],
+    ["selectedContext", safeDebugText(context)],
+    ["belongsToContext", String(belongsToContext)],
+    ["matchesCurrentFilters", String(matchesFilters)],
+    ["visibleReason", debugVisibleReason(note, context)],
+    ["hiddenReason", debugHiddenReason(note, context)],
+    ["completionVisibleUntil", debugDateTime(debugCompletionVisibleUntil(note, context))],
+    ["doneVisibleInContext", String(doneVisible)],
+    ["syncSummary", `syncState=${safeDebugText(note.syncState)} ; deletedAt=${debugDateTime(note.deletedAt)} ; displayDate=${debugDateTime(note.displayDate)} ; firstDisplayDate=${debugDateTime(note.firstDisplayDate)}`],
+    ["lastKnownActivityAt", debugDateTime(latestRemoteOrLocalDate)]
+  ].map(([name, value]) => ({ name, value }));
+}
+
+function debugNoteSource(note) {
+  if (note.regulatoryPlanningMirror) {
+    return "planning réglementaire";
+  }
+  if (note.preventivePlanningMirror) {
+    return "planning préventif";
+  }
+  return "consigne classique";
+}
+
+function debugNoteLocalStatus(note) {
+  const inVisibleNotes = state.notes.some((candidate) => candidate.id === note.id);
+  const inFetchedCache = state.fetchedNotesByID.has(note.id);
+  if (inVisibleNotes && inFetchedCache) {
+    return "vue par l'app + cache web";
+  }
+  if (inVisibleNotes) {
+    return "vue par l'app";
+  }
+  if (inFetchedCache) {
+    return "cache web";
+  }
+  return "inconnu";
+}
+
+function debugVisibleReason(note, context) {
+  if (!context) {
+    return "-";
+  }
+  if (!matchesSelection(note, context)) {
+    return "-";
+  }
+  if (state.search) {
+    return "recherche active";
+  }
+  if (isPeriodResultsMode()) {
+    return "sélection période";
+  }
+  if (sameDay(note.displayDate, state.selectedDate)) {
+    return "date de consigne sélectionnée";
+  }
+  if (isDoneBadgeVisibleInContext(note, context)) {
+    return "soldé encore visible";
+  }
+  if (isNew(note)) {
+    return "nouvelle consigne dans fenêtre de vacation";
+  }
+  if (note.displayDate < state.selectedDate && state.selectedDate <= startOfDay(new Date()) && !isCompletedBefore(note, state.selectedDate, context)) {
+    return "report non soldé";
+  }
+  return "visible par filtre courant";
+}
+
+function debugHiddenReason(note, context) {
+  if (!context) {
+    return "aucun contexte sélectionné";
+  }
+  if (!noteBelongsToContext(note, context)) {
+    return "pas le bon simulateur/contexte";
+  }
+  if (!shouldShowDeletedNote(note)) {
+    return "supprimée et filtre supprimées inactif";
+  }
+  if (isAcknowledgedHidden(note, context) && !(state.showTagged && matchesTaggedFilter(note, context))) {
+    return "prise en compte masquée";
+  }
+  if (state.showTagged && !matchesTaggedFilter(note, context)) {
+    return "filtre tag actif";
+  }
+  if (state.showOnlyDeleted && state.currentUser?.role === "admin" && !note.deletedAt) {
+    return "filtre supprimées uniquement";
+  }
+  if (isPeriodResultsMode() && !matchesPeriodSelection(note, context)) {
+    return "hors période sélectionnée";
+  }
+  if (sameDay(note.displayDate, state.selectedDate)) {
+    return "-";
+  }
+  if (note.displayDate > state.selectedDate) {
+    return "date future";
+  }
+  if (isCompletedBefore(note, state.selectedDate, context) && !isDoneBadgeVisibleInContext(note, context)) {
+    return "soldé expiré";
+  }
+  return matchesSelection(note, context) ? "-" : "hors règles d'affichage";
+}
+
+function debugCompletionVisibleUntil(note, context) {
+  if (!context) {
+    return null;
+  }
+  const completionDates = [
+    ...activeCompletions(note)
+      .filter((completion) => completion.context === context)
+      .map((completion) => completion.date),
+    ...note.completedContexts
+      .map((key) => completionStorageKeyDate(key, context))
+  ].filter((date) => date instanceof Date && !Number.isNaN(date.getTime()));
+
+  const latestCompletionDate = completionDates.sort((first, second) => second.getTime() - first.getTime())[0];
+  if (!latestCompletionDate) {
+    return null;
+  }
+
+  const slot = vacationSlotContaining(latestCompletionDate);
+  if (!slot) {
+    return new Date(startOfDay(addDays(latestCompletionDate, 1)).getTime() - 60000);
+  }
+
+  const visibleSlots = newVacationSlotsFrom(slot);
+  return visibleSlots[visibleSlots.length - 1]?.end || null;
+}
+
+function latestSeenNoteChangeDate() {
+  return latestSeenNoteEvolutionDate();
+}
+
+function latestSeenNoteEvolutionDate() {
+  const candidates = [...state.fetchedNotesByID.values(), ...state.notes]
+    .flatMap((note) => [
+      note.updatedAt,
+      note.createdAt,
+      note.deletedAt,
+      ...activeCompletions(note).map((completion) => completion.date),
+      ...note.completionCancellations.map((cancellation) => cancellation.date)
+    ])
+    .filter((date) => date instanceof Date && !Number.isNaN(date.getTime()));
+  return candidates.sort((first, second) => second.getTime() - first.getTime())[0] || null;
+}
+
+function noteDebugAttributesText(attributes) {
+  return attributes.map((attribute) => `${attribute.name}: ${attribute.value}`).join("\n");
+}
+
+function safeDebugText(value) {
+  const text = stringValue(value).trim();
+  return text || "-";
+}
+
+function debugDateTime(value) {
+  return value instanceof Date && !Number.isNaN(value.getTime()) ? debugFrenchDateTime(value) : "-";
+}
+
+function debugFrenchDateTime(value) {
+  const parts = new Intl.DateTimeFormat("fr-FR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).formatToParts(value).reduce((result, part) => {
+    result[part.type] = part.value;
+    return result;
+  }, {});
+  return `${parts.day}/${parts.month}/${parts.year} ; ${parts.hour}:${parts.minute}:${parts.second}`;
+}
+
+function debugTextSize(value) {
+  const text = stringValue(value);
+  return text ? `${text.length} caractère(s)` : "-";
+}
+
+function maskedDebugIdentifier(value) {
+  const text = stringValue(value).trim();
+  if (!text) {
+    return "-";
+  }
+  if (text.length <= 8) {
+    return "masqué";
+  }
+  return `${text.slice(0, 4)}...${text.slice(-4)}`;
+}
+
+function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).catch(() => fallbackCopyTextToClipboard(text));
+    return;
+  }
+  fallbackCopyTextToClipboard(text);
+}
+
+function fallbackCopyTextToClipboard(text) {
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "readonly");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
 }
 
 function openCreationTextModal(text, dateLabel) {
@@ -7498,10 +8826,13 @@ function renderDetail(note, context) {
   const timeline = timelineEvents(note, context);
   state.detailTimelineEvents = timeline;
   const canWrite = canCurrentUserWrite();
-  const canEditDate = canCurrentUserEditDate();
+  const isPlanningMirror = isPlanningMirrorNote(note);
+  const canEditPlanningControlledFields = canWrite && !isPlanningMirror;
+  const canEditDate = canCurrentUserEditDate() && !isPlanningMirror;
   const canToggleDone = canWrite && sameDay(state.selectedDate, new Date());
   const canToggleAcknowledgement = canWrite && !done && !note.priority && !isNew(note);
   const canDelete = canCurrentUserDeleteNote(note);
+  const canPermanentlyDeleteHandwritingOnly = canCurrentUserPermanentlyDeleteHandwritingOnlyNote(note);
   const canPermanentlyDelete = state.currentUser?.role === "admin" && Boolean(note.deletedAt);
   const handwriting = visibleHandwritingFor(note);
 
@@ -7530,7 +8861,11 @@ function renderDetail(note, context) {
           data-can-toggle="${canToggleAcknowledgement ? "true" : "false"}"
           ${canToggleAcknowledgement ? "" : "disabled"}
         >${renderIcon("badge-check", "action-icon")}${acknowledged ? "Annuler prise en compte" : "Pris en compte"}</button>
-        ${canDelete ? `
+        ${canPermanentlyDeleteHandwritingOnly ? `
+          <button class="secondary danger action-delete" data-detail-action="permanent-delete-note">
+            ${renderIcon("trash", "action-icon")}Supprimer
+          </button>
+        ` : canDelete ? `
           <button class="secondary danger action-delete" data-detail-action="delete-note">
             ${renderIcon(note.deletedAt ? "undo" : "trash", "action-icon")}${note.deletedAt ? "Restaurer" : "Supprimer"}
           </button>
@@ -7547,10 +8882,10 @@ function renderDetail(note, context) {
     <section class="detail-section priority-section">
       ${renderSectionTitle("priority", "Priorité")}
       <div class="priority-picker" role="radiogroup" aria-label="Priorité">
-        ${renderPriorityOption("", "Info", !note.priority, canWrite)}
-        ${renderPriorityOption("urgent", "Urgent", note.priority === "urgent", canWrite)}
-        ${renderPriorityOption("whenever", "ASAP", note.priority === "whenever", canWrite)}
-        <select id="detailEditPriority" ${canWrite ? "" : "disabled"} aria-hidden="true" tabindex="-1">
+        ${renderPriorityOption("", "Info", !note.priority, canEditPlanningControlledFields)}
+        ${renderPriorityOption("urgent", "Urgent", note.priority === "urgent", canEditPlanningControlledFields)}
+        ${renderPriorityOption("whenever", "ASAP", note.priority === "whenever", canEditPlanningControlledFields)}
+        <select id="detailEditPriority" ${canEditPlanningControlledFields ? "" : "disabled"} aria-hidden="true" tabindex="-1">
           <option value="" ${!note.priority ? "selected" : ""}>Info</option>
           <option value="urgent" ${note.priority === "urgent" ? "selected" : ""}>Urgent</option>
           <option value="whenever" ${note.priority === "whenever" ? "selected" : ""}>ASAP</option>
@@ -7569,7 +8904,7 @@ function renderDetail(note, context) {
         <div class="detail-subsection">
           <h4>Titre</h4>
         </div>
-        <input id="detailEditTitle" class="title-input" value="${escapeAttribute(note.title)}" placeholder="Titre" ${canWrite ? "" : "disabled"}>
+        <input id="detailEditTitle" class="title-input" value="${escapeAttribute(note.title)}" placeholder="Titre" ${canEditPlanningControlledFields ? "" : "disabled"}>
         <div class="detail-subsection text-editor-subsection">
           <h4>Consigne</h4>
           ${renderFormatToolbar()}
@@ -7589,16 +8924,20 @@ function renderDetail(note, context) {
     <section class="detail-section simulator-section">
       ${renderSectionTitle("sliders", "Simulateur(s) concerné(s)", "(Sélection par appui long)")}
       <div class="simulator-pill-grid">
-        ${renderSimulatorToggles(note, { editable: canWrite })}
+        ${renderSimulatorToggles(note, { editable: canEditPlanningControlledFields })}
       </div>
     </section>
   `;
-  bindPriorityPicker(canWrite);
+  bindPriorityPicker(canEditPlanningControlledFields);
   bindDateLine();
   bindSimulatorToggles();
   bindRichTextToolbar(canWrite);
   elements.detailOverlay.classList.remove("hidden");
   elements.detailOverlay.setAttribute("aria-hidden", "false");
+}
+
+function isPlanningMirrorNote(note) {
+  return Boolean(note?.regulatoryPlanningMirror || note?.preventivePlanningMirror);
 }
 
 function toggleDraftDoneButton(button) {
@@ -8569,23 +9908,21 @@ function isAdminDateInteractionActive() {
 
 function renderAdminHome() {
   const requiredIOSAppVersion = stringValue(state.appSettings?.requiredIOSAppVersion);
-  const pendingResetCount = state.passwordResetRequests.length;
   return `
     <div class="admin-menu-list">
       <button class="admin-menu-row" type="button" data-admin-action="open-admin-users">
         <span class="admin-menu-icon">⚿</span>
         <span>
           <strong>Droits et utilisateurs</strong>
-          <small>${state.users.length} compte${state.users.length > 1 ? "s" : ""} utilisateur</small>
+          <small>Ouvrir la liste des comptes</small>
         </span>
       </button>
       <button class="admin-menu-row" type="button" data-admin-action="open-admin-password-resets">
         <span class="admin-menu-icon">⌁</span>
         <span>
           <strong>Mots de passe oubliés</strong>
-          <small>${pendingResetCount ? `${pendingResetCount} demande${pendingResetCount > 1 ? "s" : ""} en attente` : "Aucune demande en attente"}</small>
+          <small>Consulter les demandes en attente</small>
         </span>
-        ${pendingResetCount ? `<span class="admin-menu-badge">${pendingResetCount}</span>` : ""}
       </button>
       <button class="admin-menu-row" type="button" data-admin-action="open-admin-simulators">
         <span class="admin-menu-icon">▦</span>
@@ -9087,8 +10424,6 @@ function renderAdminConnectionGroup(group) {
         ${group.latestIOSAppVersion ? `<span>⇩ iOS v${escapeHtml(group.latestIOSAppVersion)}</span>` : ""}
         <span>◎ ${group.webCount} Web</span>
         <span title="${escapeAttribute(readStatsTitle(group))}">◫ ${formatCompactNumber(group.readCount)} lectures</span>
-        <span>□ ${group.createdCount} créées</span>
-        <span>⌁ ${group.modifiedCount} modifiées</span>
         <strong>${escapeHtml(formatConnectionTime(group.lastSeenAt))}</strong>
       </div>
       </div>
@@ -9291,7 +10626,7 @@ function sourceDisplayName(source) {
 
 function renderAdminActivityEvent(event) {
   const note = state.notes.find((candidate) => candidate.id === event.noteID);
-  const displayName = displayNameForIdentifier(event.userIdentifier) || event.userDisplayName || event.userIdentifier;
+  const displayName = readableUserDisplayName(event.userDisplayName, event.userIdentifier);
   const isPlanningEvent = Boolean(event.planningEventID);
   const noteTitle = event.noteTitle || note?.title || (isPlanningEvent ? "Planning réglementaire" : "Consigne sans titre");
   const activityDetails = stringValue(event.activityDetails).trim();
@@ -9331,7 +10666,7 @@ function filteredActivityEvents() {
 
   return state.activityEvents.filter((event) => {
     const note = state.notes.find((candidate) => candidate.id === event.noteID);
-    const displayName = displayNameForIdentifier(event.userIdentifier) || event.userDisplayName || event.userIdentifier;
+    const displayName = readableUserDisplayName(event.userDisplayName, event.userIdentifier);
     const searchable = [
       displayName,
       event.actionTitle,
@@ -9343,6 +10678,15 @@ function filteredActivityEvents() {
     ].join(" ");
     return normalizeKey(searchable).includes(queryText);
   });
+}
+
+function readableUserDisplayName(displayName, identifier) {
+  const cleanedDisplayName = stringValue(displayName).trim();
+  const cleanedIdentifier = stringValue(identifier).trim();
+  if (cleanedDisplayName && normalizeKey(cleanedDisplayName) !== normalizeKey(cleanedIdentifier)) {
+    return cleanedDisplayName;
+  }
+  return displayNameForIdentifier(cleanedIdentifier) || cleanedDisplayName || cleanedIdentifier;
 }
 
 async function openActivityNote(card) {
@@ -9415,8 +10759,6 @@ function loginStatsRows() {
       normalizeKey(event.deviceIdentifier || event.source)
     ].join("|");
   });
-  const createdCounts = createdNoteCountsByUser(dayIdentifier);
-  const modifiedCounts = modifiedNoteCountsByUser(dayIdentifier);
   const usersByIdentifier = new Map(state.users
     .map((user) => [normalizeKey(user.id), user]));
   const activeSessionCutoff = Date.now() - activeLoginSessionWindowMs;
@@ -9444,8 +10786,6 @@ function loginStatsRows() {
       ipadCount: events.reduce((sum, event) => sum + (event.source === "ipad" ? event.appearanceCount || 1 : 0), 0),
       webCount: events.reduce((sum, event) => sum + (event.source === "web" ? event.appearanceCount || 1 : 0), 0),
       latestIOSAppVersion: latestIOSAppVersionForEvents(events),
-      createdCount: createdCounts.get(userKey) || 0,
-      modifiedCount: modifiedCounts.get(userKey) || 0,
       iCloudIdentifiers: uniqueValues(events.map((event) => event.iCloudIdentifier || event.userIdentifier)),
       deviceDescriptions: deviceDescriptionsForEvents(events),
       isCurrent
@@ -9501,8 +10841,6 @@ function loginStatsGroups(rows) {
       ipadCount: sortedRows.reduce((sum, row) => sum + row.ipadCount, 0),
       webCount: sortedRows.reduce((sum, row) => sum + row.webCount, 0),
       latestIOSAppVersion: latestIOSAppVersionForRows(sortedRows),
-      createdCount: sortedRows[0]?.createdCount || 0,
-      modifiedCount: sortedRows[0]?.modifiedCount || 0,
       hasCurrentSession: sortedRows.some((row) => row.isCurrent),
       readCount: userReadStats.totalReads,
       webReadCount: userReadStats.webReads,
@@ -9526,8 +10864,6 @@ function loginStatsGroups(rows) {
       ipadCount: 0,
       webCount: 0,
       latestIOSAppVersion: "",
-      createdCount: 0,
-      modifiedCount: 0,
       hasCurrentSession: false,
       readCount: userReadStats.totalReads,
       webReadCount: userReadStats.webReads,
@@ -9615,46 +10951,6 @@ function isAnonymousWebLoginEvent(event) {
     );
 }
 
-function createdNoteCountsByUser(dayIdentifier) {
-  const counts = new Map();
-  for (const note of state.notes) {
-    if (!note.createdAt || isoDate(note.createdAt) !== dayIdentifier) {
-      continue;
-    }
-
-    const identifier = normalizeKey(note.authorIdentifier || note.author);
-    if (!identifier) {
-      continue;
-    }
-
-    counts.set(identifier, (counts.get(identifier) || 0) + 1);
-  }
-  return counts;
-}
-
-function modifiedNoteCountsByUser(dayIdentifier) {
-  const counts = new Map();
-  for (const note of state.notes) {
-    const revisions = [...note.revisions]
-      .filter((revision) => revision.date)
-      .sort((first, second) => first.date - second.date)
-      .slice(1);
-    for (const revision of revisions) {
-      if (isoDate(revision.date) !== dayIdentifier) {
-        continue;
-      }
-
-      const identifier = normalizeKey(revision.authorIdentifier || revision.author);
-      if (!identifier) {
-        continue;
-      }
-
-      counts.set(identifier, (counts.get(identifier) || 0) + 1);
-    }
-  }
-  return counts;
-}
-
 function groupBy(items, keyForItem) {
   const groups = new Map();
   for (const item of items) {
@@ -9686,45 +10982,23 @@ function latestIOSAppVersionForEvents(events) {
   return stringValue(latestIPadEvent?.iosAppVersion).trim();
 }
 
-function userStatsForUser(user) {
-  const matchingEvents = matchingLoginEventsForUser(user);
-  return [...matchingEvents]
-    .sort((first, second) => {
-      return (second.lastSeenAt?.getTime() || second.createdAt?.getTime() || 0)
-        - (first.lastSeenAt?.getTime() || first.createdAt?.getTime() || 0);
-    })[0];
-}
-
 function userStatsSummaryForUser(user) {
-  const matchingEvents = matchingLoginEventsForUser(user);
-  const latestIOSAppVersion = [...matchingEvents]
-    .filter((event) => event.source === "ipad" && stringValue(event.iosAppVersion).trim())
-    .sort((first, second) => {
-      return (second.lastSeenAt?.getTime() || second.createdAt?.getTime() || 0)
-        - (first.lastSeenAt?.getTime() || first.createdAt?.getTime() || 0);
-    })[0]?.iosAppVersion;
-
-  return {
-    latestIOSAppVersion: stringValue(latestIOSAppVersion).trim(),
-    totalConnections: matchingEvents.reduce((total, event) => {
-      return total + (event.appearanceCount || 0);
-    }, 0)
-  };
-}
-
-function matchingLoginEventsForUser(user) {
   const userKeys = new Set([
     normalizeKey(user.id),
     normalizeKey(user.documentID),
     normalizeKey(user.iCloudIdentifier)
   ].filter(Boolean));
-
-  return state.loginEvents.filter((event) => {
+  const stats = state.userStats.find((entry) => {
     return [
-      normalizeKey(event.iCloudIdentifier),
-      normalizeKey(event.userIdentifier)
+      normalizeKey(entry.userIdentifier),
+      normalizeKey(entry.id)
     ].some((key) => key && userKeys.has(key));
   });
+
+  return {
+    latestIOSAppVersion: stringValue(stats?.latestIOSAppVersion).trim(),
+    totalConnections: (stats?.totalWebConnections || 0) + (stats?.totalIOSConnections || 0)
+  };
 }
 
 function latestIOSAppVersionForRows(rows) {
@@ -10714,7 +11988,9 @@ async function toggleAcknowledgement(note, context) {
 }
 
 function confirmPermanentDeleteFromDetail(note) {
-  if (state.currentUser?.role !== "admin" || !note.deletedAt || state.isSaving) {
+  const canPermanentlyDelete = (state.currentUser?.role === "admin" && Boolean(note.deletedAt))
+    || canCurrentUserPermanentlyDeleteHandwritingOnlyNote(note);
+  if (!canPermanentlyDelete || state.isSaving) {
     return;
   }
 
@@ -10770,12 +12046,14 @@ function deleteNoteFromDetail(note) {
 }
 
 async function performNoteDeletion(note, deletionMode) {
-  if (!canCurrentUserDeleteNote(note) || state.isSaving) {
+  const canDelete = canCurrentUserDeleteNote(note)
+    || (deletionMode === "permanent" && canCurrentUserPermanentlyDeleteHandwritingOnlyNote(note));
+  if (!canDelete || state.isSaving) {
     return;
   }
 
   const isPermanent = deletionMode === "permanent";
-  if (isPermanent && state.currentUser?.role !== "admin") {
+  if (isPermanent && state.currentUser?.role !== "admin" && !canCurrentUserPermanentlyDeleteHandwritingOnlyNote(note)) {
     setStatus("Suppression définitive réservée à l'admin");
     return;
   }
@@ -10785,7 +12063,7 @@ async function performNoteDeletion(note, deletionMode) {
   try {
     if (isPermanent) {
       setStatus("Suppression définitive...");
-      await permanentlyDeleteNote(note.id);
+      await permanentlyDeleteNote(note.id, note.documentID || note.id);
       await recordActivityEvent("permanentlyDeleted", note, state.selectedDetail?.context);
     } else if (deletionMode === "restore") {
       setStatus("Restauration...");
@@ -10851,9 +12129,9 @@ async function detachContextDeletionIfNeeded(note, now) {
     author: note.author,
     authorIdentifier: note.authorIdentifier,
     createdAt: note.createdAt || now,
-    updatedAt: now,
+    updatedAt: serverTimestamp(),
     contentModifiedAt: note.contentModifiedAt || null,
-    deletedAt: now,
+    deletedAt: serverTimestamp(),
     deletedBy: currentDisplayName(),
     deletedByIdentifier: state.currentUser.id,
     displayDate: note.displayDate,
@@ -10906,27 +12184,55 @@ async function detachContextDeletionIfNeeded(note, now) {
   return true;
 }
 
-async function permanentlyDeleteNote(noteID) {
-  const [handwritingSnapshot, dailyTagSnapshot] = await Promise.all([
-    getDocs(query(collection(db, "handwritingNotes"), where("noteID", "==", noteID))),
-    getDocs(query(collection(db, "dailyTags"), where("noteID", "==", noteID)))
-  ]);
+async function permanentlyDeleteNote(noteID, documentID = noteID) {
+  const firestoreNoteDocumentID = stringValue(documentID, noteID) || noteID;
+  const handwritingSnapshot = await getDocs(query(collection(db, "handwritingNotes"), where("noteID", "==", noteID)));
   trackFirestoreRead("handwritingNotes", handwritingSnapshot.docs.length);
-  trackFirestoreRead("dailyTags", dailyTagSnapshot.docs.length);
+
+  let dailyTagDocuments = [];
+  if (state.currentUser?.role === "admin") {
+    const dailyTagSnapshot = await getDocs(query(collection(db, "dailyTags"), where("noteID", "==", noteID)));
+    trackFirestoreRead("dailyTags", dailyTagSnapshot.docs.length);
+    dailyTagDocuments = dailyTagSnapshot.docs;
+  }
 
   const linkedDocuments = [
     ...handwritingSnapshot.docs,
-    ...dailyTagSnapshot.docs
+    ...dailyTagDocuments
   ];
 
   await setDoc(doc(db, "handoverNoteDeletions", noteID), {
     noteID,
-    deletedAt: new Date(),
+    documentID: firestoreNoteDocumentID,
+    deletedAt: serverTimestamp(),
     deletedBy: currentDisplayName(),
     deletedByIdentifier: state.currentUser?.id || ""
   }, { merge: true });
   await Promise.all(linkedDocuments.map((document) => deleteDoc(document.ref)));
-  await deleteDoc(doc(db, "handoverNotes", noteID));
+  await deleteDoc(doc(db, "handoverNotes", firestoreNoteDocumentID));
+  if (firestoreNoteDocumentID !== noteID) {
+    await deleteDoc(doc(db, "handoverNotes", noteID));
+  }
+  removePermanentlyDeletedNoteFromLocalState(noteID, firestoreNoteDocumentID);
+}
+
+function removePermanentlyDeletedNoteFromLocalState(noteID, documentID = noteID) {
+  const deletedIDSet = new Set([noteID, documentID].filter(Boolean).map(normalizeKey));
+  const removedNoteIDs = new Set();
+  state.notes = state.notes.filter((existingNote) => {
+    const existingID = normalizeKey(existingNote.id);
+    const existingDocumentID = normalizeKey(existingNote.documentID || existingNote.id);
+    const shouldRemove = deletedIDSet.has(existingID) || deletedIDSet.has(existingDocumentID);
+    if (shouldRemove) {
+      removedNoteIDs.add(existingNote.id);
+    }
+    return !shouldRemove;
+  });
+  deletedIDSet.forEach((deletedID) => state.fetchedNotesByID.delete(deletedID));
+  removedNoteIDs.forEach((removedID) => state.fetchedNotesByID.delete(removedID));
+  state.handwritingNotes = state.handwritingNotes.filter((handwritingNote) => {
+    return !deletedIDSet.has(normalizeKey(handwritingNote.noteID)) && !removedNoteIDs.has(handwritingNote.noteID);
+  });
 }
 
 async function deleteHandwritingNotesForNote(noteID, preferredDocumentID = "") {
@@ -10982,8 +12288,8 @@ async function saveNewNote(options = {}) {
     text,
     author: currentDisplayName(),
     authorIdentifier: state.currentUser.id,
-    createdAt: now,
-    updatedAt: now,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
     displayDate,
     firstDisplayDate: displayDate,
     isGeneral: destination.isGeneral,
@@ -11158,17 +12464,67 @@ function showAcknowledgementScopeConfirmation(note, context, button) {
   elements.detailBody.appendChild(popover);
 }
 
+function showModificationScopeConfirmation(note, context, options = {}) {
+  elements.detailBody.querySelector(".date-confirm-popover")?.remove();
+  const popover = document.createElement("div");
+  popover.className = "date-confirm-popover";
+  popover.setAttribute("role", "dialog");
+  popover.setAttribute("aria-modal", "true");
+  popover.innerHTML = `
+    <strong>Modification multi-simu</strong>
+    <p>Cette consigne concerne plusieurs simulateurs. Choisir la portée de la modification.</p>
+    <button type="button" class="date-confirm-choice" data-modification-scope-confirm="one">
+      Modifier uniquement ${escapeHtml(context)}
+    </button>
+    <button type="button" class="date-confirm-choice primary" data-modification-scope-confirm="all">
+      Modifier tous les simus
+    </button>
+    <button type="button" class="date-confirm-choice" data-modification-scope-cancel>
+      Annuler
+    </button>
+  `;
+
+  popover.addEventListener("click", (event) => {
+    if (event.target.closest("[data-modification-scope-cancel]")) {
+      popover.remove();
+      return;
+    }
+
+    const scope = event.target.closest("[data-modification-scope-confirm]")?.dataset.modificationScopeConfirm;
+    if (!scope) {
+      return;
+    }
+
+    popover.remove();
+    saveDetailEdit(note, {
+      ...options,
+      skipModificationScopeConfirmation: true,
+      modificationScope: scope
+    });
+  });
+
+  elements.detailBody.appendChild(popover);
+}
+
 async function saveDetailEdit(note, options = {}) {
   if (!canCurrentUserWrite() || state.isSaving) {
     return;
   }
 
-  const { title, text, richTextHTML } = collectConsigneDraft();
-  const displayDate = startOfDay(parseDateInput(document.querySelector("#detailEditDate").value));
+  const draft = collectConsigneDraft();
+  const isPlanningMirror = isPlanningMirrorNote(note);
+  const title = isPlanningMirror ? note.title : draft.title;
+  const text = draft.text;
+  const richTextHTML = draft.richTextHTML;
+  const displayDate = isPlanningMirror
+    ? note.displayDate
+    : startOfDay(parseDateInput(document.querySelector("#detailEditDate").value));
   const selectedModificationDate = startOfDay(state.selectedDate);
   const modificationDay = options.modificationDate ? startOfDay(options.modificationDate) : selectedModificationDate;
-  const priority = document.querySelector("#detailEditPriority").value;
-  const destination = collectDetailDestination(state.selectedDetail?.context || generalName);
+  const priority = isPlanningMirror ? note.priority : document.querySelector("#detailEditPriority").value;
+  const destination = isPlanningMirror
+    ? { isGeneral: note.isGeneral, simulatorNames: note.simulatorNames }
+    : collectDetailDestination(state.selectedDetail?.context || generalName);
   const context = state.selectedDetail?.context || generalName;
   const doneButton = elements.detailBody.querySelector('[data-detail-action="toggle-done"]');
   const ackButton = elements.detailBody.querySelector('[data-detail-action="toggle-ack"]');
@@ -11217,6 +12573,11 @@ async function saveDetailEdit(note, options = {}) {
 
   if (!options.skipDateConfirmation && announcesContentModification && !sameDay(selectedModificationDate, new Date())) {
     showEditDateConfirmation(note, selectedModificationDate, options);
+    return;
+  }
+
+  if (!options.skipModificationScopeConfirmation && shouldAskModificationScope(note, context, textChanged, destinationChanged)) {
+    showModificationScopeConfirmation(note, context, options);
     return;
   }
 
@@ -11331,7 +12692,7 @@ async function saveDetailEdit(note, options = {}) {
   state.isSaving = true;
   refreshDetail();
   try {
-    if (shouldDetachContextModification(note, context, textChanged, destinationChanged)) {
+    if (shouldDetachContextModification(note, context, textChanged, destinationChanged, options.modificationScope)) {
       await detachContextModification(note, context, {
         patch,
         title,
@@ -11384,13 +12745,20 @@ async function saveDetailEdit(note, options = {}) {
   }
 }
 
-function shouldDetachContextModification(note, context, textChanged, destinationChanged) {
+function shouldDetachContextModification(note, context, textChanged, destinationChanged, modificationScope = "one") {
   return textChanged
     && !destinationChanged
+    && modificationScope !== "all"
     && context !== generalName
     && !note.isGeneral
     && note.simulatorNames.length > 1
     && note.simulatorNames.includes(context);
+}
+
+function shouldAskModificationScope(note, context, textChanged, destinationChanged) {
+  return textChanged
+    && !destinationChanged
+    && shouldAskAcknowledgementScope(note, context);
 }
 
 async function detachContextModification(note, context, draft) {
@@ -11432,7 +12800,7 @@ async function detachContextModification(note, context, draft) {
     author: note.author,
     authorIdentifier: note.authorIdentifier,
     createdAt: note.createdAt || draft.now,
-    updatedAt: draft.now,
+    updatedAt: serverTimestamp(),
     contentModifiedAt: draft.contentModifiedAt || null,
     deletedAt: note.deletedAt || null,
     deletedBy: note.deletedBy || "",
@@ -11698,9 +13066,23 @@ function sanitizeRichTextHTML(html) {
 
     const tagName = allowedTags.has(node.tagName) ? node.tagName.toLowerCase() : "span";
     const cleaned = document.createElement(tagName);
+    const textDecoration = stringValue(node.style?.textDecoration || node.style?.textDecorationLine).toLowerCase();
+    const fontStyle = stringValue(node.style?.fontStyle).toLowerCase();
+    const fontWeight = stringValue(node.style?.fontWeight).toLowerCase();
     const backgroundColor = normalizeRichTextColor(node.style?.backgroundColor, true);
     const color = normalizeRichTextColor(node.style?.color, false);
 
+    if (fontWeight === "bold" || Number(fontWeight) >= 600) {
+      cleaned.style.fontWeight = "700";
+    }
+    if (fontStyle === "italic") {
+      cleaned.style.fontStyle = "italic";
+    }
+    if (textDecoration.includes("underline")) {
+      cleaned.style.textDecorationLine = "underline";
+      cleaned.style.textDecorationThickness = "1.5px";
+      cleaned.style.textUnderlineOffset = "2px";
+    }
     if (backgroundColor && allowedColors.has(backgroundColor)) {
       cleaned.style.backgroundColor = backgroundColor;
     }
@@ -12155,15 +13537,20 @@ function shouldAskAcknowledgementScope(note, context) {
 async function updateNote(noteID, patch) {
   setStatus("Enregistrement...");
   const existingNote = state.notes.find((note) => note.id === noteID);
-  const indexedPatch = existingNote
+  const localIndexedPatch = existingNote
     ? { ...patch, ...handoverIndexFields(noteWithPatchForIndex(existingNote, patch)) }
     : patch;
+  const indexedPatch = { ...localIndexedPatch };
+  if (Object.prototype.hasOwnProperty.call(indexedPatch, "updatedAt")) {
+    indexedPatch.updatedAt = serverTimestamp();
+  }
   if (existingNote && (Object.prototype.hasOwnProperty.call(patch, "title") || Object.prototype.hasOwnProperty.call(patch, "text"))) {
-    indexedPatch.searchKeywords = searchKeywordsForNote(noteWithPatchForIndex(existingNote, patch));
+    localIndexedPatch.searchKeywords = searchKeywordsForNote(noteWithPatchForIndex(existingNote, patch));
+    indexedPatch.searchKeywords = localIndexedPatch.searchKeywords;
   }
   await updateDoc(doc(db, "handoverNotes", noteID), indexedPatch);
   if (existingNote) {
-    const updatedNote = noteWithPatchForIndex(existingNote, indexedPatch);
+    const updatedNote = noteWithPatchForIndex(existingNote, localIndexedPatch);
     state.fetchedNotesByID.set(noteID, updatedNote);
     state.notes = Array.from(new Map(state.notes.map((note) => [note.id, note])).set(noteID, updatedNote).values());
     renderSimulators();
@@ -12624,6 +14011,14 @@ function isDoneInContext(note, context) {
   return note.completedContexts.includes(completionStorageKey(context, state.selectedDate));
 }
 
+function isDoneInContextOnDay(note, context, day) {
+  if (activeCompletions(note).some((completion) => completion.context === context && sameDay(completion.date, day))) {
+    return true;
+  }
+
+  return note.completedContexts.includes(completionStorageKey(context, day));
+}
+
 function isDoneBadgeVisibleInContext(note, context) {
   return activeCompletions(note).some((completion) => {
     return completion.context === context && isEventActiveForCurrentView(completion.date);
@@ -12631,6 +14026,15 @@ function isDoneBadgeVisibleInContext(note, context) {
     const completionDate = completionStorageKeyDate(key, context);
     return completionDate && isEventActiveForCurrentView(completionDate);
   }) || isDoneInContext(note, context);
+}
+
+function isDoneBadgeVisibleInContextOnDay(note, context, day) {
+  return activeCompletions(note).some((completion) => {
+    return completion.context === context && isEventNewForViewer(completion.date, day);
+  }) || note.completedContexts.some((key) => {
+    const completionDate = completionStorageKeyDate(key, context);
+    return completionDate && isEventNewForViewer(completionDate, day);
+  }) || isDoneInContextOnDay(note, context, day);
 }
 
 function visibleCompletionDayInContext(note, context, fallbackDay = state.selectedDate) {
@@ -12875,7 +14279,7 @@ function modificationBadgeTitle(note, context, newBadge, carryOver) {
 
 function renderAgeBadge(noteID, carryOver, modificationTitle, isTagged, isUrgentOverdue = false) {
   return `
-    <span class="age-badge" title="Appui long pour taguer la consigne">
+    <span class="age-badge">
       <span class="age-badge-part age-created${isUrgentOverdue ? " age-created-urgent" : ""}" data-tag-note-id="${escapeAttribute(noteID)}">J+${carryOver}</span>
       ${modificationTitle ? `<span class="age-badge-part age-modified" data-tag-note-id="${escapeAttribute(noteID)}">${modificationTitle}</span>` : ""}
       ${isTagged ? `<span class="age-badge-part age-tagged" data-tag-note-id="${escapeAttribute(noteID)}">⚑</span>` : ""}
@@ -12885,7 +14289,7 @@ function renderAgeBadge(noteID, carryOver, modificationTitle, isTagged, isUrgent
 
 function renderNewAgeBadge(noteID, isTagged, isDone = false) {
   return `
-    <span class="age-badge age-badge-new${isDone ? " age-badge-done" : ""}" title="Appui long pour taguer la consigne">
+    <span class="age-badge age-badge-new${isDone ? " age-badge-done" : ""}">
       <span class="age-badge-part age-new${isDone ? " age-new-done" : ""}" data-tag-note-id="${escapeAttribute(noteID)}">NEW</span>
       ${isTagged ? `<span class="age-badge-part age-tagged" data-tag-note-id="${escapeAttribute(noteID)}">⚑</span>` : ""}
     </span>
@@ -13371,13 +14775,16 @@ function manualRichTextStylesByCharacter(note, expectedText = "") {
     const backgroundColor = normalizeRichTextColor(node.style?.backgroundColor, true);
     const color = normalizeRichTextColor(node.style?.color, false);
     const styleParts = [inheritedStyle].filter(Boolean);
-    if (node.tagName === "B" || node.tagName === "STRONG") {
+    const textDecoration = stringValue(node.style?.textDecoration || node.style?.textDecorationLine).toLowerCase();
+    const fontStyle = stringValue(node.style?.fontStyle).toLowerCase();
+    const fontWeight = stringValue(node.style?.fontWeight).toLowerCase();
+    if (node.tagName === "B" || node.tagName === "STRONG" || fontWeight === "bold" || Number(fontWeight) >= 600) {
       styleParts.push("font-weight: 700");
     }
-    if (node.tagName === "I" || node.tagName === "EM") {
+    if (node.tagName === "I" || node.tagName === "EM" || fontStyle === "italic") {
       styleParts.push("font-style: italic");
     }
-    if (node.tagName === "U") {
+    if (node.tagName === "U" || textDecoration.includes("underline")) {
       styleParts.push("text-decoration-line: underline");
       styleParts.push("text-decoration-thickness: 1.5px");
       styleParts.push("text-underline-offset: 2px");
@@ -13413,6 +14820,22 @@ function manualRichTextStylesByCharacter(note, expectedText = "") {
   const start = richText.indexOf(normalizedExpectedText);
   if (start >= 0) {
     return styles.slice(start, start + normalizedExpectedText.length);
+  }
+
+  const normalizedNoteText = String(note.text || "")
+    .replace(/\u00a0/g, " ")
+    .trim();
+  if (richText === normalizedNoteText) {
+    const noteTextStart = normalizedExpectedText.indexOf(normalizedNoteText);
+    if (noteTextStart >= 0) {
+      const paddedStyles = Array.from({ length: normalizedExpectedText.length }, () => null);
+      styles.forEach((style, index) => {
+        if (noteTextStart + index < paddedStyles.length) {
+          paddedStyles[noteTextStart + index] = style;
+        }
+      });
+      return paddedStyles;
+    }
   }
 
   return [];
@@ -13552,6 +14975,16 @@ function canCurrentUserDeleteNote(note) {
   }
 
   return canCurrentAuthorDeleteOwnTodayUnmodified(note);
+}
+
+function canCurrentUserPermanentlyDeleteHandwritingOnlyNote(note) {
+  if (!state.currentUser || !canCurrentUserWrite() || note.deletedAt) {
+    return false;
+  }
+
+  const hasTypedContent = Boolean(note.title.trim() || note.text.trim());
+  const handwriting = visibleHandwritingFor(note);
+  return !hasTypedContent && Boolean(handwriting?.data) && handwriting.readOnly !== true;
 }
 
 function canCurrentAuthorDeleteOwnTodayUnmodified(note) {
@@ -13904,7 +15337,7 @@ function setStatus(message) {
     return;
   }
 
-  elements.syncStatus.title = message ? `Firestore : ${message}` : "Échanges Firestore";
+  elements.syncStatus.removeAttribute("title");
   elements.syncStatus.classList.add("active");
   window.clearTimeout(setStatus.activityTimer);
   setStatus.activityTimer = window.setTimeout(() => {
@@ -14050,7 +15483,7 @@ function currentDisplayName() {
 
 async function recordNoteEditActivity(note, context, changes) {
   const actions = [];
-  if (changes.textChanged || changes.richTextChanged) {
+  if (changes.textChanged || changes.handwritingChanged) {
     actions.push("modified");
   }
   if (changes.destinationChanged) {
@@ -14099,7 +15532,7 @@ async function recordActivityEvent(action, note, context = "", options = {}) {
     noteTitle: note.title || "",
     simulatorNames,
     context: context || "",
-    createdAt: new Date()
+    createdAt: serverTimestamp()
   });
 }
 
@@ -14295,6 +15728,17 @@ function formatShortDate(date) {
   }).format(date);
 }
 
+function formatShortDayTime(date) {
+  if (!date) return "";
+  return new Intl.DateTimeFormat("fr-FR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  }).format(date);
+}
+
 function formatDateTime(date) {
   if (!date) return "";
   return new Intl.DateTimeFormat("fr-FR", {
@@ -14302,7 +15746,8 @@ function formatDateTime(date) {
     month: "2-digit",
     year: "numeric",
     hour: "2-digit",
-    minute: "2-digit"
+    minute: "2-digit",
+    second: "2-digit"
   }).format(date);
 }
 
@@ -14341,6 +15786,13 @@ function userRoleMetaHTML(role, team) {
     .filter(Boolean)
     .map((label) => `<span>${escapeHtml(label)}</span>`)
     .join("");
+}
+
+function userSessionMetaHTML(role, team) {
+  if (role === "admin") {
+    return "";
+  }
+  return userRoleMetaHTML(role, team);
 }
 
 function escapeHtml(value) {

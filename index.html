@@ -7,10 +7,10 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>SimFLOW Web</title>
-  <link rel="stylesheet" href="./styles.css?v=20260901-preventive-mirrors-all-sims-v28">
+  <link rel="stylesheet" href="./styles.css?v=20260913-counter-ack-v1">
   <script>
     if (window.location.protocol === "file:") {
-      window.location.replace("http://127.0.0.1:8765/");
+      window.location.replace("http://127.0.0.1:8766/");
     }
   </script>
 </head>
@@ -22,7 +22,8 @@
           <button class="brand-reset-button" id="brandResetButton" type="button" title="Réinitialiser l'affichage">
             <img class="brand-logo" src="./assets/logo.png" alt="SimFLOW">
           </button>
-          <button class="data-refresh-indicator" id="dataRefreshIndicator" type="button" title="Synchroniser les données">
+          <span class="web-version-badge" id="webVersionBadge" aria-label="Version web">V1.91.a</span>
+          <button class="data-refresh-indicator" id="dataRefreshIndicator" type="button">
             <svg class="data-refresh-icon" viewBox="0 0 24 24" aria-hidden="true">
               <path d="M3 12a9 9 0 0 1 15.2-6.5"></path>
               <path d="M18 2v4h-4"></path>
@@ -170,7 +171,6 @@
             Suspendre Firestore
           </button>
         </div>
-        <div class="web-version-badge" id="webVersionBadge">v</div>
       </section>
     </aside>
 
@@ -216,7 +216,7 @@
           <p id="pageSubtitle">Connexion requise</p>
         </div>
       </header>
-      <div class="status-pill" id="syncStatus" aria-hidden="true" title="Échanges Firestore"></div>
+      <div class="status-pill" id="syncStatus" aria-hidden="true"></div>
 
       <section class="notice hidden" id="emptyState">
         Aucune consigne à afficher pour cette sélection.
@@ -249,8 +249,10 @@
   <div class="detail-overlay hidden" id="detailOverlay" aria-hidden="true">
     <section class="detail-panel" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
       <div class="detail-header">
+        <button class="detail-debug-hotspot" id="detailDebugHotspot" type="button" tabindex="-1" aria-label="Diagnostic consigne"></button>
         <button class="detail-top-button" id="detailCloseButton">Annuler</button>
         <h2 id="detailTitle">Détail</h2>
+        <span class="detail-debug-indicator hidden" id="detailDebugIndicator" aria-live="polite"></span>
         <button class="detail-top-button primary-save" data-detail-action="save-edit">Enregistrer</button>
         <p class="detail-kicker hidden" id="detailContext">Consigne</p>
       </div>
@@ -285,6 +287,6 @@
     </section>
   </div>
 
-  <script type="module" src="./app.js?v=20260901-preventive-mirrors-all-sims-v28"></script>
+  <script type="module" src="./app.js?v=20260913-web-delete-handwriting-v1"></script>
 </body>
 </html>
