@@ -32,7 +32,7 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
-const WEB_APP_VERSION = "V1.91.a";
+const WEB_APP_VERSION = "V1.91.b";
 const WEB_APP_VERSION_DISPLAY = WEB_APP_VERSION;
 const userGuideURL = "./assets/Guide%20utilisateur%20SimFLOW.pdf";
 const deletedLegacySimulatorNames = new Set(["Simu", "Simu 1", "Simu 2", "Simu 3", "Simu 4", "Simu Tes", "Simu test 2", "Simu Test 2"]);
@@ -63,6 +63,7 @@ const staleDataRefreshWarningThresholdMs = 12 * 60 * 60 * 1000;
 const noteEvolutionCatchUpMarginMs = 10 * 60 * 1000;
 const selectedDateRefreshCooldownMs = 15 * 1000;
 const activityEvolutionCheckCooldownMs = 2 * 60 * 1000;
+const activityEvolutionRefreshDelayMs = 2 * 1000;
 const wakeAutoDataRefreshThresholdMs = 12 * 60 * 60 * 1000;
 const wakeHeartbeatIntervalMs = 60 * 1000;
 const wakeHeartbeatGapThresholdMs = 5 * 60 * 1000;
@@ -652,6 +653,7 @@ const state = {
   lastSuccessfulDataRefreshAt: readStoredDataRefreshDate(),
   isManualDataRefreshRunning: false,
   isAutoDataRefreshQueued: false,
+  autoDataRefreshTimer: null,
   lastActivityEvolutionCheckAt: 0,
   isActivityEvolutionCheckRunning: false,
   localFirestoreReadCount: 0,
@@ -2047,6 +2049,7 @@ function startAuthenticatedDataSync() {
     .then(() => ensurePreventivePlanningMirrorScopeSynced())
     .catch((error) => setStatus(error.message || "Planning préventif Firestore indisponible"));
   checkLatestActivityAndRefreshIfNeeded();
+  refreshLightIfIndicatorIsOrange();
   recordLoginAppearance();
 }
 
@@ -2480,10 +2483,12 @@ function scheduleOutdatedDataRefresh(latestActivityDate = state.latestActivityNo
   }
 
   state.isAutoDataRefreshQueued = true;
-  window.setTimeout(async () => {
+  state.autoDataRefreshTimer = window.setTimeout(async () => {
+    state.autoDataRefreshTimer = null;
+    const currentLatestActivityDate = state.appSettings.latestNoteActivityAt || state.latestActivityNoteChangeDate || latestActivityDate;
     if (
-      !latestActivityDate
-      || (state.lastSuccessfulDataRefreshAt && !isDateBeforeAtSecondPrecision(state.lastSuccessfulDataRefreshAt, latestActivityDate))
+      !currentLatestActivityDate
+      || (state.lastSuccessfulDataRefreshAt && !isDateBeforeAtSecondPrecision(state.lastSuccessfulDataRefreshAt, currentLatestActivityDate))
     ) {
       state.isAutoDataRefreshQueued = false;
       renderDataRefreshIndicator();
@@ -2499,7 +2504,15 @@ function scheduleOutdatedDataRefresh(latestActivityDate = state.latestActivityNo
         renderDataRefreshIndicator();
       }
     }
-  }, 0);
+  }, activityEvolutionRefreshDelayMs);
+}
+
+function refreshLightIfIndicatorIsOrange() {
+  const latestActivityDate = state.appSettings.latestNoteActivityAt || state.latestActivityNoteChangeDate;
+  if (!isDataRefreshBehindLatestActivity(latestActivityDate)) {
+    return;
+  }
+  scheduleOutdatedDataRefresh(latestActivityDate);
 }
 
 async function refreshChangedNotesSinceLastRefreshWithMargin() {
@@ -2860,6 +2873,7 @@ function attachFirebaseListeners() {
       };
       state.latestActivityNoteChangeDate = state.appSettings.latestNoteActivityAt || state.latestActivityNoteChangeDate;
       renderDataRefreshIndicator();
+      refreshLightIfIndicatorIsOrange();
       renderAdminSettings();
     }, (error) => setStatus(error.message));
   }
