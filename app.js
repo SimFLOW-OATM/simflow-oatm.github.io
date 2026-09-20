@@ -17,6 +17,7 @@ import {
   setDoc,
   startAfter,
   updateDoc,
+  writeBatch,
   where
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
@@ -32,7 +33,7 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
-const WEB_APP_VERSION = "V1.91.b";
+const WEB_APP_VERSION = "V1.92";
 const WEB_APP_VERSION_DISPLAY = WEB_APP_VERSION;
 const userGuideURL = "./assets/Guide%20utilisateur%20SimFLOW.pdf";
 const deletedLegacySimulatorNames = new Set(["Simu", "Simu 1", "Simu 2", "Simu 3", "Simu 4", "Simu Tes", "Simu test 2", "Simu Test 2"]);
@@ -54,6 +55,7 @@ const preventivePlanningMirrorScopeVersion = "all-simulators-v1";
 const firestoreSyncSuspendedStorageKey = "simflow.web.firestoreSyncSuspended";
 const lastActiveStorageKey = "simflow.web.lastActiveAt";
 const lastSuccessfulDataRefreshStorageKey = "simflow.web.lastSuccessfulDataRefreshAt";
+const lastAutoLightRefreshActivityStorageKey = "simflow.web.lastAutoLightRefreshActivityAt";
 const archiveRealtimeRetentionDays = 4;
 const activeRealtimeUntil = new Date("2100-01-01T00:00:00.000Z");
 const webDeviceStorageKey = "simflow.web.deviceIdentifier";
@@ -64,10 +66,11 @@ const noteEvolutionCatchUpMarginMs = 10 * 60 * 1000;
 const selectedDateRefreshCooldownMs = 15 * 1000;
 const activityEvolutionCheckCooldownMs = 2 * 60 * 1000;
 const activityEvolutionRefreshDelayMs = 2 * 1000;
+const autoFullRefreshCooldownMs = 5 * 60 * 1000;
+const serverSyncCounterRecomputeCooldownMs = 2 * 60 * 1000;
 const wakeAutoDataRefreshThresholdMs = 12 * 60 * 60 * 1000;
-const wakeHeartbeatIntervalMs = 60 * 1000;
-const wakeHeartbeatGapThresholdMs = 5 * 60 * 1000;
-const wakeHeartbeatRefreshCooldownMs = 10 * 60 * 1000;
+const periodicFullRefreshCheckIntervalMs = 60 * 1000;
+const periodicFullRefreshRetryCooldownMs = 10 * 60 * 1000;
 const activeLoginSessionWindowMs = 90 * 1000;
 const loginPresenceRefreshMs = 15 * 1000;
 const firestoreReadStatsFlushMs = 5 * 1000;
@@ -578,6 +581,9 @@ const state = {
   isPlanningFirestoreLoading: false,
   isPreventivePlanningFirestoreLoaded: false,
   isPreventivePlanningFirestoreLoading: false,
+  preventivePlanningFirestoreLoadPromise: null,
+  isPreventivePlanningHistoryLoaded: false,
+  isPreventivePlanningHistoryLoading: false,
   planningFirestoreSyncTimer: null,
   planningActivityByRowID: new Map(),
   planningActivityLoadingIDs: new Set(),
@@ -646,14 +652,18 @@ const state = {
   adminMessageRecipientIDs: new Set(),
   lastLoginEventAt: 0,
   lastUserSyncStatusRefreshWriteAt: 0,
-  lastWakeHeartbeatAt: Date.now(),
-  lastWakeHeartbeatRefreshAt: 0,
+  lastPeriodicFullRefreshAttemptAt: 0,
   initialDataRefreshVisible: false,
   pendingInitialDataRefreshResources: new Set(),
   lastSuccessfulDataRefreshAt: readStoredDataRefreshDate(),
+  lastAutoLightRefreshActivityAt: readStoredAutoLightRefreshActivityDate(),
   isManualDataRefreshRunning: false,
   isAutoDataRefreshQueued: false,
   autoDataRefreshTimer: null,
+  dataRefreshMode: "",
+  dataRefreshHardMismatch: false,
+  lastAutoFullDataRefreshAt: 0,
+  lastServerSyncCounterRecomputeAt: 0,
   lastActivityEvolutionCheckAt: 0,
   isActivityEvolutionCheckRunning: false,
   localFirestoreReadCount: 0,
@@ -681,9 +691,11 @@ const getRegulatoryPlanningActivity = httpsCallable(functions, "getRegulatoryPla
 const recordPreventivePlanningActivity = httpsCallable(functions, "recordPreventivePlanningActivity");
 const getPreventivePlanningActivity = httpsCallable(functions, "getPreventivePlanningActivity");
 const syncRegulatoryPlanningNotesFromMirrorNote = httpsCallable(functions, "syncRegulatoryPlanningNotesFromMirrorNote");
+const syncPreventivePlanningRemarkFromMirrorNote = httpsCallable(functions, "syncPreventivePlanningRemarkFromMirrorNote");
 const refreshRegulatoryPlanningMirrorLabels = httpsCallable(functions, "refreshRegulatoryPlanningMirrorLabels");
 const repairRegulatoryPlanningSimulatorNames = httpsCallable(functions, "repairRegulatoryPlanningSimulatorNames");
 const repairRegulatoryPlanningDuplicates = httpsCallable(functions, "repairRegulatoryPlanningDuplicates");
+const rebuildHandoverNoteVisibilityIndex = httpsCallable(functions, "rebuildHandoverNoteVisibilityIndex");
 const activityActionTitles = {
   created: "Creation",
   modified: "Modification",
@@ -863,6 +875,8 @@ elements.openPreventivePlanningViewButton?.addEventListener("click", () => {
   state.isPlanningEditMode = false;
   state.planningEditor = null;
   state.isPlanningHistoryPickerOpen = false;
+  state.isPreventivePlanningHistoryLoaded = false;
+  state.isPreventivePlanningHistoryPickerOpen = false;
   clearPeriodMode();
   render();
   loadPreventivePlanningRowsFromFirestore({ force: true })
@@ -910,9 +924,7 @@ elements.dataRefreshIndicator.addEventListener("click", (event) => {
   if (didOpenCounterDebugFromLongPress) {
     event.preventDefault();
     didOpenCounterDebugFromLongPress = false;
-    return;
   }
-  refreshDataFromIndicator();
 });
 elements.openLoginButton.addEventListener("click", () => openCodeModal("login"));
 elements.loginButton.addEventListener("click", submitCodeModal);
@@ -961,7 +973,7 @@ window.addEventListener("beforeunload", () => {
 });
 window.setInterval(renderDataRefreshIndicator, 60 * 1000);
 window.setInterval(refreshAdminConnectionsPresence, loginPresenceRefreshMs);
-window.setInterval(checkWakeHeartbeat, wakeHeartbeatIntervalMs);
+window.setInterval(checkPeriodicFullRefresh, periodicFullRefreshCheckIntervalMs);
 elements.userSummaryButton.addEventListener("click", () => {
   elements.userMenu.classList.toggle("hidden");
 });
@@ -2058,7 +2070,6 @@ function handleAppBecameVisible() {
     return;
   }
 
-  checkWakeHeartbeat();
   checkLatestActivityAndRefreshIfNeeded();
   const shouldRefreshAfterWake = shouldShowWakeAutoDataRefresh();
   recordLoginAppearance();
@@ -2095,32 +2106,22 @@ function shouldShowWakeAutoDataRefresh() {
   return lastActiveAt > 0 && Date.now() - lastActiveAt >= wakeAutoDataRefreshThresholdMs;
 }
 
-function checkWakeHeartbeat() {
+function checkPeriodicFullRefresh() {
   const now = Date.now();
-  const gap = now - state.lastWakeHeartbeatAt;
-
-  if (document.visibilityState === "hidden") {
-    if (gap < wakeHeartbeatGapThresholdMs) {
-      state.lastWakeHeartbeatAt = now;
-    }
+  if (document.visibilityState === "hidden" || !state.authReady || !state.currentUser || shouldSuspendFirestoreSync()) {
     return;
   }
 
-  state.lastWakeHeartbeatAt = now;
-
-  if (gap < wakeHeartbeatGapThresholdMs) {
+  const lastRefreshAt = state.lastSuccessfulDataRefreshAt;
+  if (!lastRefreshAt || now - lastRefreshAt.getTime() < wakeAutoDataRefreshThresholdMs) {
     return;
   }
 
-  if (!state.authReady || !state.currentUser || shouldSuspendFirestoreSync()) {
+  if (now - state.lastPeriodicFullRefreshAttemptAt < periodicFullRefreshRetryCooldownMs) {
     return;
   }
 
-  if (now - state.lastWakeHeartbeatRefreshAt < wakeHeartbeatRefreshCooldownMs) {
-    return;
-  }
-
-  state.lastWakeHeartbeatRefreshAt = now;
+  state.lastPeriodicFullRefreshAttemptAt = now;
   refreshDataAfterWake();
 }
 
@@ -2240,6 +2241,28 @@ function readStoredDataRefreshDate() {
   return storedDate && !Number.isNaN(storedDate.getTime()) ? storedDate : null;
 }
 
+function readStoredAutoLightRefreshActivityDate() {
+  const storedValue = localStorage.getItem(lastAutoLightRefreshActivityStorageKey);
+  const storedDate = storedValue ? new Date(storedValue) : null;
+  return storedDate && !Number.isNaN(storedDate.getTime()) ? storedDate : null;
+}
+
+function activityAlreadyAutoRefreshed(activityDate) {
+  return Boolean(
+    activityDate
+    && state.lastAutoLightRefreshActivityAt
+    && !isDateBeforeAtSecondPrecision(state.lastAutoLightRefreshActivityAt, activityDate)
+  );
+}
+
+function recordAutoLightRefreshAttempt(activityDate) {
+  if (!(activityDate instanceof Date) || Number.isNaN(activityDate.getTime())) {
+    return;
+  }
+  state.lastAutoLightRefreshActivityAt = activityDate;
+  localStorage.setItem(lastAutoLightRefreshActivityStorageKey, activityDate.toISOString());
+}
+
 function renderDataRefreshIndicator() {
   if (!elements.dataRefreshIndicator || !elements.dataRefreshIndicatorText) {
     return;
@@ -2247,7 +2270,7 @@ function renderDataRefreshIndicator() {
 
   const isAdmin = isAdminSession();
   if (shouldSuspendFirestoreSync()) {
-    elements.dataRefreshIndicator.classList.remove("stale", "syncing", "info-only");
+    elements.dataRefreshIndicator.classList.remove("stale", "syncing", "info-only", "refresh-light", "refresh-full", "sync-error");
     elements.dataRefreshIndicator.classList.add("suspended");
     elements.dataRefreshIndicator.disabled = true;
     elements.dataRefreshIndicatorText.textContent = "Firestore suspendu";
@@ -2256,13 +2279,19 @@ function renderDataRefreshIndicator() {
   }
 
   const isOutOfDate = isDataRefreshBehindLatestActivity();
+  if (state.dataRefreshHardMismatch && !isOutOfDate) {
+    state.dataRefreshHardMismatch = false;
+  }
   elements.dataRefreshIndicator.classList.remove("suspended");
   elements.dataRefreshIndicator.classList.toggle("info-only", !isAdmin);
-  elements.dataRefreshIndicator.classList.toggle("stale", isOutOfDate);
-  elements.dataRefreshIndicator.classList.toggle("syncing", state.isManualDataRefreshRunning);
+  elements.dataRefreshIndicator.classList.toggle("stale", isOutOfDate && !state.dataRefreshHardMismatch);
+  elements.dataRefreshIndicator.classList.toggle("refresh-light", state.dataRefreshMode === "light");
+  elements.dataRefreshIndicator.classList.toggle("refresh-full", state.dataRefreshMode === "full");
+  elements.dataRefreshIndicator.classList.toggle("sync-error", state.dataRefreshHardMismatch);
+  elements.dataRefreshIndicator.classList.toggle("syncing", state.dataRefreshMode === "light" || state.dataRefreshMode === "full");
   elements.dataRefreshIndicator.disabled = !state.currentUser || state.isManualDataRefreshRunning;
   elements.dataRefreshIndicator.removeAttribute("title");
-  elements.dataRefreshIndicatorText.textContent = `Nb ${activeCurrentDayNoteCount()} (${activeCurrentDayAverageCreationAgeText()}) - Sync ${activeCurrentDaySyncCodeText()}`;
+  elements.dataRefreshIndicatorText.textContent = `Nb ${activeCurrentDayNoteCount()} (${activeCurrentDayAverageCreationAgeText()})`;
   renderWebUpdateAgeBadge();
 }
 
@@ -2284,36 +2313,6 @@ function latestNoteUpdateAgeText(date = new Date()) {
 
   const minutes = Math.max(0, Math.floor((date.getTime() - latestEvolutionDate.getTime()) / (60 * 1000)));
   return `${minutes} min`;
-}
-
-function activeCurrentDaySyncCodeText() {
-  const entries = activeCurrentDayCounterEntries();
-  if (!entries.length) {
-    return "0000";
-  }
-
-  const tokens = entries
-    .map(({ note }) => {
-      const noteID = stringValue(note.id, note.documentID).toLocaleLowerCase("fr");
-      return `${noteID}|${syncTimestampKey(note.updatedAt)}`;
-    })
-    .sort();
-  const encoder = new TextEncoder();
-  let hash = 0;
-  for (const token of tokens) {
-    for (const byte of encoder.encode(token)) {
-      hash = (hash * 31 + byte) % 10000;
-    }
-  }
-  return String(hash).padStart(4, "0");
-}
-
-function syncDisplayText(value) {
-  return normalizeKey(value).replace(/\s+/g, " ");
-}
-
-function syncTimestampKey(date) {
-  return date ? String(dateSecondKey(date)) : "0";
 }
 
 function dateSecondKey(date) {
@@ -2359,7 +2358,15 @@ function activeCurrentDayCounterEntries() {
   return entries;
 }
 
+function isNoteHiddenByVisibilityIndex(note) {
+  return stringValue(note?.visibilityState) === "hidden";
+}
+
 function matchesSelectionForCounter(note, context, day) {
+  if (isNoteHiddenByVisibilityIndex(note) && !isDoneBadgeVisibleInContextOnDay(note, context, day)) {
+    return false;
+  }
+
   if (state.showTagged && !matchesTaggedFilter(note, context)) {
     return false;
   }
@@ -2427,14 +2434,6 @@ function isActiveCurrentDayNote(note, context, day) {
     );
 }
 
-async function refreshDataFromIndicator() {
-  if (!isAdminSession()) {
-    return;
-  }
-
-  refreshDataFromServer("Synchronisation des données...", "Données synchronisées");
-}
-
 function refreshDataAfterWake() {
   refreshDataFromServer("Rattrapage après veille...", "Données synchronisées");
 }
@@ -2453,6 +2452,7 @@ async function checkLatestActivityAndRefreshIfNeeded({ force = false } = {}) {
     || state.isManualDataRefreshRunning
     || state.isAutoDataRefreshQueued
     || state.isActivityEvolutionCheckRunning
+    || state.dataRefreshHardMismatch
     || shouldSuspendFirestoreSync()
   ) {
     return;
@@ -2478,7 +2478,11 @@ async function checkLatestActivityAndRefreshIfNeeded({ force = false } = {}) {
 }
 
 function scheduleOutdatedDataRefresh(latestActivityDate = state.latestActivityNoteChangeDate) {
-  if (!state.currentUser || !state.authReady || state.isManualDataRefreshRunning || state.isAutoDataRefreshQueued || shouldSuspendFirestoreSync()) {
+  if (!state.currentUser || !state.authReady || state.isManualDataRefreshRunning || state.isAutoDataRefreshQueued || state.dataRefreshHardMismatch || shouldSuspendFirestoreSync()) {
+    return;
+  }
+  if (activityAlreadyAutoRefreshed(latestActivityDate)) {
+    renderDataRefreshIndicator();
     return;
   }
 
@@ -2494,6 +2498,12 @@ function scheduleOutdatedDataRefresh(latestActivityDate = state.latestActivityNo
       renderDataRefreshIndicator();
       return;
     }
+    if (activityAlreadyAutoRefreshed(currentLatestActivityDate)) {
+      state.isAutoDataRefreshQueued = false;
+      renderDataRefreshIndicator();
+      return;
+    }
+    recordAutoLightRefreshAttempt(currentLatestActivityDate);
     if (state.lastSuccessfulDataRefreshAt) {
       await refreshChangedNotesSinceLastRefreshWithMargin();
     } else {
@@ -2508,6 +2518,10 @@ function scheduleOutdatedDataRefresh(latestActivityDate = state.latestActivityNo
 }
 
 function refreshLightIfIndicatorIsOrange() {
+  if (state.dataRefreshHardMismatch) {
+    return;
+  }
+
   const latestActivityDate = state.appSettings.latestNoteActivityAt || state.latestActivityNoteChangeDate;
   if (!isDataRefreshBehindLatestActivity(latestActivityDate)) {
     return;
@@ -2523,6 +2537,7 @@ async function refreshChangedNotesSinceLastRefreshWithMargin() {
   }
 
   const since = new Date(state.lastSuccessfulDataRefreshAt.getTime() - noteEvolutionCatchUpMarginMs);
+  state.dataRefreshMode = "light";
   setStatus("Rattrapage consignes...");
   renderDataRefreshIndicator();
 
@@ -2540,16 +2555,19 @@ async function refreshChangedNotesSinceLastRefreshWithMargin() {
     setStatus(`Consignes rattrapées (${updatedNotes.length})`);
     renderSimulators();
     render();
-    fetchNotesForSelectedDateIfNeeded(state.selectedDate, { force: true, prunesMissingDocuments: true });
+    await fetchNotesForSelectedDateIfNeeded(state.selectedDate, { force: true, prunesMissingDocuments: true });
   } catch (error) {
     setStatus(error.message);
   } finally {
+    if (state.dataRefreshMode === "light") {
+      state.dataRefreshMode = "";
+    }
     state.isAutoDataRefreshQueued = false;
     renderDataRefreshIndicator();
   }
 }
 
-async function refreshDataFromServer(startMessage, successMessage) {
+async function refreshDataFromServer(startMessage, successMessage, options = {}) {
   if (!state.currentUser || !state.authReady || state.isManualDataRefreshRunning) {
     return;
   }
@@ -2561,6 +2579,7 @@ async function refreshDataFromServer(startMessage, successMessage) {
   }
 
   state.isManualDataRefreshRunning = true;
+  state.dataRefreshMode = "full";
   renderDataRefreshIndicator();
   setStatus(startMessage);
 
@@ -2571,18 +2590,19 @@ async function refreshDataFromServer(startMessage, successMessage) {
     ]);
     recordSuccessfulDataRefresh(new Date(), {
       remoteStatus: true,
-      force: true,
-      catchUpFrom: since,
-      catchUpChangedNotesCount: updatedNotes.length,
-      catchUpStatus: "evolution"
+      force: true
     });
     setStatus(successMessage);
     renderSimulators();
     render();
+    state.dataRefreshHardMismatch = false;
   } catch (error) {
     setStatus(error.message);
   } finally {
     state.isManualDataRefreshRunning = false;
+    if (state.dataRefreshMode === "full") {
+      state.dataRefreshMode = "";
+    }
     renderDataRefreshIndicator();
   }
 }
@@ -2843,19 +2863,20 @@ function attachFirebaseListeners() {
         return;
       }
 
-      const deletedIDSet = new Set(deletedIDs.map(normalizeKey));
-      const deletedDocumentIDSet = new Set(deletedDocumentIDs.map(normalizeKey));
+      const deletedDocumentIDSet = new Set(deletedDocumentIDs);
       const isDeletedNote = (note) => {
-        const noteID = normalizeKey(note.id);
-        const noteDocumentID = normalizeKey(note.documentID || note.id);
-        return deletedIDSet.has(noteID) || deletedDocumentIDSet.has(noteDocumentID);
+        return deletedDocumentIDSet.has(note.documentID || note.id);
       };
-      const removedNoteIDs = new Set(state.notes.filter(isDeletedNote).map((note) => note.id));
+      const removedNoteIDs = state.notes.filter(isDeletedNote).map((note) => note.id);
       state.notes = state.notes.filter((note) => !isDeletedNote(note));
-      deletedIDs.forEach((noteID) => state.fetchedNotesByID.delete(noteID));
       deletedDocumentIDs.forEach((documentID) => state.fetchedNotesByID.delete(documentID));
       removedNoteIDs.forEach((noteID) => state.fetchedNotesByID.delete(noteID));
-      state.handwritingNotes = state.handwritingNotes.filter((note) => !deletedIDSet.has(normalizeKey(note.noteID)) && !removedNoteIDs.has(note.noteID));
+      const remainingNoteKeys = new Set(state.notes.map((note) => normalizeKey(note.id)));
+      const removedNoteKeys = new Set(removedNoteIDs.map(normalizeKey));
+      state.handwritingNotes = state.handwritingNotes.filter((note) => {
+        const noteKey = normalizeKey(note.noteID);
+        return !removedNoteKeys.has(noteKey) || remainingNoteKeys.has(noteKey);
+      });
       renderSimulators();
       render();
     }, (error) => setStatus(error.message));
@@ -2988,17 +3009,27 @@ async function loadPlanningRowsFromFirestore({ force = false, includeHistory = s
 
 async function loadPreventivePlanningRowsFromFirestore({ force = false, includeHistory = state.showsPreventivePlanningHistory } = {}) {
   if (!state.authReady || !state.currentUser || shouldSuspendFirestoreSync() || !canCurrentUserAccessPlanning()) {
-    return;
+    return false;
   }
 
-  if (state.isPreventivePlanningFirestoreLoading || (state.isPreventivePlanningFirestoreLoaded && !force)) {
-    return;
+  if (state.isPreventivePlanningFirestoreLoading) {
+    await state.preventivePlanningFirestoreLoadPromise;
+    if (includeHistory && !state.isPreventivePlanningHistoryLoaded) {
+      return loadPreventivePlanningRowsFromFirestore({ force: true, includeHistory: true });
+    }
+    return true;
+  }
+  if (state.isPreventivePlanningFirestoreLoaded && !force) {
+    return true;
   }
 
   state.isPreventivePlanningFirestoreLoading = true;
+  let resolveLoad;
+  state.preventivePlanningFirestoreLoadPromise = new Promise((resolve) => { resolveLoad = resolve; });
   try {
     const response = await getPreventivePlanningEvents({ includeHistory });
     const events = Array.isArray(response?.data?.events) ? response.data.events : [];
+    state.isPreventivePlanningHistoryLoaded = includeHistory;
     if (events.length) {
       state.preventivePlanningRows = events.map((event) => ({
         ...normalizePreventivePlanningRow(event),
@@ -3013,7 +3044,11 @@ async function loadPreventivePlanningRowsFromFirestore({ force = false, includeH
       if (state.activeView === "preventive-planning") {
         renderPreventivePlanningTable();
       }
-      return;
+      return true;
+    }
+
+    if (includeHistory) {
+      return true;
     }
 
     if (!state.isPreventivePlanningFirestoreLoaded && canCurrentUserEditPlanning()) {
@@ -3036,9 +3071,13 @@ async function loadPreventivePlanningRowsFromFirestore({ force = false, includeH
     }
   } catch (error) {
     setStatus(error.message || "Planning préventif Firestore indisponible");
+    return false;
   } finally {
     state.isPreventivePlanningFirestoreLoading = false;
+    resolveLoad();
+    state.preventivePlanningFirestoreLoadPromise = null;
   }
+  return true;
 }
 
 async function fetchPlanningTechniciansIfNeeded() {
@@ -4032,8 +4071,10 @@ function preventivePlanningEditActionsHTML() {
       type="button"
       data-preventive-planning-action="toggle-history"
       aria-pressed="${state.showsPreventivePlanningHistory ? "true" : "false"}"
+      aria-busy="${state.isPreventivePlanningHistoryLoading ? "true" : "false"}"
       title="${state.showsPreventivePlanningHistory ? "Masquer l'historique" : "Afficher l'historique"}"
-    >Historique</button>
+      ${state.isPreventivePlanningHistoryLoading ? "disabled" : ""}
+    >${state.isPreventivePlanningHistoryLoading ? "Chargement…" : "Historique"}</button>
   `;
 
   if (!state.isPreventivePlanningEditMode) {
@@ -4120,8 +4161,6 @@ function preventivePlanningHeaderRowHTML() {
 function renderPreventivePlanningRow(row, nextPreventivePlanningRowID = "", index = 0) {
   const normalizedRow = normalizePreventivePlanningRow(row);
   const canOpenEditor = state.isPreventivePlanningEditMode && canCurrentUserEditPlanning();
-  const activityHasModification = (state.planningActivityByRowID.get(normalizedRow.id) || []).some((activity) => activity.action === "updated");
-  const hasModifications = normalizedRow.hasModifications || activityHasModification;
   return `
     <tr class="planning-row read-only${index % 2 ? " planning-row-alternate" : ""}${canOpenEditor ? " planning-row-selectable" : ""}" data-preventive-planning-row-id="${escapeAttribute(normalizedRow.id)}">
       <td class="planning-col-status">${preventivePlanningStatusIconsHTML(normalizedRow, nextPreventivePlanningRowID)}</td>
@@ -4131,10 +4170,8 @@ function renderPreventivePlanningRow(row, nextPreventivePlanningRowID = "", inde
       <td class="preventive-col-date"><span class="${normalizedRow.endDate ? "" : "planning-empty-read"}">${escapeHtml(normalizedRow.endDate ? planningDateDisplay(normalizedRow.endDate) : "Date")}</span></td>
       <td class="preventive-col-team">${preventivePlanningTeamHTML(normalizedRow)}</td>
       <td class="preventive-col-date"><span class="${normalizedRow.itCarlDate ? "" : "planning-empty-read"}">${escapeHtml(normalizedRow.itCarlDate ? planningDateDisplay(normalizedRow.itCarlDate) : "Date")}</span></td>
-      <td class="preventive-col-remark"><span>${escapeHtml(normalizedRow.remark || "Remarque")}</span></td>
-      <td class="planning-col-actions planning-actions-cell">
-        <button class="planning-icon-button planning-history-clock ${hasModifications ? "modified" : "clean"}" type="button" data-preventive-planning-action="show-activity" title="${hasModifications ? "Suivi : modification existante" : "Suivi : aucune modification"}">◷</button>
-      </td>
+      <td class="preventive-col-remark${normalizedRow.remark.includes("\n") ? " multiline" : ""}"><span>${escapeHtml(normalizedRow.remark || "Remarque")}</span></td>
+      <td class="planning-col-actions planning-actions-cell"></td>
     </tr>
   `;
 }
@@ -4361,6 +4398,8 @@ function renderPlanningRow(row, nextPlanningRowID = "", rowIndex = 0) {
   const technicianAlertLevel = planningTechnicianAlertLevel(row);
   const highlightsMissingTri = shouldHighlightMissingPlanningTri(row);
   const highlightsMissingStartTime = shouldHighlightMissingPlanningStartTime(row);
+  const notesLineCount = planningTextLineCount(row.notes);
+  const notesHeight = notesLineCount > 1 ? Math.max(24, notesLineCount * 13 + 10) : 24;
   return `
     <tr class="planning-row read-only${rowIndex % 2 ? " planning-row-alternate" : ""}${canOpenPlanningEditor ? " planning-row-selectable" : ""}${isDraftRow ? " planning-draft-row" : ""}" data-planning-row-id="${id}">
       <td class="planning-col-status">${isDraftRow ? "" : planningStatusIconsHTML(row, nextPlanningRowID)}</td>
@@ -4391,20 +4430,20 @@ function renderPlanningRow(row, nextPlanningRowID = "", rowIndex = 0) {
       </td>
       <td class="planning-col-tri"><input class="${highlightsMissingTri ? "planning-tri-alert" : ""}" data-planning-field="tri" value="${escapeAttribute(row.tri)}" placeholder="TRI" ${disablesPeriodDetailFields ? "disabled" : ""}></td>
       <td class="planning-col-notes">
-        <textarea class="planning-notes-cell" data-planning-field="notes" placeholder="Notes" ${disablesNotesField ? "disabled" : ""}>${escapeHtml(row.notes)}</textarea>
+        <textarea class="planning-notes-cell${notesLineCount > 1 ? " multiline" : ""}" style="height:${notesHeight}px" data-planning-field="notes" placeholder="Notes" ${disablesNotesField ? "disabled" : ""}>${escapeHtml(row.notes)}</textarea>
       </td>
       <td class="planning-col-actions planning-actions-cell">
         ${isDraftRow
           ? `<button class="planning-icon-button success" type="button" data-planning-action="confirm-new-row" title="Valider la création">✓</button>
              <button class="planning-icon-button danger" type="button" data-planning-action="cancel-new-row" title="Annuler la création">×</button>`
-          : `<button class="planning-icon-button planning-history-clock ${row.hasModifications ? "modified" : "clean"}" type="button" data-planning-action="show-activity" title="${row.hasModifications ? "Suivi : modification existante" : "Suivi : aucune modification"}">◷</button>`}
+          : ""}
       </td>
     </tr>
   `;
 }
 
 function renderPlanningRowWithActivity(row, nextPlanningRowID = "", rowIndex = 0) {
-  return `${renderPlanningRow(row, nextPlanningRowID, rowIndex)}${renderPlanningActivityRow(row)}`;
+  return renderPlanningRow(row, nextPlanningRowID, rowIndex);
 }
 
 function renderPlanningActivityRow(row) {
@@ -4607,6 +4646,8 @@ function toggleAllPreventivePlanningHistoryYears() {
 function normalizePreventivePlanningRow(row = {}) {
   const rowID = stringValue(row.id) || crypto.randomUUID();
   const mirrorNoteID = stringValue(row.mirrorNoteID);
+  const createdAt = dateValue(row.createdAt);
+  const updatedAt = dateValue(row.updatedAt);
   return {
     id: rowID,
     simulatorName: normalizePlanningSimulatorName(row.simulatorName),
@@ -4614,9 +4655,11 @@ function normalizePreventivePlanningRow(row = {}) {
     startDate: /^\d{4}-\d{2}-\d{2}$/.test(row.startDate) ? row.startDate : "",
     endDate: /^\d{4}-\d{2}-\d{2}$/.test(row.endDate) ? row.endDate : "",
     itCarlDate: /^\d{4}-\d{2}-\d{2}$/.test(row.itCarlDate) ? row.itCarlDate : "",
-    remark: normalizePlanningSingleLineText(row.remark),
-    mirrorNoteID: isUUIDString(mirrorNoteID) ? mirrorNoteID : preventivePlanningMirrorNoteID(rowID),
-    hasModifications: row.hasModifications === true,
+    remark: normalizePreventivePlanningRemarkText(row.remark),
+    mirrorNoteID: isUUIDString(mirrorNoteID) ? mirrorNoteID.toLowerCase() : preventivePlanningMirrorNoteID(rowID),
+    hasModifications: false,
+    createdAt,
+    updatedAt,
     firestoreSource: row.firestoreSource === true
   };
 }
@@ -4673,7 +4716,7 @@ function savePreventivePlanningRowsLocal() {
 }
 
 function preventivePlanningMirrorNoteID(rowID) {
-  return isUUIDString(rowID) ? stringValue(rowID) : "";
+  return isUUIDString(rowID) ? stringValue(rowID).toLowerCase() : "";
 }
 
 function legacyPreventivePlanningMirrorNoteID(rowID) {
@@ -4722,11 +4765,23 @@ function shouldMirrorPreventivePlanningRow(row) {
 function preventivePlanningMirrorTitle(row) {
   const normalizedRow = normalizePreventivePlanningRow(row);
   const eventLabel = preventivePlanningEventLabel(normalizedRow.event) || "Événement";
-  const startLabel = normalizedRow.startDate ? planningWeekdayDateDisplay(normalizedRow.startDate) : "Date début";
-  const endLabel = normalizedRow.endDate ? planningWeekdayDateDisplay(normalizedRow.endDate) : "Date fin";
+  const startLabel = normalizedRow.startDate ? preventivePlanningMirrorDateLabel(normalizedRow.startDate) : "Date début";
+  const endLabel = normalizedRow.endDate ? preventivePlanningMirrorDateLabel(normalizedRow.endDate) : "Date fin";
   return normalizedRow.startDate && normalizedRow.startDate === normalizedRow.endDate
     ? `${eventLabel} ${startLabel}`
     : `${eventLabel} ${startLabel}, ${endLabel}`;
+}
+
+function preventivePlanningMirrorDateLabel(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return "";
+  }
+
+  return new Intl.DateTimeFormat("fr-FR", {
+    weekday: "long",
+    day: "numeric",
+    month: "long"
+  }).format(parseDateInput(value));
 }
 
 function defaultPreventivePlanningEndDate(row) {
@@ -4745,15 +4800,17 @@ function preventivePlanningMirrorNote(row) {
   const mirrorNoteID = normalizedRow.mirrorNoteID || preventivePlanningMirrorNoteID(normalizedRow.id);
   const displayDate = startOfDay(parseDateInput(normalizedRow.startDate));
   const simulatorName = normalizePlanningSimulatorName(normalizedRow.simulatorName);
-  const now = new Date();
+  const existingNote = state.fetchedNotesByID.get(mirrorNoteID) || state.notes.find((note) => note.id === mirrorNoteID) || null;
+  const createdAt = normalizedRow.createdAt || existingNote?.createdAt || normalizedRow.updatedAt || existingNote?.updatedAt || displayDate || new Date();
+  const updatedAt = normalizedRow.updatedAt || existingNote?.updatedAt || normalizedRow.createdAt || existingNote?.createdAt || displayDate || new Date();
   return {
     id: mirrorNoteID,
     title: preventivePlanningMirrorTitle(normalizedRow),
     text: normalizedRow.remark,
     author: "Planning Préventif",
     authorIdentifier: state.currentUser?.id || "planning-preventif",
-    createdAt: now,
-    updatedAt: now,
+    createdAt,
+    updatedAt,
     contentModifiedAt: null,
     syncState: "active",
     lastRealtimeRelevantAt: displayDate,
@@ -5118,7 +5175,7 @@ function closePreventivePlanningEditor() {
   closePlanningDateWheel();
 }
 
-function handlePreventivePlanningTableClick(event) {
+async function handlePreventivePlanningTableClick(event) {
   const action = event.target.closest("[data-preventive-planning-action]")?.dataset.preventivePlanningAction;
 
   if (action === "return-notes") {
@@ -5149,8 +5206,22 @@ function handlePreventivePlanningTableClick(event) {
       return;
     }
 
-    state.isPreventivePlanningHistoryPickerOpen = true;
+    if (state.isPreventivePlanningHistoryLoading) return;
+    state.isPreventivePlanningHistoryLoading = true;
     renderPreventivePlanningTable();
+    try {
+      if (!state.isPreventivePlanningHistoryLoaded) {
+        const loaded = await loadPreventivePlanningRowsFromFirestore({ force: true, includeHistory: true });
+        if (!loaded) return;
+      }
+      if (state.activeView !== "preventive-planning") return;
+      state.isPreventivePlanningHistoryPickerOpen = true;
+    } finally {
+      state.isPreventivePlanningHistoryLoading = false;
+      if (state.activeView === "preventive-planning") {
+        renderPreventivePlanningTable();
+      }
+    }
     return;
   }
 
@@ -5208,11 +5279,6 @@ function handlePreventivePlanningTableClick(event) {
   }
 
   const rowID = event.target.closest("[data-preventive-planning-row-id]")?.dataset.preventivePlanningRowId;
-  if (action === "show-activity" && rowID) {
-    togglePreventivePlanningActivity(rowID);
-    return;
-  }
-
   if (!action && rowID && state.isPreventivePlanningEditMode && canCurrentUserEditPlanning()) {
     const row = state.preventivePlanningRows.find((candidate) => candidate.id === rowID);
     if (row) {
@@ -5265,10 +5331,6 @@ function handlePreventivePlanningEditorFieldEdit(event) {
   if (field === "remark" && event.type === "input") {
     return;
   }
-  if (field === "remark") {
-    editor.draft.remark = normalizePlanningSingleLineText(editor.draft.remark);
-    event.target.value = editor.draft.remark;
-  }
   refreshPreventivePlanningEditorDerivedFields(event.target.closest("[data-preventive-planning-editor]"), editor.draft);
 }
 
@@ -5302,13 +5364,10 @@ function validatePreventivePlanningEditor() {
       state.preventivePlanningRows[index] = row;
     }
   }
-  row.hasModifications = editor.mode === "edit" && (previousRow?.hasModifications === true || changedFields.length > 0);
+  row.hasModifications = false;
   const localRow = state.preventivePlanningRows.find((candidate) => candidate.id === row.id);
   if (localRow) {
-    localRow.hasModifications = row.hasModifications;
-  }
-  if (changedFields.length || editor.mode === "create") {
-    state.planningActivityByRowID.delete(row.id);
+    localRow.hasModifications = false;
   }
   savePreventivePlanningRowsLocal();
   closePreventivePlanningEditor();
@@ -5761,11 +5820,6 @@ function handlePlanningTableClick(event) {
     return;
   }
 
-  if (action === "show-activity") {
-    togglePlanningActivity(rowID);
-    return;
-  }
-
   if (action === "edit-row") {
     if (!state.isPlanningEditMode || !canCurrentUserEditPlanning()) {
       return;
@@ -5961,7 +6015,7 @@ function handlePlanningEditorFieldEdit(event) {
     if (event.type === "input") {
       return;
     }
-    row.notes = normalizePlanningSingleLineText(row.notes);
+    row.notes = normalizePlanningMultilineText(row.notes);
     event.target.value = row.notes;
     return;
   }
@@ -6168,7 +6222,7 @@ function handlePlanningFieldEdit(event) {
     if (event.type === "input") {
       return;
     }
-    row.notes = normalizePlanningSingleLineText(row.notes);
+    row.notes = normalizePlanningMultilineText(row.notes);
     event.target.value = row.notes;
   }
 
@@ -6865,9 +6919,9 @@ function normalizePlanningRow(row) {
     endTime: /^\d{2}:\d{2}$/.test(row.endTime) ? row.endTime : "",
     participants: stringValue(row.participants),
     tri: stringValue(row.tri),
-    notes: normalizePlanningSingleLineText(row.notes),
+    notes: normalizePlanningMultilineText(row.notes),
     firestoreSource: row.firestoreSource === true,
-    mirrorNoteID: isUUIDString(mirrorNoteID) ? mirrorNoteID : planningMirrorNoteID(rowID),
+    mirrorNoteID: isUUIDString(mirrorNoteID) ? mirrorNoteID.toLowerCase() : planningMirrorNoteID(rowID),
     hasModifications: row.hasModifications === true,
     isDraft
   };
@@ -6903,6 +6957,24 @@ function normalizePlanningSingleLineText(value) {
     .map((part) => part.trim())
     .filter(Boolean)
     .join("; ");
+}
+
+function planningTextLineCount(value) {
+  return Math.max(1, stringValue(value).replace(/\r\n?/g, "\n").split("\n").length);
+}
+
+function normalizePlanningMultilineText(value) {
+  return stringValue(value)
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((part) => part.trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function normalizePreventivePlanningRemarkText(value) {
+  return normalizePlanningMultilineText(value);
 }
 
 function loadPlanningRows() {
@@ -7331,7 +7403,7 @@ function savePlanningRowsLocal() {
 }
 
 function planningMirrorNoteID(rowID) {
-  return isUUIDString(rowID) ? stringValue(rowID) : "";
+  return isUUIDString(rowID) ? stringValue(rowID).toLowerCase() : "";
 }
 
 function legacyPlanningMirrorNoteID(rowID) {
@@ -7958,6 +8030,7 @@ function groupedNotes() {
 
 function renderGroup(group) {
   const countLabel = `${group.notes.length} consigne${group.notes.length > 1 ? "s" : ""}`;
+  const canCreateOnSelectedDate = isAdminSession() || state.selectedDate >= startOfDay(new Date());
   return `
     <section
       class="simu-group"
@@ -7975,8 +8048,9 @@ function renderGroup(group) {
         <button
           class="simu-add-button"
           type="button"
-          title="Ajouter une consigne"
+          title="${canCreateOnSelectedDate ? "Ajouter une consigne" : "Création impossible à une date passée"}"
           data-add-context="${escapeAttribute(encodeURIComponent(group.simulator.name))}"
+          ${canCreateOnSelectedDate ? "" : "disabled"}
         >+</button>
       </header>
       ${group.notes.length
@@ -8070,6 +8144,8 @@ function noteFromSnapshot(id, data) {
     syncState: stringValue(data.syncState),
     lastRealtimeRelevantAt: dateValue(data.lastRealtimeRelevantAt),
     realtimeActiveUntil: dateValue(data.realtimeActiveUntil),
+    visibilityState: stringValue(data.visibilityState),
+    visibleUntil: dateValue(data.visibleUntil),
     deletedAt: dateValue(data.deletedAt),
     deletedBy: stringValue(data.deletedBy),
     deletedByIdentifier: stringValue(data.deletedByIdentifier),
@@ -8112,6 +8188,10 @@ function openDetail(noteId, context, options = {}) {
 function openCreate(context) {
   if (!canCurrentUserWrite()) {
     setStatus("Connexion requise pour créer une consigne");
+    return;
+  }
+  if (!isAdminSession() && state.selectedDate < startOfDay(new Date())) {
+    setStatus("Seul un administrateur peut créer une consigne à une date passée.");
     return;
   }
 
@@ -8170,26 +8250,11 @@ function openDetailDebugAttributes() {
       </header>
       <div class="note-debug-list">
         <div class="note-debug-section-title">Application</div>
-        ${appAttributes.map((attribute) => `
-          <div class="note-debug-row note-debug-app-row">
-            <strong>${escapeHtml(attribute.name)}</strong>
-            <span>${escapeHtml(attribute.value)}</span>
-          </div>
-        `).join("")}
+        ${renderNoteDebugRows(appAttributes, "app", "note-debug-app-row")}
         <div class="note-debug-section-title">Diagnostic affichage</div>
-        ${diagnosticAttributes.map((attribute) => `
-          <div class="note-debug-row note-debug-diagnostic-row">
-            <strong>${escapeHtml(attribute.name)}</strong>
-            <span>${escapeHtml(attribute.value)}</span>
-          </div>
-        `).join("")}
+        ${renderNoteDebugRows(diagnosticAttributes, "diagnostic", "note-debug-diagnostic-row")}
         <div class="note-debug-section-title">Consigne</div>
-        ${attributes.map((attribute) => `
-          <div class="note-debug-row">
-            <strong>${escapeHtml(attribute.name)}</strong>
-            <span>${escapeHtml(attribute.value)}</span>
-          </div>
-        `).join("")}
+        ${renderNoteDebugRows(attributes, "firestore")}
       </div>
       <footer class="note-debug-actions">
         <button type="button" class="detail-top-button" data-note-debug-copy>Copier</button>
@@ -8203,25 +8268,68 @@ function openDetailDebugAttributes() {
       return;
     }
     if (event.target.closest("[data-note-debug-copy]")) {
-      copyTextToClipboard(noteDebugAttributesText([...appAttributes, ...diagnosticAttributes, ...attributes]));
+      copyTextToClipboard(noteDebugAttributesText([
+        ...withNoteDebugOrigins(appAttributes, "app"),
+        ...withNoteDebugOrigins(diagnosticAttributes, "diagnostic"),
+        ...withNoteDebugOrigins(attributes, "firestore")
+      ]));
       setStatus("Attributs de la consigne copiés");
     }
   });
   document.body.appendChild(overlay);
 }
 
+function renderNoteDebugRows(attributes, section, rowClass = "") {
+  return withNoteDebugOrigins(attributes, section).map((attribute) => `
+    <div class="note-debug-row ${rowClass}">
+      <strong>
+        <span class="note-debug-name">${escapeHtml(attribute.name)}</span>
+        <span class="note-debug-origin note-debug-origin-${escapeAttribute(attribute.originKey)}">${escapeHtml(attribute.originLabel)}</span>
+      </strong>
+      <span>${escapeHtml(attribute.value)}</span>
+    </div>
+  `).join("");
+}
+
+function withNoteDebugOrigins(attributes, section) {
+  return attributes.map((attribute) => ({
+    ...attribute,
+    ...noteDebugOrigin(attribute.name, section)
+  }));
+}
+
+function noteDebugOrigin(name, section) {
+  if (section === "app") {
+    return { originKey: "app", originLabel: "App" };
+  }
+
+  if (section === "firestore") {
+    return { originKey: "firestore", originLabel: "Firestore" };
+  }
+
+  const firestoreDiagnosticNames = new Set(["visibilityState", "visibleUntil", "syncSummary", "lastKnownActivityAt"]);
+  const mixedDiagnosticNames = new Set(["localStatus", "visibleReason", "hiddenReason", "completionVisibleUntil", "doneVisibleInContext"]);
+  if (firestoreDiagnosticNames.has(name)) {
+    return { originKey: "firestore", originLabel: "Firestore" };
+  }
+  if (mixedDiagnosticNames.has(name)) {
+    return { originKey: "both", originLabel: "App + Firestore" };
+  }
+  return { originKey: "app", originLabel: "App" };
+}
+
 function closeDetailDebugAttributes() {
   document.querySelector("[data-note-debug-overlay]")?.remove();
 }
 
-async function openCounterDebugAttributes() {
+function openCounterDebugAttributes() {
   if (!state.currentUser) {
     setStatus("Connecte-toi pour afficher le diagnostic compteur");
     return;
   }
 
   closeCounterDebugAttributes();
-  const latestActivityNoteChangeDate = await fetchLatestActivityNoteChangeDate();
+  const latestActivityNoteChangeDate = state.appSettings.latestNoteActivityAt || state.latestActivityNoteChangeDate;
   const entries = activeCurrentDayCounterEntries();
   const attributes = counterDebugAttributes(entries, latestActivityNoteChangeDate);
   const rows = entries
@@ -8275,6 +8383,7 @@ async function openCounterDebugAttributes() {
     if (event.target.closest("[data-counter-debug-copy]")) {
       copyTextToClipboard(counterDebugText(attributes, entries));
       setStatus("Diagnostic compteur copié");
+      return;
     }
   });
   document.body.appendChild(overlay);
@@ -8441,6 +8550,8 @@ function noteDebugDiagnosticAttributes(note) {
     ["matchesCurrentFilters", String(matchesFilters)],
     ["visibleReason", debugVisibleReason(note, context)],
     ["hiddenReason", debugHiddenReason(note, context)],
+    ["visibilityState", safeDebugText(note.visibilityState || "-")],
+    ["visibleUntil", debugDateTime(note.visibleUntil)],
     ["completionVisibleUntil", debugDateTime(debugCompletionVisibleUntil(note, context))],
     ["doneVisibleInContext", String(doneVisible)],
     ["syncSummary", `syncState=${safeDebugText(note.syncState)} ; deletedAt=${debugDateTime(note.deletedAt)} ; displayDate=${debugDateTime(note.displayDate)} ; firstDisplayDate=${debugDateTime(note.firstDisplayDate)}`],
@@ -8579,7 +8690,10 @@ function latestSeenNoteEvolutionDate() {
 }
 
 function noteDebugAttributesText(attributes) {
-  return attributes.map((attribute) => `${attribute.name}: ${attribute.value}`).join("\n");
+  return attributes.map((attribute) => {
+    const origin = attribute.originLabel ? ` [${attribute.originLabel}]` : "";
+    return `${attribute.name}${origin}: ${attribute.value}`;
+  }).join("\n");
 }
 
 function safeDebugText(value) {
@@ -8829,6 +8943,7 @@ function renderCreate(context) {
   bindPriorityPicker(canWrite);
   bindSimulatorToggles();
   bindRichTextToolbar(canWrite);
+  elements.detailOverlay.querySelector(".detail-header .primary-save").disabled = !canWrite;
   elements.detailOverlay.classList.remove("hidden");
   elements.detailOverlay.setAttribute("aria-hidden", "false");
 }
@@ -8839,10 +8954,10 @@ function renderDetail(note, context) {
   const title = note.title.trim() || "Consigne";
   const timeline = timelineEvents(note, context);
   state.detailTimelineEvents = timeline;
-  const canWrite = canCurrentUserWrite();
+  const canWrite = canCurrentUserModifySelectedDate();
   const isPlanningMirror = isPlanningMirrorNote(note);
   const canEditPlanningControlledFields = canWrite && !isPlanningMirror;
-  const canEditDate = canCurrentUserEditDate() && !isPlanningMirror;
+  const canEditDate = canWrite && canCurrentUserEditDate() && !isPlanningMirror;
   const canToggleDone = canWrite && sameDay(state.selectedDate, new Date());
   const canToggleAcknowledgement = canWrite && !done && !note.priority && !isNew(note);
   const canDelete = canCurrentUserDeleteNote(note);
@@ -8946,6 +9061,7 @@ function renderDetail(note, context) {
   bindDateLine();
   bindSimulatorToggles();
   bindRichTextToolbar(canWrite);
+  elements.detailOverlay.querySelector(".detail-header .primary-save").disabled = !canWrite;
   elements.detailOverlay.classList.remove("hidden");
   elements.detailOverlay.setAttribute("aria-hidden", "false");
 }
@@ -11615,7 +11731,7 @@ function visibleHandwritingFor(note) {
   }
 
   const ownNote = state.handwritingNotes.find((entry) => {
-    return entry.noteID === note.id && normalizeKey(entry.authorIdentifier) === normalizeKey(state.currentUser.id);
+    return normalizeKey(entry.noteID) === normalizeKey(note.id) && normalizeKey(entry.authorIdentifier) === normalizeKey(state.currentUser.id);
   });
 
   const handwritingWasClearedAfterOwnNote = note.handwritingClearedAt
@@ -11641,7 +11757,7 @@ function visibleHandwritingFor(note) {
       const handwritingWasClearedAfterEntry = note.handwritingClearedAt
         && entry.updatedAt
         && entry.updatedAt <= note.handwritingClearedAt;
-      return entry.noteID === note.id && entry.drawingData && !handwritingWasClearedAfterEntry;
+      return normalizeKey(entry.noteID) === normalizeKey(note.id) && entry.drawingData && !handwritingWasClearedAfterEntry;
     });
 
     if (sharedDeletedNote) {
@@ -11679,7 +11795,7 @@ function renderHandwritingNotice(handwriting) {
   const image = handwriting.previewImageData
     ? `<img class="handwriting-preview" src="data:image/png;base64,${escapeHtml(handwriting.previewImageData)}" alt="Note manuscrite">`
     : "";
-  const tools = handwriting.readOnly ? "" : `
+  const tools = handwriting.readOnly || !canCurrentUserModifySelectedDate() ? "" : `
         <div class="handwriting-tools" aria-label="Actions note manuscrite">
           <button type="button" class="handwriting-tool-button danger" data-detail-action="clear-handwriting" title="Effacer la note manuscrite" aria-label="Effacer la note manuscrite">
             ${trashIconSVG()}
@@ -11767,7 +11883,7 @@ function ocrIconSVG() {
 }
 
 async function clearVisibleHandwriting(note) {
-  if (!canCurrentUserWrite() || state.isSaving) {
+  if (!canCurrentUserModifySelectedDate() || state.isSaving) {
     return;
   }
 
@@ -11911,6 +12027,9 @@ function appendTextToConsigneEditor(text) {
 
 function detailActionHint(note, done, canWrite, canToggleDone, canToggleAcknowledgement) {
   if (!canWrite) {
+    if (state.currentUser && !isAdminSession() && state.selectedDate < startOfDay(new Date())) {
+      return `<p class="detail-action-hint">Seul un administrateur peut modifier une consigne sur une date passée.</p>`;
+    }
     return `<p class="detail-action-hint">Connecte-toi avec ton code utilisateur pour solder ou prendre en compte une consigne.</p>`;
   }
 
@@ -11982,7 +12101,7 @@ async function toggleDone(note, context) {
 }
 
 async function toggleAcknowledgement(note, context) {
-  if (!state.currentUser) {
+  if (!canCurrentUserModifySelectedDate()) {
     return;
   }
 
@@ -12128,7 +12247,7 @@ async function detachContextDeletionIfNeeded(note, now) {
   }
 
   const remainingSimulators = note.simulatorNames.filter((name) => name !== context);
-  const detachedID = crypto.randomUUID().toUpperCase();
+  const detachedID = crypto.randomUUID().toLowerCase();
   const detachedCompletions = contextRecords(note.completions, context);
   const detachedCompletionCancellations = contextRecords(note.completionCancellations, context);
   const detachedAcknowledgements = contextRecords(note.acknowledgements, context);
@@ -12200,8 +12319,11 @@ async function detachContextDeletionIfNeeded(note, now) {
 
 async function permanentlyDeleteNote(noteID, documentID = noteID) {
   const firestoreNoteDocumentID = stringValue(documentID, noteID) || noteID;
-  const handwritingSnapshot = await getDocs(query(collection(db, "handwritingNotes"), where("noteID", "==", noteID)));
-  trackFirestoreRead("handwritingNotes", handwritingSnapshot.docs.length);
+  const noteIDVariants = new Set([noteID.toUpperCase(), noteID.toLowerCase()]);
+  const handwritingSnapshots = await Promise.all([...noteIDVariants].map((id) =>
+    getDocs(query(collection(db, "handwritingNotes"), where("noteID", "==", id)))
+  ));
+  handwritingSnapshots.forEach((snapshot) => trackFirestoreRead("handwritingNotes", snapshot.docs.length));
 
   let dailyTagDocuments = [];
   if (state.currentUser?.role === "admin") {
@@ -12211,48 +12333,51 @@ async function permanentlyDeleteNote(noteID, documentID = noteID) {
   }
 
   const linkedDocuments = [
-    ...handwritingSnapshot.docs,
+    ...handwritingSnapshots.flatMap((snapshot) => snapshot.docs),
     ...dailyTagDocuments
   ];
 
-  await setDoc(doc(db, "handoverNoteDeletions", noteID), {
+  const batch = writeBatch(db);
+  batch.set(doc(db, "handoverNoteDeletions", noteID), {
     noteID,
     documentID: firestoreNoteDocumentID,
     deletedAt: serverTimestamp(),
     deletedBy: currentDisplayName(),
     deletedByIdentifier: state.currentUser?.id || ""
   }, { merge: true });
-  await Promise.all(linkedDocuments.map((document) => deleteDoc(document.ref)));
-  await deleteDoc(doc(db, "handoverNotes", firestoreNoteDocumentID));
-  if (firestoreNoteDocumentID !== noteID) {
-    await deleteDoc(doc(db, "handoverNotes", noteID));
-  }
+  linkedDocuments.forEach((document) => batch.delete(document.ref));
+  batch.delete(doc(db, "handoverNotes", firestoreNoteDocumentID));
+  await batch.commit();
   removePermanentlyDeletedNoteFromLocalState(noteID, firestoreNoteDocumentID);
 }
 
 function removePermanentlyDeletedNoteFromLocalState(noteID, documentID = noteID) {
-  const deletedIDSet = new Set([noteID, documentID].filter(Boolean).map(normalizeKey));
+  const deletedDocumentID = stringValue(documentID, noteID);
   const removedNoteIDs = new Set();
   state.notes = state.notes.filter((existingNote) => {
-    const existingID = normalizeKey(existingNote.id);
-    const existingDocumentID = normalizeKey(existingNote.documentID || existingNote.id);
-    const shouldRemove = deletedIDSet.has(existingID) || deletedIDSet.has(existingDocumentID);
+    const shouldRemove = (existingNote.documentID || existingNote.id) === deletedDocumentID;
     if (shouldRemove) {
       removedNoteIDs.add(existingNote.id);
     }
     return !shouldRemove;
   });
-  deletedIDSet.forEach((deletedID) => state.fetchedNotesByID.delete(deletedID));
+  state.fetchedNotesByID.delete(deletedDocumentID);
   removedNoteIDs.forEach((removedID) => state.fetchedNotesByID.delete(removedID));
+  const removedNoteIDKeys = new Set([...removedNoteIDs].map(normalizeKey));
+  const remainingNoteKeys = new Set(state.notes.map((existingNote) => normalizeKey(existingNote.id)));
   state.handwritingNotes = state.handwritingNotes.filter((handwritingNote) => {
-    return !deletedIDSet.has(normalizeKey(handwritingNote.noteID)) && !removedNoteIDs.has(handwritingNote.noteID);
+    const noteKey = normalizeKey(handwritingNote.noteID);
+    return !removedNoteIDKeys.has(noteKey) || remainingNoteKeys.has(noteKey);
   });
 }
 
 async function deleteHandwritingNotesForNote(noteID, preferredDocumentID = "") {
-  const linkedSnapshot = await getDocs(query(collection(db, "handwritingNotes"), where("noteID", "==", noteID)));
-  trackFirestoreRead("handwritingNotes", linkedSnapshot.docs.length);
-  const documentIDs = new Set(linkedSnapshot.docs.map((document) => document.id));
+  const noteIDs = new Set([noteID.toUpperCase(), noteID.toLowerCase()]);
+  const linkedSnapshots = await Promise.all([...noteIDs].map((id) =>
+    getDocs(query(collection(db, "handwritingNotes"), where("noteID", "==", id)))
+  ));
+  linkedSnapshots.forEach((snapshot) => trackFirestoreRead("handwritingNotes", snapshot.docs.length));
+  const documentIDs = new Set(linkedSnapshots.flatMap((snapshot) => snapshot.docs.map((document) => document.id)));
   if (preferredDocumentID) {
     documentIDs.add(preferredDocumentID);
   }
@@ -12266,7 +12391,7 @@ async function deleteHandwritingNotesForNote(noteID, preferredDocumentID = "") {
 
 function removeLocalHandwritingNotesForNote(noteID, preferredDocumentID = "") {
   state.handwritingNotes = state.handwritingNotes.filter((handwritingNote) => {
-    return handwritingNote.noteID !== noteID && handwritingNote.id !== preferredDocumentID;
+    return normalizeKey(handwritingNote.noteID) !== normalizeKey(noteID) && handwritingNote.id !== preferredDocumentID;
   });
   renderSimulators();
   render();
@@ -12294,8 +12419,13 @@ async function saveNewNote(options = {}) {
     return;
   }
 
+  if (!isAdminSession() && displayDate < startOfDay(new Date())) {
+    setStatus("Seul un administrateur peut créer une consigne à une date passée.");
+    return;
+  }
+
   const now = new Date();
-  const id = crypto.randomUUID().toUpperCase();
+  const id = crypto.randomUUID().toLowerCase();
   const payload = {
     id,
     title,
@@ -12350,9 +12480,11 @@ function showCreateDateConfirmation(selectedDisplayDate) {
   popover.innerHTML = `
     <strong>La consigne n'est pas saisie<br>à la date du jour</strong>
     <p>Voulez-vous conserver la date selectionnee ou affecter cette consigne a aujourd'hui ?</p>
-    <button type="button" class="date-confirm-choice" data-date-confirm="keep">
-      Conserver la date du ${escapeHtml(formatLongDate(selectedDisplayDate))}
-    </button>
+    ${isAdminSession() || selectedDisplayDate >= startOfDay(new Date()) ? `
+      <button type="button" class="date-confirm-choice" data-date-confirm="keep">
+        Conserver la date du ${escapeHtml(formatLongDate(selectedDisplayDate))}
+      </button>
+    ` : ""}
     <button type="button" class="date-confirm-choice primary" data-date-confirm="today">
       Mettre a la date du jour
     </button>
@@ -12521,7 +12653,11 @@ function showModificationScopeConfirmation(note, context, options = {}) {
 }
 
 async function saveDetailEdit(note, options = {}) {
-  if (!canCurrentUserWrite() || state.isSaving) {
+  if (!canCurrentUserModifySelectedDate()) {
+    setStatus("Seul un administrateur peut modifier une consigne sur une date passée.");
+    return;
+  }
+  if (state.isSaving) {
     return;
   }
 
@@ -12806,7 +12942,7 @@ async function detachContextModification(note, context, draft) {
     );
   }
 
-  const detachedID = crypto.randomUUID().toUpperCase();
+  const detachedID = crypto.randomUUID().toLowerCase();
   const detachedPayload = {
     id: detachedID,
     title: draft.title,
@@ -12902,7 +13038,7 @@ function isCompletionKeyForContext(key, context) {
 }
 
 async function undoLatestModificationFromDetail(note) {
-  if (!canUndoLatestModification(note) || state.isSaving) {
+  if (!canCurrentUserModifySelectedDate() || !canUndoLatestModification(note) || state.isSaving) {
     return;
   }
 
@@ -12976,7 +13112,7 @@ function latestUndoableModification(note) {
 
 function canUndoLatestModification(note) {
   const latestRevision = latestUndoableModification(note);
-  if (!latestRevision || !state.currentUser) {
+  if (!latestRevision || !canCurrentUserModifySelectedDate()) {
     return false;
   }
 
@@ -13306,12 +13442,53 @@ function handoverIndexFields(note) {
   const realtimeActiveUntil = syncState === "active"
     ? activeRealtimeUntil
     : addDays(relevantDate, archiveRealtimeRetentionDays);
+  const visibility = handoverVisibilityFields(note);
 
   return {
     syncState,
     lastRealtimeRelevantAt: relevantDate,
-    realtimeActiveUntil
+    realtimeActiveUntil,
+    ...visibility
   };
+}
+
+function handoverVisibilityFields(note, now = new Date()) {
+  if (note.deletedAt) {
+    return {
+      visibilityState: "deleted",
+      visibleUntil: note.deletedAt
+    };
+  }
+
+  const visibleUntil = activeCompletions(note)
+    .map((completion) => visibleUntilForEventDate(completion.date))
+    .filter(Boolean)
+    .sort((first, second) => second - first)[0] || null;
+
+  if (!visibleUntil) {
+    return {
+      visibilityState: "visible",
+      visibleUntil: null
+    };
+  }
+
+  return {
+    visibilityState: visibleUntil > now ? "visible" : "hidden",
+    visibleUntil
+  };
+}
+
+function visibleUntilForEventDate(eventDate) {
+  if (!eventDate) {
+    return null;
+  }
+
+  const sourceSlot = vacationSlotContaining(eventDate);
+  if (!sourceSlot) {
+    return new Date(addDays(startOfDay(eventDate), 1).getTime() - 1);
+  }
+
+  return newVacationSlotsFrom(sourceSlot).at(-1)?.end || null;
 }
 
 function searchKeywordsForNote(note) {
@@ -13601,11 +13778,20 @@ async function syncPreventivePlanningRemarkFromMirrorNoteIfNeeded(note, nextText
 
   const rowID = stringValue(note.preventivePlanningEventID);
   const row = state.preventivePlanningRows.find((candidate) => candidate.id === rowID);
+  const remark = normalizePreventivePlanningRemarkText(nextText);
   if (!row) {
+    await syncPreventivePlanningRemarkFromMirrorNote({
+      noteID: note.id,
+      remark
+    });
     return;
   }
 
-  row.remark = normalizePlanningSingleLineText(nextText);
+  const response = await syncPreventivePlanningRemarkFromMirrorNote({
+    noteID: note.id,
+    remark
+  });
+  row.remark = stringValue(response?.data?.remark, remark);
   row.mirrorNoteID = note.id;
   savePreventivePlanningRowsLocal();
   if (state.activeView === "preventive-planning") {
@@ -13649,8 +13835,18 @@ function contextDisplayNotes(notes, context) {
     });
 
   return [...groupBy([...notesByID.values()], (note) => handoverOriginKey(note)).values()]
-    .map((group) => group.sort((first, second) => compareOriginSiblingNotes(first, second, context))[0])
+    .flatMap((group) => {
+      if (!hasOriginSiblingCandidates(group)) {
+        return group;
+      }
+
+      return [group.sort((first, second) => compareOriginSiblingNotes(first, second, context))[0]];
+    })
     .filter(Boolean);
+}
+
+function hasOriginSiblingCandidates(group) {
+  return group.length > 1 && group.some((note) => note.isGeneral || note.simulatorNames.length !== 1);
 }
 
 function compareOriginSiblingNotes(first, second, context) {
@@ -13698,6 +13894,10 @@ function handoverOriginKey(note) {
 }
 
 function matchesSelection(note, context, options = {}) {
+  if (isNoteHiddenByVisibilityIndex(note) && !state.showOnlyDeleted && !isDoneBadgeVisibleInContext(note, context)) {
+    return false;
+  }
+
   if (state.showTagged && options.includeTaggedFilter !== false && !matchesTaggedFilter(note, context)) {
     return false;
   }
@@ -14216,6 +14416,12 @@ function latestContentRevisionPairOnDay(note, day) {
 function isContentRevision(revision) {
   return !revision.previousDisplayDate
     && !revision.newDisplayDate
+    && !revision.previousRegulatoryPlanningDate
+    && !revision.newRegulatoryPlanningDate
+    && !revision.previousRegulatoryPlanningType
+    && !revision.newRegulatoryPlanningType
+    && !revision.previousPreventivePlanningEvent
+    && !revision.newPreventivePlanningEvent
     && !revision.previousPriorityRawValue
     && !revision.newPriorityRawValue
     && !revision.previousDestinationStorage
@@ -14223,7 +14429,11 @@ function isContentRevision(revision) {
 }
 
 function noteCreationNewEventDate(note) {
-  return dateWithTime(note.firstDisplayDate || note.displayDate || note.createdAt, note.createdAt);
+  if (isPlanningMirrorNote(note)) {
+    return dateWithTime(note.firstDisplayDate || note.displayDate || note.createdAt, note.createdAt);
+  }
+
+  return note.createdAt || dateWithTime(note.firstDisplayDate || note.displayDate, note.createdAt);
 }
 
 function firstAssignmentDate(note) {
@@ -14251,15 +14461,28 @@ function sameTimestamp(a, b) {
 }
 
 function carryOverDayCount(note) {
-  const noteDay = startOfDay(note.displayDate);
+  const noteDay = startOfDay(badgeOriginDate(note));
   const range = selectedPeriodRange();
   const selectedDay = isPeriodResultsMode() && range ? range.end : startOfDay(state.selectedDate);
   if (noteDay >= selectedDay) {
     return null;
   }
 
-  const firstPositionDay = startOfDay(note.firstDisplayDate || note.displayDate);
+  const firstPositionDay = startOfDay(badgeOriginDate(note));
   return Math.max(daysBetween(firstPositionDay, selectedDay), 1);
+}
+
+function badgeOriginDate(note) {
+  const assignmentDate = note.firstDisplayDate || note.displayDate || note.createdAt;
+  if (isPlanningMirrorNote(note)) {
+    return assignmentDate;
+  }
+
+  if (note.createdAt && assignmentDate && startOfDay(note.createdAt) < startOfDay(assignmentDate)) {
+    return note.createdAt;
+  }
+
+  return assignmentDate;
 }
 
 function modificationBadgeTitle(note, context, newBadge, carryOver) {
@@ -14323,12 +14546,13 @@ function timelineEvents(note, context) {
     hasDisclosure: true
   }];
 
-  let previousRevisionText = stringValue(creationRevision.text).trim() || creationTextForNote(note);
+  let previousRevisionText = displayRevisionTextForNote(note, stringValue(creationRevision.text).trim() || creationTextForNote(note));
 
   for (const revision of sortedRevisions) {
     if (!revision.date) {
       continue;
     }
+    const displayText = displayRevisionTextForNote(note, revision.text);
 
     events.push({
       date: revision.date,
@@ -14340,7 +14564,7 @@ function timelineEvents(note, context) {
       kind: "revision",
       hasDisclosure: true
     });
-    previousRevisionText = revision.text;
+    previousRevisionText = displayText;
   }
 
   for (const completion of timelineCompletions(note).filter((record) => record.context === context)) {
@@ -14402,6 +14626,25 @@ function timelineEvents(note, context) {
   ];
 }
 
+function displayRevisionTextForNote(note, revisionText) {
+  const text = stringValue(revisionText).trim();
+  if (!note?.preventivePlanningMirror || !text.includes("\n")) {
+    return text;
+  }
+
+  const lines = text.split("\n");
+  const firstLine = stringValue(lines[0]).trim();
+  const currentTitle = stringValue(note.title).trim();
+  const looksLikePreventiveTitle = preventivePlanningEvents.some((event) => {
+    return firstLine.toLocaleLowerCase("fr").startsWith(event.label.toLocaleLowerCase("fr"));
+  });
+  if (firstLine === currentTitle || looksLikePreventiveTitle) {
+    return lines.slice(1).join("\n").trim();
+  }
+
+  return text;
+}
+
 function visibleTimelineAcknowledgements(note, context) {
   const contextAcknowledgements = note.acknowledgements.filter((record) => record.context === context);
   if (state.currentUser?.role === "admin") {
@@ -14435,7 +14678,10 @@ function timelineRevisionsForCurrentUser(note) {
 function isVisibleInStandardTimeline(revision) {
   return isPublicContentRevision(revision)
     || Boolean(revision.previousDisplayDate || revision.newDisplayDate)
+    || Boolean(revision.previousRegulatoryPlanningDate || revision.newRegulatoryPlanningDate)
+    || Boolean(revision.previousRegulatoryPlanningType || revision.newRegulatoryPlanningType)
     || Boolean(revision.previousPriorityRawValue || revision.newPriorityRawValue)
+    || Boolean(revision.previousPreventivePlanningEvent || revision.newPreventivePlanningEvent)
     || Boolean(revision.previousDestinationStorage || revision.newDestinationStorage);
 }
 
@@ -14443,6 +14689,12 @@ function isPublicContentRevision(revision) {
   return revision.isVisibleToOthers !== false
     && !revision.previousDisplayDate
     && !revision.newDisplayDate
+    && !revision.previousRegulatoryPlanningDate
+    && !revision.newRegulatoryPlanningDate
+    && !revision.previousRegulatoryPlanningType
+    && !revision.newRegulatoryPlanningType
+    && !revision.previousPreventivePlanningEvent
+    && !revision.newPreventivePlanningEvent
     && !revision.previousPriorityRawValue
     && !revision.newPriorityRawValue
     && !revision.previousDestinationStorage
@@ -14450,7 +14702,7 @@ function isPublicContentRevision(revision) {
 }
 
 function shouldHideSameDayAuthorModification(revision, note) {
-  if (revision.previousDisplayDate || revision.newDisplayDate || revision.previousPriorityRawValue || revision.newPriorityRawValue || revision.previousDestinationStorage || revision.newDestinationStorage) {
+  if (revision.previousDisplayDate || revision.newDisplayDate || revision.previousRegulatoryPlanningDate || revision.newRegulatoryPlanningDate || revision.previousRegulatoryPlanningType || revision.newRegulatoryPlanningType || revision.previousPriorityRawValue || revision.newPriorityRawValue || revision.previousPreventivePlanningEvent || revision.newPreventivePlanningEvent || revision.previousDestinationStorage || revision.newDestinationStorage) {
     return false;
   }
 
@@ -14540,9 +14792,15 @@ function openTimelineTextModal(index) {
   const note = state.selectedDetail
     ? state.notes.find((candidate) => candidate.id === state.selectedDetail.noteId)
     : null;
+  const revisions = note
+    ? (event.revisions || []).map((revision) => ({
+      ...revision,
+      text: displayRevisionTextForNote(note, revision.text)
+    }))
+    : (event.revisions || []);
   openRevisionTextModal({
     dateLabel: timelineModalDateLabel(event),
-    html: revisionTimelineDetailHTML(event.revisions || [], event.previousText),
+    html: revisionTimelineDetailHTML(revisions, event.previousText),
     canUndo: Boolean(note && canUndoTimelineEvent(note, event))
   });
 }
@@ -14585,11 +14843,38 @@ function revisionTimelineDetailHTML(revisions, initialPreviousText) {
       `);
     }
 
+    if (revision.previousRegulatoryPlanningDate || revision.newRegulatoryPlanningDate) {
+      revisionBlocks.push(`
+        <div class="timeline-change-block">
+          <strong>Changement de date de l'événement</strong>
+          <span>${escapeHtml(planningDateDisplay(revision.previousRegulatoryPlanningDate))} → ${escapeHtml(planningDateDisplay(revision.newRegulatoryPlanningDate))}</span>
+        </div>
+      `);
+    }
+
+    if (revision.previousRegulatoryPlanningType || revision.newRegulatoryPlanningType) {
+      revisionBlocks.push(`
+        <div class="timeline-change-block">
+          <strong>Changement de type</strong>
+          <span>${escapeHtml(planningTypeLabel(revision.previousRegulatoryPlanningType) || revision.previousRegulatoryPlanningType || "-")} → ${escapeHtml(planningTypeLabel(revision.newRegulatoryPlanningType) || revision.newRegulatoryPlanningType || "-")}</span>
+        </div>
+      `);
+    }
+
     if (revision.previousPriorityRawValue || revision.newPriorityRawValue) {
       revisionBlocks.push(`
         <div class="timeline-change-block">
           <strong>Changement de priorité</strong>
           <span>${escapeHtml(priorityLabel(revision.previousPriorityRawValue) || "Info")} → ${escapeHtml(priorityLabel(revision.newPriorityRawValue) || "Info")}</span>
+        </div>
+      `);
+    }
+
+    if (revision.previousPreventivePlanningEvent || revision.newPreventivePlanningEvent) {
+      revisionBlocks.push(`
+        <div class="timeline-change-block">
+          <strong>Changement d'événement</strong>
+          <span>${escapeHtml(preventivePlanningEventLabel(revision.previousPreventivePlanningEvent) || revision.previousPreventivePlanningEvent || "-")} → ${escapeHtml(preventivePlanningEventLabel(revision.newPreventivePlanningEvent) || revision.newPreventivePlanningEvent || "-")}</span>
         </div>
       `);
     }
@@ -14604,7 +14889,9 @@ function revisionTimelineDetailHTML(revisions, initialPreviousText) {
     }
 
     const text = stringValue(revision.text).trim();
-    if (previousText && previousText !== revision.text) {
+    if (isStructuredTimelineRevision(revision)) {
+      // Les changements planning (date/simu/evenement) ne doivent pas afficher de diff du titre miroir.
+    } else if (previousText && previousText !== revision.text) {
       revisionBlocks.push(`<div>${renderTextDiff(previousText, revision.text)}</div>`);
     } else if (text) {
       revisionBlocks.push(`<div>${escapeHtml(text)}</div>`);
@@ -14618,6 +14905,23 @@ function revisionTimelineDetailHTML(revisions, initialPreviousText) {
   }
 
   return blocks.join("");
+}
+
+function isStructuredTimelineRevision(revision) {
+  return Boolean(
+    revision.previousDisplayDate
+    || revision.newDisplayDate
+    || revision.previousRegulatoryPlanningDate
+    || revision.newRegulatoryPlanningDate
+    || revision.previousRegulatoryPlanningType
+    || revision.newRegulatoryPlanningType
+    || revision.previousPriorityRawValue
+    || revision.newPriorityRawValue
+    || revision.previousPreventivePlanningEvent
+    || revision.newPreventivePlanningEvent
+    || revision.previousDestinationStorage
+    || revision.newDestinationStorage
+  );
 }
 
 function renderTextDiff(oldText, newText) {
@@ -14940,8 +15244,20 @@ function revisionTitle(revision) {
     return "Changement de date";
   }
 
+  if (revision.previousRegulatoryPlanningDate || revision.newRegulatoryPlanningDate) {
+    return "Changement de date de l'événement";
+  }
+
+  if (revision.previousRegulatoryPlanningType || revision.newRegulatoryPlanningType) {
+    return "Changement de type";
+  }
+
   if (revision.previousPriorityRawValue || revision.newPriorityRawValue) {
     return "Changement de priorité";
+  }
+
+  if (revision.previousPreventivePlanningEvent || revision.newPreventivePlanningEvent) {
+    return "Changement d'événement";
   }
 
   if (revision.previousDestinationStorage || revision.newDestinationStorage) {
@@ -14956,8 +15272,24 @@ function revisionDetail(revision) {
     return `${formatShortDate(revision.previousDisplayDate)} → ${formatShortDate(revision.newDisplayDate)}`;
   }
 
+  if (revision.previousRegulatoryPlanningDate || revision.newRegulatoryPlanningDate) {
+    return `${planningDateDisplay(revision.previousRegulatoryPlanningDate)} → ${planningDateDisplay(revision.newRegulatoryPlanningDate)}`;
+  }
+
+  if (revision.previousRegulatoryPlanningType || revision.newRegulatoryPlanningType) {
+    const previousType = planningTypeLabel(revision.previousRegulatoryPlanningType) || revision.previousRegulatoryPlanningType || "-";
+    const nextType = planningTypeLabel(revision.newRegulatoryPlanningType) || revision.newRegulatoryPlanningType || "-";
+    return `${previousType} → ${nextType}`;
+  }
+
   if (revision.previousPriorityRawValue || revision.newPriorityRawValue) {
     return `${priorityLabel(revision.previousPriorityRawValue) || "Info"} → ${priorityLabel(revision.newPriorityRawValue) || "Info"}`;
+  }
+
+  if (revision.previousPreventivePlanningEvent || revision.newPreventivePlanningEvent) {
+    const previousEvent = preventivePlanningEventLabel(revision.previousPreventivePlanningEvent) || revision.previousPreventivePlanningEvent || "-";
+    const nextEvent = preventivePlanningEventLabel(revision.newPreventivePlanningEvent) || revision.newPreventivePlanningEvent || "-";
+    return `${previousEvent} → ${nextEvent}`;
   }
 
   if (revision.previousDestinationStorage || revision.newDestinationStorage) {
@@ -14984,6 +15316,13 @@ function canCurrentUserViewDeletedNote(note) {
 }
 
 function canCurrentUserDeleteNote(note) {
+  if (!canCurrentUserModifySelectedDate()) {
+    return false;
+  }
+  if (isPlanningMirrorNote(note)) {
+    return false;
+  }
+
   if (state.currentUser?.role === "admin" || state.currentUser?.role === "teamLeader") {
     return true;
   }
@@ -14992,13 +15331,16 @@ function canCurrentUserDeleteNote(note) {
 }
 
 function canCurrentUserPermanentlyDeleteHandwritingOnlyNote(note) {
-  if (!state.currentUser || !canCurrentUserWrite() || note.deletedAt) {
+  if (!canCurrentUserModifySelectedDate() || note.deletedAt) {
+    return false;
+  }
+  if (isPlanningMirrorNote(note)) {
     return false;
   }
 
-  const hasTypedContent = Boolean(note.title.trim() || note.text.trim());
+  const hasTypedContent = note.title !== "" || note.text !== "";
   const handwriting = visibleHandwritingFor(note);
-  return !hasTypedContent && Boolean(handwriting?.data) && handwriting.readOnly !== true;
+  return isCurrentAuthor(note) && !hasTypedContent && Boolean(handwriting?.data) && handwriting.readOnly !== true;
 }
 
 function canCurrentAuthorDeleteOwnTodayUnmodified(note) {
@@ -15022,6 +15364,10 @@ function isCurrentAuthor(note) {
 
 function canCurrentUserWrite() {
   return Boolean(state.currentUser?.role) && state.currentUser.role !== "consultation";
+}
+
+function canCurrentUserModifySelectedDate() {
+  return canCurrentUserWrite() && (isAdminSession() || state.selectedDate >= startOfDay(new Date()));
 }
 
 function canCurrentUserEditDate() {
@@ -15108,7 +15454,7 @@ function isEventNewForViewer(eventDate, selectedDate) {
 
 function newVacationSlotsFrom(sourceSlot) {
   const slotCount = isWeekendDay(sourceSlot.day) ? 2 : 3;
-  const slots = vacationSlotsAround(sourceSlot.day, 4);
+  const slots = uniqueVacationSlots(vacationSlotsAround(sourceSlot.day, 4));
   const sourceIndex = slots.findIndex((slot) => sameVacationSlot(slot, sourceSlot));
   if (sourceIndex < 0) {
     return [sourceSlot];
@@ -15119,11 +15465,11 @@ function newVacationSlotsFrom(sourceSlot) {
 
 function vacationSlotContaining(date) {
   const day = startOfDay(date);
-  const slots = [
+  const slots = uniqueVacationSlots([
     ...vacationSlotsForDay(addDays(day, -1)),
     ...vacationSlotsForDay(day),
     ...vacationSlotsForDay(addDays(day, 1))
-  ];
+  ]);
   return slots.find((slot) => date >= slot.start && date < slot.end) || null;
 }
 
@@ -15157,7 +15503,7 @@ function vacationSlotsForDay(day) {
 
 function visibleVacationSlotsForDay(day) {
   const selectedDay = startOfDay(day);
-  const slots = vacationSlotsForDay(selectedDay);
+  const slots = uniqueVacationSlots(vacationSlotsForDay(selectedDay));
   const now = new Date();
   const today = startOfDay(now);
 
@@ -15171,11 +15517,21 @@ function visibleVacationSlotsForDay(day) {
   }
 
   const previousDay = addDays(selectedDay, -1);
-  const previousNightSlots = vacationSlotsForDay(previousDay).filter((slot) => {
+  const previousNightSlots = uniqueVacationSlots(vacationSlotsForDay(previousDay)).filter((slot) => {
     return slot.shiftID === "night" && now >= slot.start && now < slot.end;
   });
 
   return previousNightSlots.length ? previousNightSlots : slots;
+}
+
+function uniqueVacationSlots(slots) {
+  const seen = new Set();
+  return slots.filter((slot) => {
+    const key = `${isoDate(startOfDay(slot.day))}|${slot.shiftID}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function vacationInterval(day, shiftID, weekend) {
