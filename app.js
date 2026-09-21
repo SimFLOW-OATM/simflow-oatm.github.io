@@ -88,6 +88,7 @@ const planningTypes = [
 const defaultPlanningType = planningTypes[0].value;
 const preventivePlanningEvents = [
   { value: "annuelle", label: "Annuelle" },
+  { value: "annuelle-semestrielle", label: "Annuelle / Semestrielle" },
   { value: "semestrielle", label: "Semestrielle" },
   { value: "trimestrielle", label: "Trimestrielle" },
   { value: "autre", label: "Autre" }
@@ -967,6 +968,17 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 window.addEventListener("focus", handleAppBecameVisible);
+let planningNotesResizeFrame = null;
+window.addEventListener("resize", () => {
+  if (state.activeView !== "planning") {
+    return;
+  }
+  window.cancelAnimationFrame(planningNotesResizeFrame);
+  planningNotesResizeFrame = window.requestAnimationFrame(() => {
+    planningNotesResizeFrame = null;
+    resizePlanningNotesCells();
+  });
+});
 window.addEventListener("beforeunload", () => {
   saveLastActiveTimestamp();
   flushFirestoreReadStats();
@@ -4010,6 +4022,23 @@ function renderPlanningTable() {
       ${renderPlanningEditor()}
     </section>
   `;
+  window.requestAnimationFrame(() => resizePlanningNotesCells());
+}
+
+function resizePlanningNotesCell(textarea) {
+  if (!textarea?.matches(".planning-notes-cell")) {
+    return;
+  }
+
+  textarea.style.height = "24px";
+  const hasMultipleLines = textarea.scrollHeight > textarea.clientHeight + 1;
+  const height = hasMultipleLines ? textarea.scrollHeight : 24;
+  textarea.style.height = `${height}px`;
+  textarea.classList.toggle("multiline", hasMultipleLines);
+}
+
+function resizePlanningNotesCells(container = elements.noteGroups) {
+  container?.querySelectorAll(".planning-notes-cell").forEach(resizePlanningNotesCell);
 }
 
 function renderPreventivePlanningTable() {
@@ -4790,7 +4819,7 @@ function defaultPreventivePlanningEndDate(row) {
     return "";
   }
 
-  return normalizedRow.event === "annuelle"
+  return ["annuelle", "annuelle-semestrielle"].includes(normalizedRow.event)
     ? isoDate(addDays(parseDateInput(normalizedRow.startDate), 1))
     : normalizedRow.startDate;
 }
@@ -5325,7 +5354,7 @@ function handlePreventivePlanningEditorFieldEdit(event) {
 
   editor.draft[field] = event.target.value;
   refreshPlanningEmptyFieldState(event.target);
-  if (field === "event" && editor.draft.event === "annuelle" && /^\d{4}-\d{2}-\d{2}$/.test(editor.draft.startDate)) {
+  if (field === "event" && ["annuelle", "annuelle-semestrielle"].includes(editor.draft.event) && /^\d{4}-\d{2}-\d{2}$/.test(editor.draft.startDate)) {
     editor.draft.endDate = defaultPreventivePlanningEndDate(editor.draft);
   }
   if (field === "remark" && event.type === "input") {
@@ -6220,10 +6249,12 @@ function handlePlanningFieldEdit(event) {
   }
   if (field === "notes") {
     if (event.type === "input") {
+      resizePlanningNotesCell(event.target);
       return;
     }
     row.notes = normalizePlanningMultilineText(row.notes);
     event.target.value = row.notes;
+    resizePlanningNotesCell(event.target);
   }
 
   if (field === "dateMode") {
