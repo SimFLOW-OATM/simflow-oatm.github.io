@@ -33,7 +33,7 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
-const WEB_APP_VERSION = "V1.92";
+const WEB_APP_VERSION = "V1.92a";
 const WEB_APP_VERSION_DISPLAY = WEB_APP_VERSION;
 const userGuideURL = "./assets/Guide%20utilisateur%20SimFLOW.pdf";
 const deletedLegacySimulatorNames = new Set(["Simu", "Simu 1", "Simu 2", "Simu 3", "Simu 4", "Simu Tes", "Simu test 2", "Simu Test 2"]);
@@ -7446,10 +7446,11 @@ async function importMissingRegulatoryPlanningRowsIfNeeded(existingRows = normal
 
   try {
     for (const row of missingRows) {
+      const event = planningFirestorePayload(row);
       await saveRegulatoryPlanningEvent({
-        event: planningFirestorePayload(row),
+        event,
         previousEvent: null,
-        changedFields: Object.keys(planningFirestorePayload(row)),
+        changedFields: ["planning"],
         action: "imported"
       });
       row.firestoreSource = true;
