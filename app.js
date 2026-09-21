@@ -15453,7 +15453,8 @@ function isEventNewForViewer(eventDate, selectedDate) {
 }
 
 function newVacationSlotsFrom(sourceSlot) {
-  const slotCount = isWeekendDay(sourceSlot.day) ? 2 : 3;
+  const isSundayNight = sourceSlot.day.getDay() === 0 && sourceSlot.shiftID === "night";
+  const slotCount = isSundayNight || !isWeekendDay(sourceSlot.day) ? 3 : 2;
   const slots = uniqueVacationSlots(vacationSlotsAround(sourceSlot.day, 4));
   const sourceIndex = slots.findIndex((slot) => sameVacationSlot(slot, sourceSlot));
   if (sourceIndex < 0) {
