@@ -33,7 +33,7 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
-const WEB_APP_VERSION = "V1.92a";
+const WEB_APP_VERSION = "V1.92b";
 const WEB_APP_VERSION_DISPLAY = WEB_APP_VERSION;
 const userGuideURL = "./assets/Guide%20utilisateur%20SimFLOW.pdf";
 const deletedLegacySimulatorNames = new Set(["Simu", "Simu 1", "Simu 2", "Simu 3", "Simu 4", "Simu Tes", "Simu test 2", "Simu Test 2"]);
@@ -14465,12 +14465,11 @@ function carryOverDayCount(note) {
   const noteDay = startOfDay(badgeOriginDate(note));
   const range = selectedPeriodRange();
   const selectedDay = isPeriodResultsMode() && range ? range.end : startOfDay(state.selectedDate);
-  if (noteDay >= selectedDay) {
+  if (noteDay > selectedDay || (sameDay(noteDay, selectedDay) && isNew(note))) {
     return null;
   }
 
-  const firstPositionDay = startOfDay(badgeOriginDate(note));
-  return Math.max(daysBetween(firstPositionDay, selectedDay), 1);
+  return Math.max(daysBetween(noteDay, selectedDay), 1);
 }
 
 function badgeOriginDate(note) {
