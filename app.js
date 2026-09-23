@@ -33,7 +33,7 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
-const WEB_APP_VERSION = "V1.92b";
+const WEB_APP_VERSION = "V1.93";
 const WEB_APP_VERSION_DISPLAY = WEB_APP_VERSION;
 const userGuideURL = "./assets/Guide%20utilisateur%20SimFLOW.pdf";
 const deletedLegacySimulatorNames = new Set(["Simu", "Simu 1", "Simu 2", "Simu 3", "Simu 4", "Simu Tes", "Simu test 2", "Simu Test 2"]);
@@ -1161,6 +1161,11 @@ elements.noteGroups.addEventListener("click", (event) => {
 
   if (event.target.closest("[data-tag-note-id]")) {
     event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
+
+  if (event.target.closest(".rich-text-preview a")) {
     event.stopPropagation();
     return;
   }
@@ -9217,6 +9222,20 @@ function bindRichTextToolbar(canWrite) {
     return;
   }
 
+  editor.addEventListener("click", (event) => {
+    const link = event.target.closest("a");
+    if (!link || !editor.contains(link)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    const url = normalizeRichTextLinkURL(link.getAttribute("href"));
+    if (url) {
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
+  });
+
   toolbar.querySelectorAll("[data-format-command]").forEach((button) => {
     button.disabled = !canWrite;
     button.addEventListener("click", () => {
@@ -9247,9 +9266,127 @@ function bindRichTextToolbar(canWrite) {
     });
   });
 
+  const linkButton = toolbar.querySelector("[data-link-menu]");
+  const linkMenu = toolbar.querySelector(".link-menu");
+  const linkInput = linkMenu?.querySelector("[data-link-url]");
+  const applyLinkButton = linkMenu?.querySelector("[data-link-apply]");
+  const removeLinkButton = linkMenu?.querySelector("[data-link-remove]");
+  const cancelLinkButton = linkMenu?.querySelector("[data-link-cancel]");
+  let savedLinkRange = null;
+  let selectedLink = null;
+
+  const closeLinkMenu = () => {
+    linkMenu?.classList.add("hidden");
+    savedLinkRange = null;
+    selectedLink = null;
+  };
+
+  const restoreLinkSelection = () => {
+    if (!savedLinkRange) {
+      return false;
+    }
+    editor.focus();
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(savedLinkRange);
+    return true;
+  };
+
+  const applyLink = () => {
+    const url = normalizeRichTextLinkURL(linkInput?.value);
+    if (!url) {
+      setStatus("Adresse internet non valide");
+      linkInput?.focus();
+      return;
+    }
+    if (!restoreLinkSelection()) {
+      return;
+    }
+
+    if (selectedLink) {
+      selectedLink.setAttribute("href", url);
+    } else {
+      document.execCommand("createLink", false, url);
+    }
+    editor.querySelectorAll("a").forEach((link) => {
+      link.setAttribute("target", "_blank");
+      link.setAttribute("rel", "noopener noreferrer");
+    });
+    normalizeEditorContent(editor);
+    closeLinkMenu();
+  };
+
+  linkButton.disabled = !canWrite;
+  linkButton.addEventListener("pointerdown", (event) => event.preventDefault());
+  linkButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (!canWrite) return;
+
+    const selection = window.getSelection();
+    if (!selection?.rangeCount) {
+      setStatus("Sélectionner le texte du lien");
+      return;
+    }
+    const range = selection.getRangeAt(0);
+    const rangeContainer = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+      ? range.commonAncestorContainer
+      : range.commonAncestorContainer.parentElement;
+    if (!rangeContainer || !editor.contains(rangeContainer)) {
+      setStatus("Sélectionner le texte du lien");
+      return;
+    }
+
+    selectedLink = rangeContainer.closest?.("a") || null;
+    if (range.collapsed && !selectedLink) {
+      setStatus("Sélectionner le texte du lien");
+      return;
+    }
+    savedLinkRange = range.cloneRange();
+    linkInput.value = selectedLink?.getAttribute("href") || "";
+    removeLinkButton.disabled = !selectedLink;
+    highlightMenu.classList.add("hidden");
+    linkMenu.classList.remove("hidden");
+    linkInput.focus();
+    linkInput.select();
+  });
+
+  applyLinkButton?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    applyLink();
+  });
+  removeLinkButton?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (selectedLink) {
+      const parent = selectedLink.parentNode;
+      while (selectedLink.firstChild) {
+        parent.insertBefore(selectedLink.firstChild, selectedLink);
+      }
+      selectedLink.remove();
+      parent.normalize();
+      normalizeEditorContent(editor);
+    }
+    closeLinkMenu();
+  });
+  cancelLinkButton?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    closeLinkMenu();
+    editor.focus();
+  });
+  linkInput?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      applyLink();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      closeLinkMenu();
+      editor.focus();
+    }
+  });
+
   document.addEventListener("click", (event) => {
     if (!toolbar.contains(event.target)) {
       highlightMenu.classList.add("hidden");
+      closeLinkMenu();
     }
   }, { once: true });
 }
@@ -9427,12 +9564,26 @@ function renderFormatToolbar() {
           <path d="M4 21h16"></path>
         </svg>
       </button>
+      <button type="button" data-link-menu title="Ajouter ou modifier un lien" aria-label="Ajouter ou modifier un lien">
+        <svg class="toolbar-svg-icon link" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1"></path>
+          <path d="M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.1-1.1"></path>
+        </svg>
+      </button>
       <div class="highlight-menu hidden">
         <button type="button" data-highlight-color="none"><span class="highlight-swatch none"></span>Aucun</button>
         <hr>
         <button type="button" data-highlight-color="yellow"><span class="highlight-swatch yellow"></span>Jaune</button>
         <button type="button" data-highlight-color="blue"><span class="highlight-swatch blue"></span>Bleu</button>
         <button type="button" data-highlight-color="red"><span class="highlight-swatch red"></span>Rouge</button>
+      </div>
+      <div class="link-menu hidden">
+        <input type="url" data-link-url placeholder="https://..." aria-label="Adresse internet">
+        <div class="link-menu-actions">
+          <button type="button" data-link-apply>Appliquer</button>
+          <button type="button" data-link-remove>Retirer</button>
+          <button type="button" data-link-cancel>Annuler</button>
+        </div>
       </div>
     </div>
   `;
@@ -13234,7 +13385,7 @@ function sanitizeRichTextHTML(html) {
 
   const template = document.createElement("template");
   template.innerHTML = html;
-  const allowedTags = new Set(["B", "STRONG", "I", "EM", "U", "UL", "OL", "LI", "BR", "DIV", "P", "SPAN"]);
+  const allowedTags = new Set(["A", "B", "STRONG", "I", "EM", "U", "UL", "OL", "LI", "BR", "DIV", "P", "SPAN"]);
   const allowedColors = new Set(["#ffd51f", "#2f80ed", "#ef2f24", "#ffffff", "#111111"]);
 
   function cleanNode(node) {
@@ -13246,7 +13397,10 @@ function sanitizeRichTextHTML(html) {
       return document.createTextNode("");
     }
 
-    const tagName = allowedTags.has(node.tagName) ? node.tagName.toLowerCase() : "span";
+    const linkURL = node.tagName === "A" ? normalizeRichTextLinkURL(node.getAttribute("href")) : "";
+    const tagName = node.tagName === "A" && !linkURL
+      ? "span"
+      : (allowedTags.has(node.tagName) ? node.tagName.toLowerCase() : "span");
     const cleaned = document.createElement(tagName);
     const textDecoration = stringValue(node.style?.textDecoration || node.style?.textDecorationLine).toLowerCase();
     const fontStyle = stringValue(node.style?.fontStyle).toLowerCase();
@@ -13271,6 +13425,11 @@ function sanitizeRichTextHTML(html) {
     if (color && allowedColors.has(color)) {
       cleaned.style.color = color;
     }
+    if (tagName === "a") {
+      cleaned.setAttribute("href", linkURL);
+      cleaned.setAttribute("target", "_blank");
+      cleaned.setAttribute("rel", "noopener noreferrer");
+    }
 
     node.childNodes.forEach((child) => {
       const cleanedChild = cleanNode(child);
@@ -13287,6 +13446,21 @@ function sanitizeRichTextHTML(html) {
   const container = document.createElement("div");
   container.appendChild(fragment);
   return container.innerHTML.trim();
+}
+
+function normalizeRichTextLinkURL(value) {
+  const text = stringValue(value).trim();
+  if (!text) {
+    return "";
+  }
+
+  const candidate = /^[a-z][a-z\d+.-]*:/i.test(text) ? text : `https://${text}`;
+  try {
+    const url = new URL(candidate);
+    return ["http:", "https:"].includes(url.protocol) ? url.href : "";
+  } catch {
+    return "";
+  }
 }
 
 function normalizeRichTextColor(value, isBackground) {
