@@ -33,8 +33,15 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
-const WEB_APP_VERSION = "V1.93";
+const WEB_APP_VERSION = "V1.94";
 const WEB_APP_VERSION_DISPLAY = WEB_APP_VERSION;
+const NIGHT_PLANNING_EMBED_VERSION = "20261009-109";
+
+window.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  const button = document.querySelector('[data-night-planning-action="magnify"]');
+  if (button?.getAttribute("aria-pressed") === "true") button.click();
+});
 const userGuideURL = "./assets/Guide%20utilisateur%20SimFLOW.pdf";
 const deletedLegacySimulatorNames = new Set(["Simu", "Simu 1", "Simu 2", "Simu 3", "Simu 4", "Simu Tes", "Simu test 2", "Simu Test 2"]);
 const sessionStorageKey = "simflow.web.currentUser";
@@ -760,9 +767,16 @@ const elements = {
   nextMonthButton: document.querySelector("#nextMonthButton"),
   todayButton: document.querySelector("#todayButton"),
   teamPresenceList: document.querySelector("#teamPresenceList"),
+  nightPlanningView: document.querySelector("#nightPlanningView"),
+  nightPlanningFrame: document.querySelector("#nightPlanningFrame"),
+  nightPlanningSidebarTools: document.querySelector("#nightPlanningSidebarTools"),
+  nightPlanningGeneralTools: document.querySelector("#nightPlanningGeneralTools"),
+  nightPlanningPlanningTools: document.querySelector("#nightPlanningPlanningTools"),
+  nightPlanningSidebarStatus: document.querySelector("#nightPlanningSidebarStatus"),
   planningSidebarNav: document.querySelector("#planningSidebarNav"),
   notesFilterSection: document.querySelector("#notesFilterSection"),
   notesSearchSection: document.querySelector("#notesSearchSection"),
+  notesSearchSeparator: document.querySelector("#notesSearchSeparator"),
   showTaggedToggle: document.querySelector("#showTaggedToggle"),
   showAcknowledgedToggle: document.querySelector("#showAcknowledgedToggle"),
   showDeletedRow: document.querySelector("#showDeletedRow"),
@@ -801,6 +815,26 @@ const elements = {
 };
 
 let pendingCenteredSimulatorBandAnchor = null;
+let nightPlanningToolbarState = null;
+let nightPlanningClipboardBusy = false;
+
+function renderNightPlanningBusy() {
+  const overlay = document.getElementById("nightPlanningBusyOverlay");
+  const busy = state.activeView === "night-planning" && (nightPlanningClipboardBusy || nightPlanningToolbarState?.busy === true);
+  const wasHidden = overlay.hidden;
+  overlay.hidden = !busy;
+  const message = document.getElementById("nightPlanningBusyMessage");
+  const text = nightPlanningToolbarState?.busy
+    ? nightPlanningToolbarState.busyMessage : "Lecture du planning copié...";
+  if (message.textContent !== text) message.textContent = text;
+  if (busy && wasHidden) overlay.querySelector('[role="dialog"]').focus({ preventScroll: true });
+}
+document.addEventListener("keydown", (event) => {
+  if (!document.getElementById("nightPlanningBusyOverlay").hidden && ["Tab", "Escape"].includes(event.key)) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+}, true);
 
 if (elements.webVersionBadge) {
   elements.webVersionBadge.textContent = WEB_APP_VERSION;
@@ -859,6 +893,7 @@ elements.openPlanningViewButton.addEventListener("click", () => {
     return;
   }
 
+  const wasNightPlanningView = state.activeView === "night-planning";
   state.activeView = "planning";
   state.isPreventivePlanningEditMode = false;
   state.preventivePlanningEditor = null;
@@ -866,12 +901,14 @@ elements.openPlanningViewButton.addEventListener("click", () => {
   clearPeriodMode();
   render();
   loadPlanningRowsFromFirestore({ force: true });
+  if (wasNightPlanningView) resumeParentDataRefreshAfterNightPlanning();
   requestAnimationFrame(() => window.scrollTo(0, 0));
 });
 elements.openPreventivePlanningViewButton?.addEventListener("click", () => {
   if (!canCurrentUserAccessPlanning()) {
     return;
   }
+  const wasNightPlanningView = state.activeView === "night-planning";
   state.activeView = "preventive-planning";
   state.isPlanningEditMode = false;
   state.planningEditor = null;
@@ -883,10 +920,174 @@ elements.openPreventivePlanningViewButton?.addEventListener("click", () => {
   loadPreventivePlanningRowsFromFirestore({ force: true })
     .then(() => ensurePreventivePlanningMirrorScopeSynced())
     .catch((error) => setStatus(error.message || "Planning préventif Firestore indisponible"));
+  if (wasNightPlanningView) resumeParentDataRefreshAfterNightPlanning();
   requestAnimationFrame(() => window.scrollTo(0, 0));
 });
 
+elements.teamPresenceList.addEventListener("click", (event) => {
+  const nightPlanningButton = event.target.closest("[data-open-night-planning]");
+  if (!nightPlanningButton || !state.currentUser) {
+    return;
+  }
+  showNightPlanningView();
+});
+
+function readBlobAsDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(reader.result), { once: true });
+    reader.addEventListener("error", () => reject(new Error("Lecture de l'image impossible.")), { once: true });
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function pasteNightPlanningFromClipboard() {
+  nightPlanningClipboardBusy = true;
+  renderNightPlanningBusy();
+  const sidebarButton = elements.nightPlanningSidebarTools?.querySelector('[data-night-planning-action="paste"]');
+  if (sidebarButton) sidebarButton.disabled = true;
+
+  try {
+    if (!navigator.clipboard?.read) {
+      throw new Error("Le navigateur n'autorise pas la lecture du presse-papiers.");
+    }
+
+    const clipboardItems = await navigator.clipboard.read();
+    const imageItem = clipboardItems.find((item) => item.types.some((type) => type.startsWith("image/")));
+    const imageType = imageItem?.types.find((type) => type.startsWith("image/"));
+    if (!imageItem || !imageType) {
+      throw new Error("Le presse-papiers ne contient pas d'image.");
+    }
+
+    const imageBlob = await imageItem.getType(imageType);
+    const dataUrl = await readBlobAsDataUrl(imageBlob);
+    const importer = elements.nightPlanningFrame.contentWindow?.simflowImportPlanningCaptureDataUrl;
+    if (typeof importer !== "function") {
+      throw new Error("Le module de planification n'est pas encore prêt.");
+    }
+    await importer(dataUrl);
+  } catch (error) {
+    const message = error?.name === "NotAllowedError"
+      ? "Autorise l'accès au presse-papiers dans le navigateur, puis clique sur Coller à nouveau."
+      : (error?.message || "La capture n'a pas pu être collée.");
+    const status = elements.nightPlanningFrame.contentDocument?.getElementById("planningStatus");
+    if (status) status.textContent = message;
+    nightPlanningToolbarState = nightPlanningToolbarState
+      ? { ...nightPlanningToolbarState, status: message }
+      : nightPlanningToolbarState;
+    renderNightPlanningSidebarTools();
+  } finally {
+    nightPlanningClipboardBusy = false;
+    renderNightPlanningBusy();
+    if (sidebarButton) sidebarButton.disabled = false;
+  }
+}
+
+function runNightPlanningToolbarAction(action, value = "") {
+  if (action === "analyze" && !isAdminSession()) return;
+  if (action === "return-consignes") {
+    showNotesView();
+    return;
+  }
+
+  if (action === "paste") {
+    void pasteNightPlanningFromClipboard();
+    return;
+  }
+
+  const frameDocument = elements.nightPlanningFrame.contentDocument;
+  const actionTargets = {
+    "view-planning": "planningBtn",
+    "view-settings": "settingsBtn",
+    export: "printBtn",
+    back: "backFromPlanningBtn",
+    recalculate: "recalculatePlanningBtn",
+    analyze: "analyzePlanningAiBtn",
+    clear: "clearPlanningCaptureBtn",
+    point: "showDetectedEndsBtn",
+    magnify: "planningMagnifierBtn"
+  };
+  if (actionTargets[action]) {
+    frameDocument?.getElementById(actionTargets[action])?.click();
+    return;
+  }
+}
+
+function renderNightPlanningSidebarTools() {
+  renderNightPlanningBusy();
+  const isVisible = state.activeView === "night-planning" && Boolean(nightPlanningToolbarState);
+  elements.nightPlanningSidebarTools?.classList.toggle("hidden", !isVisible);
+  if (!isVisible) return;
+
+  const isPlanningToolsVisible = nightPlanningToolbarState.activeView === "planning";
+  elements.nightPlanningGeneralTools?.classList.toggle("hidden", isPlanningToolsVisible);
+  elements.nightPlanningPlanningTools?.classList.toggle("hidden", !isPlanningToolsVisible);
+
+  elements.nightPlanningSidebarStatus.textContent = nightPlanningToolbarState.status || "";
+
+  elements.nightPlanningSidebarTools.querySelectorAll("[data-night-planning-action]").forEach((button) => {
+    const action = button.dataset.nightPlanningAction;
+    const buttonState = nightPlanningToolbarState.buttons?.[action] || {};
+    const isViewAction = ["view-planning", "view-settings"].includes(action);
+    const isAdminOnlyHidden = button.hasAttribute("data-night-planning-admin-only") && !isAdminSession();
+    button.disabled = Boolean(buttonState.disabled);
+    button.classList.toggle("hidden", isAdminOnlyHidden || (!isViewAction && Boolean(buttonState.hidden)));
+    if (buttonState.label && action !== "magnify") button.textContent = buttonState.label;
+    if (action === "point" || action === "magnify") {
+      button.classList.toggle("is-active", buttonState.pressed === true);
+      button.setAttribute("aria-pressed", String(buttonState.pressed === true));
+    }
+    const viewForAction = {
+      "view-planning": "planning",
+      "view-settings": "settings"
+    }[action];
+    if (viewForAction) button.classList.toggle("is-active", nightPlanningToolbarState.activeView === viewForAction);
+  });
+}
+
+elements.nightPlanningSidebarTools?.addEventListener("click", (event) => {
+  const actionButton = event.target.closest("[data-night-planning-action]");
+  if (actionButton) {
+    runNightPlanningToolbarAction(actionButton.dataset.nightPlanningAction);
+    return;
+  }
+});
+
+
+window.addEventListener("message", (event) => {
+  if (event.origin !== window.location.origin || event.source !== elements.nightPlanningFrame.contentWindow) return;
+  if (event.data?.source !== "organisation-vacation" || event.data?.type !== "toolbar-state") return;
+  nightPlanningToolbarState = event.data.state || null;
+  renderNightPlanningSidebarTools();
+});
+
+elements.nightPlanningFrame.addEventListener("load", () => {
+  elements.nightPlanningFrame.contentWindow?.postMessage({
+    source: "simflow",
+    type: "request-toolbar-state"
+  }, window.location.origin);
+});
+
+function showNightPlanningView() {
+  if (!state.currentUser) {
+    return;
+  }
+
+  state.activeView = "night-planning";
+  nightPlanningToolbarState = null;
+  elements.nightPlanningFrame.dataset.date = "";
+  pauseParentDataRefreshForNightPlanning();
+  state.isPlanningEditMode = false;
+  state.isPreventivePlanningEditMode = false;
+  state.planningEditor = null;
+  state.preventivePlanningEditor = null;
+  clearPeriodMode();
+  render();
+  requestAnimationFrame(() => window.scrollTo(0, 0));
+}
+
 function showNotesView() {
+  const wasNightPlanningView = state.activeView === "night-planning";
   state.activeView = "notes";
   state.isPlanningEditMode = false;
   state.isPreventivePlanningEditMode = false;
@@ -899,7 +1100,25 @@ function showNotesView() {
   closePlanningTechnicianMenu();
   refreshLocalPreventivePlanningMirrorNotes();
   render();
+  if (wasNightPlanningView) resumeParentDataRefreshAfterNightPlanning();
   requestAnimationFrame(() => window.scrollTo(0, 0));
+}
+
+function pauseParentDataRefreshForNightPlanning() {
+  if (state.autoDataRefreshTimer) {
+    window.clearTimeout(state.autoDataRefreshTimer);
+    state.autoDataRefreshTimer = null;
+  }
+  state.isAutoDataRefreshQueued = false;
+  if (state.dataRefreshMode === "light") {
+    state.dataRefreshMode = "";
+  }
+  renderDataRefreshIndicator();
+}
+
+function resumeParentDataRefreshAfterNightPlanning() {
+  checkLatestActivityAndRefreshIfNeeded({ force: true });
+  refreshLightIfIndicatorIsOrange();
 }
 let dataRefreshIndicatorLongPressTimer = null;
 let didOpenCounterDebugFromLongPress = false;
@@ -968,6 +1187,7 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 window.addEventListener("focus", handleAppBecameVisible);
+window.addEventListener("pageshow", handleAppBecameVisible);
 let planningNotesResizeFrame = null;
 window.addEventListener("resize", () => {
   if (state.activeView !== "planning") {
@@ -2082,13 +2302,26 @@ function startAuthenticatedDataSync() {
   recordLoginAppearance();
 }
 
+function updateDateOnReturn() {
+  const today = startOfDay(new Date());
+  if (sameDay(state.selectedDate, today)) return false;
+  state.selectedDate = today;
+  state.visibleMonth = startOfMonth(today);
+  clearPeriodMode();
+  elements.selectedDate.value = isoDate(today);
+  renderPreservingCenteredSimulatorBand();
+  return true;
+}
+
 function handleAppBecameVisible() {
-  if (!state.authReady || !state.currentUser || shouldSuspendFirestoreSync()) {
+  if (document.visibilityState === "hidden") return;
+  const dateChanged = updateDateOnReturn();
+  if (state.activeView === "night-planning" || !state.authReady || !state.currentUser || shouldSuspendFirestoreSync()) {
     return;
   }
 
   checkLatestActivityAndRefreshIfNeeded();
-  const shouldRefreshAfterWake = shouldShowWakeAutoDataRefresh();
+  const shouldRefreshAfterWake = dateChanged || shouldShowWakeAutoDataRefresh();
   recordLoginAppearance();
   if (!shouldRefreshAfterWake && !shouldShowStaleDataRefresh()) {
     saveLastActiveTimestamp();
@@ -2125,7 +2358,7 @@ function shouldShowWakeAutoDataRefresh() {
 
 function checkPeriodicFullRefresh() {
   const now = Date.now();
-  if (document.visibilityState === "hidden" || !state.authReady || !state.currentUser || shouldSuspendFirestoreSync()) {
+  if (state.activeView === "night-planning" || document.visibilityState === "hidden" || !state.authReady || !state.currentUser || shouldSuspendFirestoreSync()) {
     return;
   }
 
@@ -2376,7 +2609,7 @@ function activeCurrentDayCounterEntries() {
 }
 
 function isNoteHiddenByVisibilityIndex(note) {
-  return stringValue(note?.visibilityState) === "hidden";
+  return stringValue(note?.visibilityState) === "hidden" && hasAllNoteContextsCompleted(note);
 }
 
 function matchesSelectionForCounter(note, context, day) {
@@ -2402,7 +2635,7 @@ function matchesSelectionForCounter(note, context, day) {
 
   const noteDay = startOfDay(note.displayDate);
   return noteDay < day
-    && (!isCompletedBefore(note, day, context) || isDoneBadgeVisibleInContext(note, context));
+    && (!isCompletedBefore(note, day, context) || isDoneBadgeVisibleInContextOnDay(note, context, day));
 }
 
 function activeCurrentDayNoteCount() {
@@ -2464,7 +2697,8 @@ function isDataRefreshBehindLatestActivity(latestActivityDate = state.latestActi
 
 async function checkLatestActivityAndRefreshIfNeeded({ force = false } = {}) {
   if (
-    !state.currentUser
+    state.activeView === "night-planning"
+    || !state.currentUser
     || !state.authReady
     || state.isManualDataRefreshRunning
     || state.isAutoDataRefreshQueued
@@ -2495,7 +2729,7 @@ async function checkLatestActivityAndRefreshIfNeeded({ force = false } = {}) {
 }
 
 function scheduleOutdatedDataRefresh(latestActivityDate = state.latestActivityNoteChangeDate) {
-  if (!state.currentUser || !state.authReady || state.isManualDataRefreshRunning || state.isAutoDataRefreshQueued || state.dataRefreshHardMismatch || shouldSuspendFirestoreSync()) {
+  if (state.activeView === "night-planning" || !state.currentUser || !state.authReady || state.isManualDataRefreshRunning || state.isAutoDataRefreshQueued || state.dataRefreshHardMismatch || shouldSuspendFirestoreSync()) {
     return;
   }
   if (activityAlreadyAutoRefreshed(latestActivityDate)) {
@@ -2535,7 +2769,7 @@ function scheduleOutdatedDataRefresh(latestActivityDate = state.latestActivityNo
 }
 
 function refreshLightIfIndicatorIsOrange() {
-  if (state.dataRefreshHardMismatch) {
+  if (state.activeView === "night-planning" || state.dataRefreshHardMismatch) {
     return;
   }
 
@@ -3047,7 +3281,7 @@ async function loadPreventivePlanningRowsFromFirestore({ force = false, includeH
     const response = await getPreventivePlanningEvents({ includeHistory });
     const events = Array.isArray(response?.data?.events) ? response.data.events : [];
     state.isPreventivePlanningHistoryLoaded = includeHistory;
-    if (events.length) {
+    if (events.length || response?.data?.hasStoredEvents === true) {
       state.preventivePlanningRows = events.map((event) => ({
         ...normalizePreventivePlanningRow(event),
         firestoreSource: true
@@ -3806,10 +4040,12 @@ function renderSession() {
   updateLoginLockState(!isLoggedIn);
   elements.loginPanel.classList.toggle("hidden", isLoggedIn);
   elements.userPanel.classList.toggle("hidden", !isLoggedIn);
-  const isPlanningView = state.activeView === "planning" && isLoggedIn;
+  const isPlanningView = ["planning", "preventive-planning", "night-planning"].includes(state.activeView) && isLoggedIn;
   elements.planningSidebarNav?.classList.toggle("hidden", isPlanningView);
   elements.notesFilterSection?.classList.toggle("hidden", isPlanningView);
   elements.notesSearchSection?.classList.toggle("hidden", isPlanningView);
+  elements.notesSearchSeparator?.classList.toggle("hidden", state.activeView === "night-planning" && isLoggedIn);
+  renderNightPlanningSidebarTools();
   const canViewDeleted = canCurrentUserViewDeletedNotes();
   elements.showDeletedRow.classList.toggle("hidden", isPlanningView || !canViewDeleted);
   elements.showOnlyDeletedRow.classList.toggle("hidden", isPlanningView || !canViewDeleted || state.currentUser?.role !== "admin");
@@ -3846,6 +4082,9 @@ function renderSession() {
 function renderViewNavigation() {
   const canAccessPlanning = canCurrentUserAccessPlanning();
   if (!canAccessPlanning && ["planning", "preventive-planning"].includes(state.activeView)) {
+    state.activeView = "notes";
+  }
+  if (state.activeView === "night-planning" && !state.currentUser) {
     state.activeView = "notes";
   }
   elements.openNotesViewButton?.classList.toggle("hidden", !canAccessPlanning);
@@ -3901,6 +4140,7 @@ function render() {
   renderSession();
   renderDataRefreshIndicator();
   document.body.classList.toggle("planning-view", ["planning", "preventive-planning"].includes(state.activeView) && Boolean(state.currentUser));
+  document.body.classList.toggle("night-planning-view-active", state.activeView === "night-planning" && Boolean(state.currentUser));
   elements.emptyState.textContent = "Aucune consigne à afficher pour cette sélection.";
   const filtersDisabled = Boolean(state.periodStartDate);
   elements.showTaggedToggle.checked = state.showTagged;
@@ -3914,6 +4154,9 @@ function render() {
   elements.searchInput.parentElement.classList.toggle("search-active", Boolean(state.search));
   elements.clearSearchButton.classList.toggle("hidden", !state.search);
   renderCalendar();
+  const isNightPlanningView = state.activeView === "night-planning" && Boolean(state.currentUser);
+  elements.nightPlanningView.classList.toggle("hidden", !isNightPlanningView);
+  elements.noteGroups.classList.toggle("hidden", isNightPlanningView);
 
   if (!state.currentUser) {
     elements.teamPresenceList.innerHTML = "";
@@ -3922,6 +4165,8 @@ function render() {
       elements.simulatorList.innerHTML = "";
     }
     elements.noteGroups.innerHTML = "";
+    elements.nightPlanningView.classList.add("hidden");
+    elements.nightPlanningFrame.removeAttribute("src");
     elements.emptyState.classList.remove("hidden");
     elements.pageTitle.classList.remove("planning-title");
     elements.pageTitle.textContent = "";
@@ -3933,6 +4178,23 @@ function render() {
 
   renderTeamPresences();
   renderSimulators();
+
+  if (isNightPlanningView) {
+    elements.emptyState.classList.add("hidden");
+    elements.pageTitle.textContent = "Planification de la nuit";
+    elements.pageSubtitle.textContent = formatLongDate(state.selectedDate);
+    const selectedDate = isoDate(state.selectedDate);
+    if (
+      elements.nightPlanningFrame.dataset.date !== selectedDate
+      || elements.nightPlanningFrame.dataset.version !== NIGHT_PLANNING_EMBED_VERSION
+    ) {
+      elements.nightPlanningFrame.dataset.date = selectedDate;
+      elements.nightPlanningFrame.dataset.version = NIGHT_PLANNING_EMBED_VERSION;
+      elements.nightPlanningFrame.src = `./night-planning/index.html?embedded=1&date=${encodeURIComponent(selectedDate)}&v=${NIGHT_PLANNING_EMBED_VERSION}`;
+    }
+    refreshDetail();
+    return;
+  }
 
   if (state.activeView === "planning") {
     renderPlanningTable();
@@ -7823,7 +8085,9 @@ function renderTeamPresences() {
     ? presences.map((presence) => `
       <div class="team-presence-row">
         <span>${escapeHtml(presence.team.title)}</span>
-        <span class="shift-pill ${escapeAttribute(presence.shift.id)}">${escapeHtml(presence.shift.title)}</span>
+        ${presence.shift.id === "night" && state.currentUser
+          ? `<button class="shift-pill night shift-pill-button" type="button" data-open-night-planning title="Ouvrir la planification de la nuit">${escapeHtml(presence.shift.title)}</button>`
+          : `<span class="shift-pill ${escapeAttribute(presence.shift.id)}">${escapeHtml(presence.shift.title)}</span>`}
       </div>
     `).join("")
     : "<p class=\"hint\">Aucune équipe présente.</p>";
@@ -7879,6 +8143,7 @@ function goToToday() {
 }
 
 function resetDisplayState() {
+  const wasNightPlanningView = state.activeView === "night-planning";
   state.activeView = "notes";
   state.selectedDate = startOfDay(new Date());
   state.visibleMonth = startOfMonth(state.selectedDate);
@@ -7893,6 +8158,7 @@ function resetDisplayState() {
   elements.searchInput.value = "";
   elements.userMenu.classList.add("hidden");
   render();
+  if (wasNightPlanningView) resumeParentDataRefreshAfterNightPlanning();
   requestAnimationFrame(() => window.scrollTo(0, 0));
 }
 
@@ -8097,6 +8363,14 @@ function renderGroup(group) {
   `;
 }
 
+function renderMultiSimulatorBadge(note) {
+  if (note.isGeneral) return "";
+  const names = uniqueStrings((note.simulatorNames || []).map((name) => String(name).trim()).filter(Boolean));
+  if (names.length < 2) return "";
+  const label = `MULTI : ${names.length > 4 ? names.length : names.join(" · ")}`;
+  return `<span class="note-multi-simulator-badge" title="${escapeAttribute(names.join(", "))}">${escapeHtml(label)}</span>`;
+}
+
 function renderNote(note, context) {
   const priorityClass = note.priority ? `priority-${note.priority}` : "priority-info";
   const title = highlight(note.title);
@@ -8127,8 +8401,9 @@ function renderNote(note, context) {
   ].filter(Boolean).join("");
   const doneStatusBadge = done ? renderStatusBadge("done", "Soldé") : "";
   const acknowledgementStatusBadge = acknowledged ? renderStatusBadge("ack", "Pris en compte") : "";
-  const leadingBadges = ageBadge || doneStatusBadge
-    ? `<div class="note-leading-badges">${ageBadge}${doneStatusBadge}</div>`
+  const multiSimulatorBadge = renderMultiSimulatorBadge(note);
+  const leadingBadges = ageBadge || doneStatusBadge || multiSimulatorBadge
+    ? `<div class="note-leading-badges">${ageBadge}${doneStatusBadge}${multiSimulatorBadge}</div>`
     : "";
   const metadataDate = state.search
     ? firstAssignmentDate(note)
@@ -8160,7 +8435,8 @@ function renderNote(note, context) {
 }
 
 function noteFromSnapshot(id, data) {
-  const displayDate = startOfDay(dateValue(data.displayDate) || dateValue(data.createdAt) || new Date());
+  const storedDisplayDate = dateValue(data.displayDate) || dateValue(data.createdAt) || new Date();
+  const displayDate = startOfDay(storedDisplayDate);
   const completions = decodeRecordArray(data.completionHistoryData);
   const completionCancellations = decodeRecordArray(data.completionCancellationHistoryData);
   const revisions = decodeRecordArray(data.revisionHistoryData);
@@ -8187,6 +8463,7 @@ function noteFromSnapshot(id, data) {
     deletedBy: stringValue(data.deletedBy),
     deletedByIdentifier: stringValue(data.deletedByIdentifier),
     displayDate,
+    storedDisplayDate,
     firstDisplayDate: startOfDay(dateValue(data.firstDisplayDate) || displayDate),
     isGeneral: Boolean(data.isGeneral),
     simulatorNames: destinationSimulatorNamesFromData(data),
@@ -8507,7 +8784,7 @@ function counterDebugEntryText(entry, index) {
       entry.context,
       note.id,
       title,
-      `display=${debugDateTime(note.displayDate)}`,
+      `display=${debugDateTime(note.storedDisplayDate || note.displayDate)}`,
       `updated=${debugDateTime(note.updatedAt)}`
     ].join(" | ")
   };
@@ -8544,7 +8821,7 @@ function noteDebugAttributes(note) {
     ["deletedAt", debugDateTime(note.deletedAt)],
     ["deletedBy", safeDebugText(note.deletedBy)],
     ["deletedByIdentifier", maskedDebugIdentifier(note.deletedByIdentifier)],
-    ["displayDate", debugDateTime(note.displayDate)],
+    ["displayDate", debugDateTime(note.storedDisplayDate || note.displayDate)],
     ["firstDisplayDate", debugDateTime(note.firstDisplayDate)],
     ["isGeneral", String(Boolean(note.isGeneral))],
     ["simulatorNames", note.simulatorNames?.length ? note.simulatorNames.join(", ") : "-"],
@@ -8591,7 +8868,7 @@ function noteDebugDiagnosticAttributes(note) {
     ["visibleUntil", debugDateTime(note.visibleUntil)],
     ["completionVisibleUntil", debugDateTime(debugCompletionVisibleUntil(note, context))],
     ["doneVisibleInContext", String(doneVisible)],
-    ["syncSummary", `syncState=${safeDebugText(note.syncState)} ; deletedAt=${debugDateTime(note.deletedAt)} ; displayDate=${debugDateTime(note.displayDate)} ; firstDisplayDate=${debugDateTime(note.firstDisplayDate)}`],
+    ["syncSummary", `syncState=${safeDebugText(note.syncState)} ; deletedAt=${debugDateTime(note.deletedAt)} ; displayDate=${debugDateTime(note.storedDisplayDate || note.displayDate)} ; firstDisplayDate=${debugDateTime(note.firstDisplayDate)}`],
     ["lastKnownActivityAt", debugDateTime(latestRemoteOrLocalDate)]
   ].map(([name, value]) => ({ name, value }));
 }
@@ -8995,7 +9272,7 @@ function renderDetail(note, context) {
   const isPlanningMirror = isPlanningMirrorNote(note);
   const canEditPlanningControlledFields = canWrite && !isPlanningMirror;
   const canEditDate = canWrite && canCurrentUserEditDate() && !isPlanningMirror;
-  const canToggleDone = canWrite && sameDay(state.selectedDate, new Date());
+  const canToggleDone = canWrite && canCurrentUserCompleteOnDate(state.selectedDate);
   const canToggleAcknowledgement = canWrite && !done && !note.priority && !isNew(note);
   const canDelete = canCurrentUserDeleteNote(note);
   const canPermanentlyDeleteHandwritingOnly = canCurrentUserPermanentlyDeleteHandwritingOnlyNote(note);
@@ -9112,8 +9389,8 @@ function toggleDraftDoneButton(button) {
     return;
   }
 
-  if (!sameDay(state.selectedDate, new Date())) {
-    setStatus("Solde possible uniquement à la date du jour");
+  if (!canCurrentUserCompleteOnDate(state.selectedDate)) {
+    setStatus("Seul l'admin peut solder à une date antérieure. Les dates futures sont interdites.");
     return;
   }
 
@@ -12217,7 +12494,7 @@ function detailActionHint(note, done, canWrite, canToggleDone, canToggleAcknowle
   }
 
   if (!canToggleDone) {
-    return `<p class="detail-action-hint">Une consigne ne peut être soldée ou désoldée qu'à la date du jour.</p>`;
+    return `<p class="detail-action-hint">Seul l'admin peut solder à une date antérieure. Les dates futures sont interdites.</p>`;
   }
 
   if (canToggleAcknowledgement) {
@@ -12245,17 +12522,17 @@ async function toggleDone(note, context) {
   }
 
   const now = new Date();
-  const today = startOfDay(now);
-  if (!sameDay(state.selectedDate, today)) {
-    setStatus("Solde possible uniquement à la date du jour");
+  const completionDay = startOfDay(state.selectedDate);
+  if (!canCurrentUserCompleteOnDate(completionDay)) {
+    setStatus("Seul l'admin peut solder à une date antérieure. Les dates futures sont interdites.");
     return;
   }
 
-  const key = completionStorageKey(context, today);
+  const key = completionStorageKey(context, completionDay);
   const alreadyDone = isDoneInContext(note, context);
-  const completionDate = dateWithTime(today, now);
+  const completionDate = dateWithTime(completionDay, now);
   const removedCompletions = alreadyDone
-    ? activeCompletions(note).filter((completion) => completion.context === context && sameDay(completion.date, today))
+    ? activeCompletions(note).filter((completion) => completion.context === context && sameDay(completion.date, completionDay))
     : [];
   const completions = alreadyDone
     ? note.completions
@@ -12869,8 +13146,8 @@ async function saveDetailEdit(note, options = {}) {
   const selectedDoneDate = options.doneDate
     ? startOfDay(options.doneDate)
     : initialDone
-      ? visibleCompletionDayInContext(note, context, startOfDay(new Date()))
-      : startOfDay(new Date());
+      ? visibleCompletionDayInContext(note, context, startOfDay(state.selectedDate))
+      : startOfDay(state.selectedDate);
   const now = new Date();
   const modificationDate = dateWithTime(modificationDay, now);
   const revisions = [...note.revisions];
@@ -12893,13 +13170,14 @@ async function saveDetailEdit(note, options = {}) {
     return;
   }
 
-  if (doneChanged && !sameDay(state.selectedDate, new Date())) {
-    setStatus("Solde possible uniquement à la date du jour");
+  if (doneChanged && (!canCurrentUserCompleteOnDate(state.selectedDate)
+    || (draftDone && !canCurrentUserCompleteOnDate(selectedDoneDate)))) {
+    setStatus("Seul l'admin peut solder à une date antérieure. Les dates futures sont interdites.");
     refreshDetail();
     return;
   }
 
-  if (!options.skipDoneDateConfirmation && doneChanged && draftDone && !sameDay(selectedDoneDate, new Date())) {
+  if (!isAdminSession() && !options.skipDoneDateConfirmation && doneChanged && draftDone && !sameDay(selectedDoneDate, new Date())) {
     showDoneDateConfirmation(note, startOfDay(new Date()), options);
     return;
   }
@@ -13640,10 +13918,20 @@ function activeCompletions(note) {
   return note.completions.filter((completion) => !isCompletionCancelled(note, completion));
 }
 
+function hasAllNoteContextsCompleted(note) {
+  const contexts = [...(note.isGeneral ? [generalName] : []), ...(note.simulatorNames || [])];
+  if (!contexts.length) return false;
+  const completed = note.completions.length
+    ? activeCompletions(note).map((completion) => completion.context)
+    : (note.completedContexts || []).map((key) => key.split("#")[0]);
+  const completedKeys = new Set(completed.map(normalizeKey));
+  return contexts.every((context) => completedKeys.has(normalizeKey(context)));
+}
+
 function handoverIndexFields(note) {
   const syncState = note.deletedAt
     ? "deleted"
-    : activeCompletions(note).length > 0 ? "archived" : "active";
+    : hasAllNoteContextsCompleted(note) ? "archived" : "active";
   const relevantDate = lastRealtimeRelevantDate(note);
   const realtimeActiveUntil = syncState === "active"
     ? activeRealtimeUntil
@@ -13666,6 +13954,9 @@ function handoverVisibilityFields(note, now = new Date()) {
     };
   }
 
+  if (!hasAllNoteContextsCompleted(note)) {
+    return { visibilityState: "visible", visibleUntil: null };
+  }
   const visibleUntil = activeCompletions(note)
     .map((completion) => visibleUntilForEventDate(completion.date))
     .filter(Boolean)
@@ -15573,6 +15864,12 @@ function canCurrentUserWrite() {
 
 function canCurrentUserModifySelectedDate() {
   return canCurrentUserWrite() && (isAdminSession() || state.selectedDate >= startOfDay(new Date()));
+}
+
+function canCurrentUserCompleteOnDate(date) {
+  const day = startOfDay(date);
+  const today = startOfDay(new Date());
+  return canCurrentUserWrite() && (sameDay(day, today) || (isAdminSession() && day < today));
 }
 
 function canCurrentUserEditDate() {

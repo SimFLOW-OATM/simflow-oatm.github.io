@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>SimFLOW Web</title>
-  <link rel="stylesheet" href="./styles.css?v=1.93">
+  <link rel="stylesheet" href="./styles.css?v=1.94-r1">
   <script>
     if (window.location.protocol === "file:") {
       window.location.replace("http://127.0.0.1:8766/");
@@ -22,7 +22,7 @@
           <button class="brand-reset-button" id="brandResetButton" type="button" title="Réinitialiser l'affichage">
             <img class="brand-logo" src="./assets/logo.png" alt="SimFLOW">
           </button>
-          <span class="web-version-label" id="webVersionBadge" aria-label="Version web">V1.93</span>
+          <span class="web-version-label" id="webVersionBadge" aria-label="Version web">V1.94</span>
           <button class="data-refresh-indicator" id="dataRefreshIndicator" type="button">
             <svg class="data-refresh-icon" viewBox="0 0 24 24" aria-hidden="true">
               <path d="M3 12a9 9 0 0 1 15.2-6.5"></path>
@@ -70,6 +70,40 @@
 
         <section class="sidebar-section">
           <div class="team-presence-list" id="teamPresenceList"></div>
+        </section>
+
+        <section class="sidebar-section night-planning-sidebar-tools hidden" id="nightPlanningSidebarTools" aria-label="Outils de planification de nuit">
+          <div id="nightPlanningGeneralTools">
+            <h2 class="night-planning-sidebar-title">Organisation Vacation</h2>
+            <button class="night-planning-return-consignes" type="button" data-night-planning-action="return-consignes">Retour aux consignes</button>
+            <div class="night-planning-sidebar-navigation">
+              <button type="button" data-night-planning-action="view-planning">Planning</button>
+              <button type="button" data-night-planning-action="view-settings" data-night-planning-admin-only>Paramètres simulateurs</button>
+              <button class="is-primary" type="button" data-night-planning-action="export">Imprimer</button>
+            </div>
+          </div>
+          <div class="night-planning-planning-tools hidden" id="nightPlanningPlanningTools">
+            <div class="night-planning-sidebar-heading">
+              <h2>Planning</h2>
+              <button class="night-planning-sidebar-back" type="button" data-night-planning-action="back">Retour</button>
+            </div>
+            <section class="night-planning-recognition-section">
+              <div class="night-planning-sidebar-actions">
+                <button class="is-primary" type="button" data-night-planning-action="paste">Coller Planning</button>
+                <button class="night-planning-sidebar-point" type="button" data-night-planning-action="point">Pointage Manuel</button>
+                <button type="button" data-night-planning-action="analyze" data-night-planning-admin-only>Pointage Automatique (béta)</button>
+                <button type="button" data-night-planning-action="recalculate">Réinitialiser</button>
+                <button class="night-planning-clear-capture" type="button" data-night-planning-action="clear">Effacer le planning</button>
+              </div>
+              <p class="night-planning-sidebar-status" id="nightPlanningSidebarStatus"></p>
+              <div class="night-planning-magnifier-tools">
+                <button type="button" data-night-planning-action="magnify" aria-label="Loupe ×2" aria-pressed="false" title="Loupe ×2">
+                  <!-- lucide search, ISC license -->
+                  <svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+                </button>
+              </div>
+            </section>
+          </div>
         </section>
 
         <div id="planningSidebarNav">
@@ -128,7 +162,7 @@
           </label>
         </section>
 
-        <div class="sidebar-separator"></div>
+        <div class="sidebar-separator" id="notesSearchSeparator"></div>
 
         <section class="sidebar-section" id="notesSearchSection">
           <div class="search-row">
@@ -222,6 +256,15 @@
         Aucune consigne à afficher pour cette sélection.
       </section>
 
+      <section class="night-planning-view hidden" id="nightPlanningView" aria-label="Planification de la nuit">
+        <iframe
+          id="nightPlanningFrame"
+          title="Planification de la nuit"
+          loading="eager"
+          allow="clipboard-read; clipboard-write">
+        </iframe>
+      </section>
+
       <section class="note-groups" id="noteGroups"></section>
     </main>
   </div>
@@ -287,6 +330,13 @@
     </section>
   </div>
 
-  <script type="module" src="./app.js?v=1.93"></script>
+  <script type="module" src="./app.js?v=1.94-r1"></script>
+<div id="nightPlanningBusyOverlay" class="planning-busy-overlay" hidden>
+  <div class="planning-busy-dialog" role="dialog" aria-modal="true" aria-labelledby="nightPlanningBusyTitle" tabindex="-1">
+    <span class="planning-busy-spinner" aria-hidden="true"></span>
+    <h2 id="nightPlanningBusyTitle">Traitement du planning</h2>
+    <p id="nightPlanningBusyMessage" role="status" aria-live="polite">Veuillez patienter...</p>
+  </div>
+</div>
 </body>
 </html>

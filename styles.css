@@ -557,6 +557,26 @@ body.requires-login .login-panel > :not(.sidebar-login-button) {
   background: #37105f;
 }
 
+.shift-pill-button {
+  min-height: 0;
+  border: 0;
+  font-family: inherit;
+  line-height: inherit;
+  cursor: pointer;
+  box-shadow: 0 0 0 0 rgba(55, 16, 95, 0.25);
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+.shift-pill-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 3px 9px rgba(55, 16, 95, 0.28);
+}
+
+.shift-pill-button:focus-visible {
+  outline: 3px solid rgba(55, 16, 95, 0.28);
+  outline-offset: 2px;
+}
+
 .switch-row {
   display: grid;
   grid-template-columns: 22px minmax(0, 1fr) auto;
@@ -1056,6 +1076,215 @@ body.requires-login .login-panel > :not(.sidebar-login-button) {
   margin-bottom: 0;
 }
 
+.night-planning-sidebar-tools {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(22, 77, 130, 0.28);
+}
+
+.night-planning-sidebar-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.night-planning-sidebar-title {
+  margin: 0;
+  color: var(--ink);
+  font-size: 15px;
+  text-transform: none;
+}
+
+#nightPlanningGeneralTools {
+  display: grid;
+  gap: 8px;
+}
+
+.night-planning-sidebar-navigation,
+.night-planning-planning-tools {
+  display: grid;
+  gap: 8px;
+}
+
+.night-planning-planning-tools .night-planning-sidebar-heading {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.night-planning-planning-tools button {
+  width: 100%;
+}
+
+.night-planning-sidebar-navigation {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.night-planning-sidebar-navigation [data-night-planning-action="view-planning"],
+.night-planning-sidebar-navigation [data-night-planning-action="view-settings"],
+.night-planning-sidebar-navigation [data-night-planning-action="export"] {
+  grid-column: 1 / -1;
+}
+
+.night-planning-planning-tools {
+  padding-top: 10px;
+  border-top: 1px solid rgba(22, 77, 130, 0.2);
+}
+
+.night-planning-sidebar-heading h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 15px;
+  text-transform: none;
+}
+
+.night-planning-sidebar-tools button {
+  min-height: 34px;
+  border: 1px solid rgba(47, 128, 237, 0.2);
+  border-radius: 8px;
+  padding: 5px 8px;
+  color: var(--blue-dark);
+  background: rgba(255, 255, 255, 0.7);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.night-planning-sidebar-tools button.is-primary,
+.night-planning-sidebar-tools button.is-active {
+  color: #ffffff;
+  background: var(--blue-dark);
+}
+
+.night-planning-sidebar-tools button.night-planning-clear-capture {
+  grid-column: 1 / -1;
+  color: #9f2d2d;
+  border-color: rgba(159, 45, 45, 0.28);
+}
+
+.night-planning-sidebar-back {
+  min-width: 66px;
+}
+
+.night-planning-return-consignes {
+  width: 100%;
+}
+
+.night-planning-sidebar-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+
+.night-planning-sidebar-actions [data-night-planning-action="analyze"] {
+  grid-column: 1 / -1;
+  color: #8a4300;
+  border-color: #e9a34f;
+  background: #ffdcae;
+}
+
+.night-planning-recognition-section {
+  display: grid;
+  gap: 7px;
+}
+
+.night-planning-sidebar-point {
+  width: 100%;
+}
+
+.night-planning-sidebar-tools button.night-planning-sidebar-point {
+  color: #205c35;
+  border-color: #8bc99b;
+  background: #d8f3dc;
+}
+
+.night-planning-sidebar-tools button.night-planning-sidebar-point.is-active {
+  border-color: #428c55;
+  background: #b6e5bf;
+}
+
+.night-planning-sidebar-status {
+  margin: 0;
+  color: rgba(16, 21, 31, 0.68);
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.3;
+}
+
+.night-planning-sidebar-status:empty {
+  display: none;
+}
+
+.night-planning-sidebar-simulator {
+  margin: 0;
+}
+
+.night-planning-sidebar-simulator select {
+  min-height: 36px;
+  margin-top: 6px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.night-planning-sidebar-markers {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.night-planning-sidebar-markers button {
+  min-width: 0;
+  padding: 4px 2px;
+  font-size: 10px;
+}
+
+.planning-busy-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(12, 24, 30, 0.4);
+}
+.planning-busy-overlay[hidden] { display: none; }
+.planning-busy-dialog {
+  width: min(360px, 100%);
+  box-sizing: border-box;
+  padding: 28px 24px;
+  border-radius: 8px;
+  background: white;
+  color: #192525;
+  text-align: center;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.22);
+}
+.planning-busy-dialog h2 { margin: 16px 0 8px; font-size: 18px; }
+.planning-busy-dialog p { margin: 0; font-size: 14px; line-height: 1.45; }
+.planning-busy-spinner {
+  display: inline-block;
+  width: 32px;
+  height: 32px;
+  border: 3px solid #d5e5eb;
+  border-top-color: #1f5f86;
+  border-radius: 50%;
+  animation: planning-busy-spin 0.9s linear infinite;
+}
+@keyframes planning-busy-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .planning-busy-spinner { animation: none; } }
+
+.night-planning-magnifier-tools {
+  display: flex;
+  justify-content: center;
+}
+
+.night-planning-magnifier-tools button {
+  width: 100%;
+  height: 44px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+}
+
 .simulator-chip {
   display: flex;
   align-items: center;
@@ -1091,6 +1320,34 @@ body.planning-view .note-groups {
 
 body.planning-view .topbar {
   display: none;
+}
+
+body.night-planning-view-active .content {
+  height: 100vh;
+  padding: 0;
+  overflow: hidden;
+}
+
+body.night-planning-view-active .topbar,
+body.night-planning-view-active #emptyState,
+body.night-planning-view-active #planningSidebarNav,
+body.night-planning-view-active #notesFilterSection,
+body.night-planning-view-active #notesSearchSection {
+  display: none;
+}
+
+.night-planning-view {
+  width: 100%;
+  height: 100vh;
+  min-height: 720px;
+}
+
+.night-planning-view iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #f5f7f8;
 }
 
 body.planning-view #planningSidebarNav,
@@ -2521,6 +2778,24 @@ h1:empty + p {
   padding-right: 16px;
   font-size: 14px;
   font-weight: 900;
+}
+
+.note-multi-simulator-badge {
+  display: inline-block;
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #e2f2f5;
+  color: #175363;
+  border: 1px solid #95c9d2;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.3;
+  min-width: 0;
+  min-height: 21px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .note-text {
