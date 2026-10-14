@@ -1,0 +1,19 @@
+{
+  "name": "Organisation Vacation",
+  "short_name": "Vacation",
+  "description": "Organisation des interventions simulateurs pour une vacation.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f5f7f8",
+  "theme_color": "#174d4b",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

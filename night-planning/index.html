@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#174d4b">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Organisation Vacation">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <title>Organisation Vacation</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./icon.svg">
+  <link rel="stylesheet" href="./styles.css?v=20261009-0115">
+</head>
+<body>
+<div id="app-root">
+  <main class="app-shell">
+    <section class="workspace">
+      <header class="topbar">
+        <div>
+          <h1>Organisation Vacation</h1>
+          <p class="app-version">Version 2026.10.09.109</p>
+        </div>
+        <div class="topbar-actions">
+          <button id="planningBtn" class="ghost-button" type="button">Planning</button>
+          <button id="settingsBtn" class="ghost-button" type="button">Paramètres simulateurs</button>
+          <button id="printBtn" class="primary-button" type="button">Imprimer</button>
+        </div>
+      </header>
+
+      <div id="shiftView">
+        <section class="panel setup-panel" aria-label="Paramètres de la vacation">
+          <label>
+            Date
+            <input id="shiftDate" type="date">
+          </label>
+        </section>
+
+        <section>
+          <div class="panel">
+            <div class="section-header">
+              <div>
+                <h2>Répartition</h2>
+              </div>
+            </div>
+            <div id="simulatorGrid" class="simulator-grid"></div>
+          </div>
+        </section>
+      </div>
+
+      <section id="settingsView" class="settings-view" hidden>
+        <div class="panel">
+          <div class="section-header">
+            <div>
+              <h2>Simulateurs</h2>
+              <p>Définis le nom affiché dans l'app et le texte utilisé pour reconnaître chaque ligne du planning.</p>
+            </div>
+            <div class="section-actions">
+              <button id="addSimulatorBtn" class="ghost-button" type="button">Ajouter</button>
+              <button id="backToShiftBtn" class="ghost-button" type="button">Retour</button>
+            </div>
+          </div>
+          <div class="settings-transfer-actions" aria-label="Transfert des paramètres simulateurs">
+            <button id="exportSimulatorSettingsBtn" class="primary-button" type="button">Exporter les paramètres</button>
+            <button id="importSimulatorSettingsBtn" class="ghost-button" type="button">Importer les paramètres</button>
+            <input id="importSimulatorSettingsInput" type="file" accept="application/json,.json" hidden>
+          </div>
+          <div id="simulatorSettingsList" class="settings-list"></div>
+        </div>
+      </section>
+
+      <section id="planningView" class="settings-view" hidden>
+        <div class="planning-workspace">
+          <aside class="planning-sidebar" aria-label="Outils du planning">
+            <div class="planning-sidebar-header">
+              <div>
+                <h2>Planning verso</h2>
+                <p>L'image copiée est ajoutée au dos du PDF.</p>
+              </div>
+              <button id="backFromPlanningBtn" class="ghost-button" type="button">Retour</button>
+            </div>
+            <div class="planning-actions">
+              <button id="pastePlanningCaptureBtn" class="primary-button" type="button">Coller Planning</button>
+              <button id="showDetectedEndsBtn" class="ghost-button" type="button" aria-pressed="false">Pointage Manuel</button>
+              <button id="analyzePlanningAiBtn" class="ghost-button" type="button" hidden>Pointage Automatique (béta)</button>
+              <button id="recalculatePlanningBtn" class="ghost-button" type="button">Réinitialiser</button>
+              <button id="clearPlanningCaptureBtn" class="ghost-button" type="button">Effacer le planning</button>
+            </div>
+            <p id="planningStatus" class="planning-status"></p>
+            <div class="planning-magnifier-tools">
+              <button id="planningMagnifierBtn" class="ghost-button" type="button" aria-label="Loupe ×2" aria-pressed="false" title="Loupe ×2">
+                <!-- lucide search, ISC license -->
+                <svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+              </button>
+            </div>
+          </aside>
+          <div class="planning-canvas-pane">
+            <div id="planningImageEditor" class="planning-image-editor" hidden>
+              <img id="planningPreviewImage" class="planning-preview-image" alt="Capture du planning">
+              <div id="planningAnnotationOverlay" class="planning-annotation-overlay"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <div id="layoutResizer" class="layout-resizer" role="separator" aria-label="Modifier la largeur des deux volets" aria-orientation="vertical" aria-valuemin="30" aria-valuemax="70" aria-valuenow="50" tabindex="0"></div>
+
+    <aside class="preview-sheet" aria-label="Aperçu de la feuille PDF">
+      <div class="sheet-page">
+        <header class="sheet-header">
+          <p class="sheet-kicker">Feuille de vacation</p>
+          <div class="sheet-meta">
+            <span id="previewDate"></span>
+          </div>
+        </header>
+        <table class="assignment-table">
+          <thead>
+            <tr>
+              <th>Simu</th>
+              <th>A/R</th>
+              <th>Nom</th>
+              <th>Tâches</th>
+              <th>MAINT.</th>
+              <th>Before</th>
+            </tr>
+          </thead>
+          <tbody id="previewRows"></tbody>
+        </table>
+      </div>
+      <div id="planningPrintPage" class="sheet-page planning-print-page" hidden>
+        <img id="planningPrintImage" alt="Planning capturé">
+      </div>
+    </aside>
+  </main>
+</div>
+
+<div id="planningValidationDialog" class="validation-dialog-backdrop" role="dialog" aria-modal="true" aria-labelledby="planningValidationTitle">
+  <div class="validation-dialog-panel">
+    <div class="validation-dialog-header">
+      <h2 id="planningValidationTitle">Capture incomplète</h2>
+      <button id="closePlanningValidationBtn" class="dialog-close-button" type="button" aria-label="Fermer">&times;</button>
+    </div>
+    <p id="planningValidationMessage"></p>
+    <ul id="planningValidationProblems" class="validation-problems"></ul>
+    <div class="validation-dialog-actions">
+      <button id="confirmPlanningValidationBtn" class="primary-button" type="button">Compris</button>
+    </div>
+  </div>
+</div>
+
+<div id="pendingPlanningMarkerDialog" class="validation-dialog-backdrop" role="dialog" aria-modal="true" aria-labelledby="pendingPlanningMarkerTitle">
+  <div class="validation-dialog-panel pending-marker-dialog-panel">
+    <div class="validation-dialog-header">
+      <h2 id="pendingPlanningMarkerTitle">Corriger le bloc</h2>
+      <button id="closePendingPlanningMarkerBtn" class="dialog-close-button" type="button" aria-label="Fermer">&times;</button>
+    </div>
+    <form id="pendingPlanningMarkerForm" class="pending-marker-form">
+      <label class="pending-marker-time-field">
+        Simulateur
+        <select id="pendingPlanningSimulator" required></select>
+      </label>
+      <fieldset class="pending-marker-type-fieldset">
+        <legend>Type de séance</legend>
+        <div class="pending-marker-type-options">
+          <label><input type="radio" name="pendingMarkerType" value="stop"> Arrêt</label>
+          <label><input type="radio" name="pendingMarkerType" value="restart"> Reprise</label>
+          <label><input type="radio" name="pendingMarkerType" value="pro1"> PRO1</label>
+          <label><input type="radio" name="pendingMarkerType" value="pro2"> PRO2</label>
+        </div>
+      </fieldset>
+      <label id="pendingPlanningTimeField" class="pending-marker-time-field">
+        Horaire
+        <input id="pendingPlanningTime" type="time" step="300">
+      </label>
+      <p id="pendingPlanningMarkerError" class="pending-marker-error" role="alert"></p>
+      <div class="validation-dialog-actions pending-marker-dialog-actions">
+        <button id="cancelPendingPlanningMarkerBtn" class="ghost-button" type="button">Annuler</button>
+        <button class="primary-button" type="submit">Valider</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script type="module" src="./admin-loader.js?v=20261014-0047"></script>
+<div id="planningBusyOverlay" class="planning-busy-overlay" hidden>
+  <div class="planning-busy-dialog" role="dialog" aria-modal="true" aria-labelledby="planningBusyTitle" tabindex="-1">
+    <span class="planning-busy-spinner" aria-hidden="true"></span>
+    <h2 id="planningBusyTitle">Traitement du planning</h2>
+    <p id="planningBusyMessage" role="status" aria-live="polite">Veuillez patienter...</p>
+  </div>
+</div>
+</body>
+</html>
