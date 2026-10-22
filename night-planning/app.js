@@ -198,6 +198,7 @@ async function refreshNightPlanningAccess(force = true) {
     if (state.shiftDate === date) nightPlanningAccessCache = { date, access, updatedAt: Date.now() };
   }
   if (state.shiftDate !== date) return;
+  renderPlanningAuthors(access);
   const canEdit = access.canEdit === true;
   if (nightPlanningCanEdit !== canEdit) {
     nightPlanningCanEdit = canEdit;
@@ -220,8 +221,12 @@ async function requirePlanningEdit(claim = false, forceRefresh = false) {
         nightPlanningLockRequests.set(date, request);
       }
       try {
-        await request;
-        if (nightPlanningAccessCache?.date === date) nightPlanningAccessCache.access = { ...nightPlanningAccessCache.access, locked: true };
+        const result = await request;
+        if (nightPlanningAccessCache?.date === date) {
+          nightPlanningAccessCache.access = { ...nightPlanningAccessCache.access, locked: true,
+            authorDisplayName: nightPlanningAccessCache.access.authorDisplayName || result?.authorDisplayName || "" };
+          renderPlanningAuthors(nightPlanningAccessCache.access);
+        }
       } finally {
         if (nightPlanningLockRequests.get(date) === request) nightPlanningLockRequests.delete(date);
       }
@@ -280,6 +285,7 @@ async function publishPlanningCapture(shift, shiftDate, reference, source) {
       && !planningCaptureDeletions.has(shiftDate)) {
       shift.sharedCaptureReference = revision;
       saveState();
+      if (state.shiftDate === shiftDate) void refreshNightPlanningAccess(true);
     }
   } catch (error) {
     console.warn("Partage du planning iOS impossible", error);
@@ -339,6 +345,7 @@ const fields = {
   simulatorGrid: document.getElementById("simulatorGrid"),
   simulatorSettingsList: document.getElementById("simulatorSettingsList"),
   previewDate: document.getElementById("previewDate"),
+  previewPlanningAuthors: document.getElementById("previewPlanningAuthors"),
   previewRows: document.getElementById("previewRows"),
   addSimulatorBtn: document.getElementById("addSimulatorBtn"),
   exportSimulatorSettingsBtn: document.getElementById("exportSimulatorSettingsBtn"),
@@ -666,6 +673,38 @@ function applyPrivateActions(targetState, privateActions) {
   });
 }
 
+function applySharedLaunchSheet(launchSheet) {
+  if (!Array.isArray(launchSheet?.rows)) return;
+
+  const simulatorKey = (value) => String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleUpperCase("fr-FR")
+    .replace(/[^A-Z0-9]/g, "");
+  const rowsBySimulator = new Map(launchSheet.rows.map((row) => [
+    simulatorKey(row?.name),
+    row
+  ]));
+  const shift = getCurrentShift();
+
+  state.simulators.forEach((simulator, index) => {
+    const row = rowsBySimulator.get(simulatorKey(simulator.name)) || launchSheet.rows[index];
+    if (!row) return;
+
+    const assignment = shift.assignments[index] || createDefaultAssignment(index);
+    const ownTasks = Array.isArray(assignment.tasks) ? assignment.tasks : [];
+    const sharedTasks = Array.isArray(row.tasks) ? structuredClone(row.tasks) : [];
+    shift.assignments[index] = {
+      ...assignment,
+      stopTime: assignment.stopTime || String(row.stopTime || ""),
+      restartTime: assignment.restartTime || String(row.restartTime || ""),
+      isPro1: Boolean(assignment.isPro1 || row.isPro1),
+      isPro2: Boolean(assignment.isPro2 || row.isPro2),
+      tasks: ownTasks.some((task) => String(task || "").trim()) ? ownTasks : sharedTasks
+    };
+  });
+}
+
 function loadPrivateActionsFromBrowser() {
   const saved = localStorage.getItem(getPrivateActionsStorageKey());
   if (saved) {
@@ -721,14 +760,28 @@ async function loadState() {
       ...(shift.assignments[index] || {}), ...(shared.schedule?.[index] || {}) }));
     savedAnnotationStates.set(state.shiftDate, JSON.stringify(shared));
   }
-  if (access?.hasCapture && (!getCurrentShift().planningCapturePath || getCurrentShift().cloudCaptureHash !== access.captureHash)) {
-    const capture = await window.simflowLoadNightPlanningCapture(state.shiftDate);
-    if (capture.imageDataUrl) {
-      const shift = getCurrentShift();
-      shift.planningCapturePath = await storePlanningCaptureInBrowser(capture.imageDataUrl, state.shiftDate);
-      shift.planningCaptureRevision = crypto.randomUUID();
-      shift.sharedCaptureReference = shift.planningCaptureRevision;
-      shift.cloudCaptureHash = access.captureHash;
+  if (typeof window.simflowLoadNightPlanningCapture === "function") {
+    try {
+      const currentShift = getCurrentShift();
+      const capture = await window.simflowLoadNightPlanningCapture(state.shiftDate, {
+        knownImageHash: access?.hasCapture && currentShift.planningCapturePath
+          ? currentShift.cloudCaptureHash
+          : ""
+      });
+      applySharedLaunchSheet(capture.launchSheet);
+      if (capture.imageDataUrl) {
+        currentShift.planningCapturePath = await storePlanningCaptureInBrowser(capture.imageDataUrl, state.shiftDate);
+        currentShift.planningCaptureRevision = crypto.randomUUID();
+        currentShift.sharedCaptureReference = currentShift.planningCaptureRevision;
+      } else if (!access?.hasCapture) {
+        currentShift.planningCapturePath = "";
+        currentShift.cloudCaptureHash = "";
+      }
+      if (access?.hasCapture) {
+        currentShift.cloudCaptureHash = capture.imageHash || access.captureHash || currentShift.cloudCaptureHash;
+      }
+    } catch (error) {
+      console.warn("Chargement de la feuille de lancement partagée impossible", error);
     }
   }
   try {
@@ -4022,7 +4075,18 @@ function shouldPrintBlankVacationSheet() {
   return !shift.planningCapturePath || !hasInformation;
 }
 
+function renderPlanningAuthors(access = nightPlanningAccessCache?.date === state.shiftDate ? nightPlanningAccessCache.access : null) {
+  const importer = access?.importerDisplayName || "";
+  const author = access?.authorDisplayName || "";
+  const text = importer && importer === author
+    ? `Import et pointage : ${importer}`
+    : [importer ? `Import : ${importer}` : "", author ? `Pointage : ${author}` : ""].filter(Boolean).join(" · ");
+  fields.previewPlanningAuthors.textContent = text;
+  fields.previewPlanningAuthors.hidden = !text;
+}
+
 function renderPreview({ blankSheet = false } = {}) {
+  renderPlanningAuthors();
   const shift = getCurrentShift();
   fields.previewDate.textContent = formatDate(state.shiftDate);
   const scheduledRowCount = blankSheet ? state.simulators.length : state.simulators.filter((_, index) => {

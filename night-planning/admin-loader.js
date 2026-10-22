@@ -77,7 +77,11 @@ if (!user) {
     window.simflowGetNightPlanningEditAccess = async (shiftDate) => (await getNightPlanningEditAccess({ shiftDate })).data;
     window.simflowClaimNightPlanningLock = async (shiftDate) => (await claimNightPlanningLock({ shiftDate })).data;
     window.simflowSaveNightPlanningAnnotations = async (shiftDate, state) => (await saveNightPlanningAnnotations({ shiftDate, state })).data;
-    window.simflowLoadNightPlanningCapture = async (shiftDate) => (await loadNightPlanningCapture({ shiftDate })).data;
+    window.simflowLoadNightPlanningCapture = async (shiftDate, options = {}) => (await loadNightPlanningCapture({
+      shiftDate,
+      knownImageHash: options.knownImageHash || "",
+      preferImageUrl: options.preferImageUrl === true
+    })).data;
     window.simflowSaveNightPlanningCapture = async (shiftDate, imageDataUrl) => {
       const result = await saveNightPlanningCapture({ shiftDate, imageDataUrl });
       return result.data;
@@ -100,6 +104,6 @@ if (!user) {
     };
     await loadClassicScript("./data-bootstrap.js?v=20260719-0040");
     window.simflowNightPlanningIsAdmin = isAdmin;
-    await loadClassicScript("./app.js?v=20261014-0197");
+    await loadClassicScript("./app.js?v=20261022-0200");
   }
 }

@@ -1306,6 +1306,19 @@ body.is-embedded .workspace {
   white-space: nowrap;
 }
 
+.sheet-planning-authors {
+  display: block;
+  font-size: 0.62rem;
+  font-weight: 400;
+  line-height: 1.15;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.sheet-planning-authors[hidden] {
+  display: none;
+}
+
 dt {
   color: #61706f;
   font-size: 0.72rem;
