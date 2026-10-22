@@ -35,7 +35,7 @@ const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
 const WEB_APP_VERSION = "V1.94";
 const WEB_APP_VERSION_DISPLAY = WEB_APP_VERSION;
-const NIGHT_PLANNING_EMBED_VERSION = "20261009-109";
+const NIGHT_PLANNING_EMBED_VERSION = "20261022-111";
 
 window.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
