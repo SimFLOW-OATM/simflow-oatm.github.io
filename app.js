@@ -33,7 +33,7 @@ const firebaseConfig = {
 
 const generalName = "General";
 const generalSimulatorID = "00000000-0000-0000-0000-000000000001";
-const WEB_APP_VERSION = "V1.94";
+const WEB_APP_VERSION = "V1.95";
 const WEB_APP_VERSION_DISPLAY = WEB_APP_VERSION;
 const NIGHT_PLANNING_EMBED_VERSION = "20261022-111";
 
@@ -3229,7 +3229,6 @@ async function loadPlanningRowsFromFirestore({ force = false, includeHistory = s
       }));
       state.planningRows = planningRowsWithImportedFallback(firestoreRows);
       state.isPlanningFirestoreLoaded = true;
-      importMissingRegulatoryPlanningRowsIfNeeded(firestoreRows);
       refreshRegulatoryPlanningMirrorLabelsIfNeeded();
       savePlanningRowsLocal();
       if (!state.activePlanningSort) {
@@ -3241,16 +3240,9 @@ async function loadPlanningRowsFromFirestore({ force = false, includeHistory = s
       return;
     }
 
-    if (!state.isPlanningFirestoreLoaded && canCurrentUserEditPlanning()) {
-      normalizedPlanningRows().forEach((row) => {
-        savePlanningRows(row, {
-          before: null,
-          changedFields: Object.keys(planningFirestorePayload(row)),
-          action: "imported"
-        });
-      });
-      state.isPlanningFirestoreLoaded = true;
-    }
+    // Loading a filtered planning view must never replay local archives into
+    // Firestore. Imports are migrations, not part of routine synchronisation.
+    state.isPlanningFirestoreLoaded = true;
   } catch (error) {
     setStatus(error.message || "Planning Firestore indisponible");
   } finally {
@@ -8333,7 +8325,7 @@ function groupedNotes() {
 
 function renderGroup(group) {
   const countLabel = `${group.notes.length} consigne${group.notes.length > 1 ? "s" : ""}`;
-  const canCreateOnSelectedDate = isAdminSession() || state.selectedDate >= startOfDay(new Date());
+  const canCreateOnSelectedDate = canEditLinksDestination([group.simulator.name]) && (isAdminSession() || state.selectedDate >= startOfDay(new Date()));
   return `
     <section
       class="simu-group"
@@ -8424,7 +8416,7 @@ function renderNote(note, context) {
       <div class="badges">${badges}</div>
       ${leadingBadges}
       ${dailyDiffHTML
-        ? `<div class="note-text revision-diff${note.title ? " has-title" : ""}">${dailyDiffHTML}</div>`
+        ? renderRevisionCardContent(note, dailyDiffHTML)
         : `${note.title ? `<h2 class="note-title">${title}</h2>` : ""}
       ${note.text ? `<div class="note-text rich-text-preview">${richTextPreviewHTML(note)}</div>` : note.title ? "" : "<p class=\"note-text muted\">Note manuscrite</p>"}`}
       ${handwriting ? renderHandwritingCardPreview(handwriting) : ""}
@@ -8492,14 +8484,18 @@ function normalizeRegulatoryPlanningMirrorTitle(value) {
 }
 
 function openDetail(noteId, context, options = {}) {
+  const note = state.notes.find((candidate) => candidate.id === noteId);
+  if (!canEditLinksDestination([context]) || !canEditLinksDestination(note?.simulatorNames)) return;
   state.selectedCreate = null;
   state.pendingHandwritingClear = null;
   state.selectedDetail = { noteId, context };
+  elements.detailBody.querySelector("#detailEditText")?.removeAttribute("data-note-id");
   elements.detailOverlay.classList.toggle("over-admin", Boolean(options.overAdmin));
   refreshDetail();
 }
 
 function openCreate(context) {
+  if (!canEditLinksDestination([context])) return;
   if (!canCurrentUserWrite()) {
     setStatus("Connexion requise pour créer une consigne");
     return;
@@ -9194,7 +9190,28 @@ function refreshDetail() {
     return;
   }
 
+  const editor = elements.detailBody.querySelector("#detailEditText");
+  const titleInput = elements.detailBody.querySelector("#detailEditTitle");
+  const sameEditor = editor?.dataset.noteId === note.id
+    && editor.dataset.context === state.selectedDetail.context;
+  const hasUnsavedText = sameEditor && (
+    editor.innerHTML !== editor.dataset.initialHtml
+    || (titleInput?.value || "") !== editor.dataset.initialTitle
+  );
+  // Live snapshots also call refreshDetail. Keep the DOM (including links,
+  // selection and pending form choices) until the user saves or closes it.
+  if (hasUnsavedText && !state.isSaving && canCurrentUserModifySelectedDate()) {
+    return;
+  }
+
   renderDetail(note, state.selectedDetail.context);
+  const renderedEditor = elements.detailBody.querySelector("#detailEditText");
+  if (renderedEditor) {
+    renderedEditor.dataset.noteId = note.id;
+    renderedEditor.dataset.context = state.selectedDetail.context;
+    renderedEditor.dataset.initialHtml = renderedEditor.innerHTML;
+    renderedEditor.dataset.initialTitle = elements.detailBody.querySelector("#detailEditTitle")?.value || "";
+  }
 }
 
 function renderCreate(context) {
@@ -9268,7 +9285,7 @@ function renderDetail(note, context) {
   const title = note.title.trim() || "Consigne";
   const timeline = timelineEvents(note, context);
   state.detailTimelineEvents = timeline;
-  const canWrite = canCurrentUserModifySelectedDate();
+  const canWrite = canCurrentUserModifySelectedDate(note);
   const isPlanningMirror = isPlanningMirrorNote(note);
   const canEditPlanningControlledFields = canWrite && !isPlanningMirror;
   const canEditDate = canWrite && canCurrentUserEditDate() && !isPlanningMirror;
@@ -9912,6 +9929,7 @@ function renderSimulatorToggles(note, options = {}) {
   const simulatorRows = [
     { name: generalName, label: "General" },
     ...visibleSimulatorContexts()
+      .filter((simulator) => canEditLinksDestination([simulator.name]) || note.simulatorNames.includes(simulator.name))
       .map((simulator) => ({ name: simulator.name, label: simulator.name }))
   ];
 
@@ -12869,6 +12887,11 @@ async function saveNewNote(options = {}) {
   const priority = document.querySelector("#detailEditPriority")?.value || "";
   const destination = collectDetailDestination(state.selectedCreate?.context || generalName);
 
+  if (!canEditLinksDestination(destination.simulatorNames)) {
+    setStatus("Seul l’admin peut ajouter ou modifier une consigne dans Liens.");
+    return;
+  }
+
   if (!title && !text) {
     setStatus("Saisis un titre ou une consigne.");
     return;
@@ -13135,6 +13158,10 @@ async function saveDetailEdit(note, options = {}) {
   const destination = isPlanningMirror
     ? { isGeneral: note.isGeneral, simulatorNames: note.simulatorNames }
     : collectDetailDestination(state.selectedDetail?.context || generalName);
+  if (!canEditLinksDestination(destination.simulatorNames)) {
+    setStatus("Seul l’admin peut ajouter ou modifier une consigne dans Liens.");
+    return;
+  }
   const context = state.selectedDetail?.context || generalName;
   const doneButton = elements.detailBody.querySelector('[data-detail-action="toggle-done"]');
   const ackButton = elements.detailBody.querySelector('[data-detail-action="toggle-ack"]');
@@ -13735,6 +13762,10 @@ function normalizeRichTextLinkURL(value) {
   const candidate = /^[a-z][a-z\d+.-]*:/i.test(text) ? text : `https://${text}`;
   try {
     const url = new URL(candidate);
+    if (url.protocol === "onenote:") {
+      const nested = new URL(candidate.slice("onenote:".length));
+      return ["http:", "https:"].includes(nested.protocol) && nested.hostname ? url.href : "";
+    }
     return ["http:", "https:"].includes(url.protocol) ? url.href : "";
   } catch {
     return "";
@@ -14847,6 +14878,18 @@ function contentModificationDates(note) {
     .sort((a, b) => a - b);
 }
 
+function renderRevisionCardContent(note, html) {
+  if (!note.title) {
+    return `<div class="note-text rich-text-preview revision-diff">${html}</div>`;
+  }
+  // The diff renderer closes each styled run before emitting a line break.
+  // Keep the title outside note-text so body font rules cannot shrink it.
+  const firstBreak = html.indexOf("\n");
+  const titleHTML = firstBreak < 0 ? html : html.slice(0, firstBreak);
+  const bodyHTML = firstBreak < 0 ? "" : html.slice(firstBreak + 1);
+  return `<h2 class="note-title">${titleHTML}</h2>${bodyHTML ? `<div class="note-text rich-text-preview revision-diff">${bodyHTML}</div>` : ""}`;
+}
+
 function dailyModificationDiffHTML(note, showsActiveModificationNew = false) {
   if (isPeriodResultsMode()) {
     return "";
@@ -14870,7 +14913,7 @@ function dailyModificationDiffHTML(note, showsActiveModificationNew = false) {
 
   return revisionPair.hasPublicRevision
     ? renderCumulativeDailyTextDiff(revisionPair.revisions, note)
-    : escapeHtml(revisionPair.revision.text);
+    : renderAnnotatedDiffTokens([{ token: revisionPair.revision.text, highlighted: false }], note);
 }
 
 function latestContentRevisionPairOnDay(note, day) {
@@ -14925,7 +14968,19 @@ function isContentRevision(revision) {
     && !revision.newDestinationStorage;
 }
 
+function scheduledAIRACBadgeDate(note) {
+  const assignmentDate = note.firstDisplayDate || note.displayDate;
+  if (!note.isGeneral || !/^\s*Cycle\s+AIRAC\s+\d{4}\b/i.test(note.title || "")
+    || !note.createdAt || !assignmentDate
+    || startOfDay(note.createdAt) >= startOfDay(assignmentDate)) {
+    return null;
+  }
+  return startOfDay(assignmentDate);
+}
+
 function noteCreationNewEventDate(note) {
+  const scheduledDate = scheduledAIRACBadgeDate(note);
+  if (scheduledDate) return scheduledDate;
   if (isPlanningMirrorNote(note)) {
     return dateWithTime(note.firstDisplayDate || note.displayDate || note.createdAt, note.createdAt);
   }
@@ -14969,6 +15024,8 @@ function carryOverDayCount(note) {
 }
 
 function badgeOriginDate(note) {
+  const scheduledDate = scheduledAIRACBadgeDate(note);
+  if (scheduledDate) return scheduledDate;
   const assignmentDate = note.firstDisplayDate || note.displayDate || note.createdAt;
   if (isPlanningMirrorNote(note)) {
     return assignmentDate;
@@ -15489,6 +15546,7 @@ function renderAnnotatedDiffTokens(tokens, note) {
   let currentText = "";
   let currentHighlighted = false;
   let currentManualStyle = null;
+  let currentLink = "";
   let characterIndex = 0;
 
   const flush = () => {
@@ -15496,30 +15554,35 @@ function renderAnnotatedDiffTokens(tokens, note) {
       return;
     }
     const escaped = escapeHtml(currentText);
+    const linkedText = currentLink
+      ? `<a href="${escapeAttribute(currentLink)}" target="_blank" rel="noopener noreferrer">${escaped}</a>`
+      : escaped;
     if (currentHighlighted) {
       const hasManualBackground = /\bbackground(?:-color)?\s*:/i.test(currentManualStyle || "");
       const hasManualColor = /\bcolor\s*:/i.test(currentManualStyle || "");
       const highlightStyle = `${hasManualBackground ? "" : "background:#dcfce7;"}${hasManualColor ? "" : "color:#15803d;"}`;
       const combinedStyle = [currentManualStyle, highlightStyle].filter(Boolean).join("; ");
       const styleAttribute = combinedStyle ? ` style="${escapeAttribute(combinedStyle)}"` : "";
-      output.push(`<span class="diff-added"${styleAttribute}>${escaped}</span>`);
+      output.push(`<span class="diff-added"${styleAttribute}>${linkedText}</span>`);
     } else if (currentManualStyle) {
-      output.push(`<span style="${escapeAttribute(currentManualStyle)}">${escaped}</span>`);
+      output.push(`<span style="${escapeAttribute(currentManualStyle)}">${linkedText}</span>`);
     } else {
-      output.push(escaped);
+      output.push(linkedText);
     }
     currentText = "";
   };
 
   for (const token of tokens) {
     for (const character of token.token) {
-      const manualStyle = manualStyles[characterIndex] || null;
+      const manualStyle = manualStyles[characterIndex]?.style || null;
+      const link = manualStyles[characterIndex]?.link || "";
       const highlighted = character !== "\n" && token.highlighted;
 
       if (currentText && (
         character === "\n"
         || highlighted !== currentHighlighted
         || manualStyle !== currentManualStyle
+        || link !== currentLink
       )) {
         flush();
       }
@@ -15529,11 +15592,13 @@ function renderAnnotatedDiffTokens(tokens, note) {
         characterIndex += 1;
         currentHighlighted = false;
         currentManualStyle = null;
+        currentLink = "";
         continue;
       }
 
       currentHighlighted = highlighted;
       currentManualStyle = manualStyle;
+      currentLink = link;
       currentText += character;
       characterIndex += 1;
     }
@@ -15554,9 +15619,9 @@ function manualRichTextStylesByCharacter(note, expectedText = "") {
   const styles = [];
   const blockTags = new Set(["DIV", "P", "LI"]);
 
-  const appendCharacter = (character, style) => {
+  const appendCharacter = (character, style, link = "") => {
     text.push(character === "\u00a0" ? " " : character);
-    styles.push(style || null);
+    styles.push(style || link ? { style: style || "", link } : null);
   };
 
   const appendLineBreak = () => {
@@ -15565,10 +15630,10 @@ function manualRichTextStylesByCharacter(note, expectedText = "") {
     }
   };
 
-  const walk = (node, inheritedStyle = "") => {
+  const walk = (node, inheritedStyle = "", inheritedLink = "") => {
     if (node.nodeType === Node.TEXT_NODE) {
       for (const character of node.textContent || "") {
-        appendCharacter(character, inheritedStyle);
+        appendCharacter(character, inheritedStyle, inheritedLink);
       }
       return;
     }
@@ -15610,7 +15675,10 @@ function manualRichTextStylesByCharacter(note, expectedText = "") {
       styleParts.push(`color: ${color}`);
     }
     const nextStyle = styleParts.join("; ");
-    node.childNodes.forEach((child) => walk(child, nextStyle));
+    const nextLink = node.tagName === "A"
+      ? normalizeRichTextLinkURL(node.getAttribute("href"))
+      : inheritedLink;
+    node.childNodes.forEach((child) => walk(child, nextStyle, nextLink));
   };
 
   template.content.childNodes.forEach((node) => walk(node));
@@ -15627,31 +15695,28 @@ function manualRichTextStylesByCharacter(note, expectedText = "") {
   const normalizedExpectedText = String(expectedText || note.text || "")
     .replace(/\u00a0/g, " ")
     .trim();
-  if (richText === normalizedExpectedText) {
-    return styles;
+  const targetCharacters = Array.from(normalizedExpectedText);
+  const sourceCharacters = text;
+  const sourceContent = sourceCharacters.filter((character) => !/\s/u.test(character)).join("");
+  const align = (target) => {
+    if (target.filter((character) => !/\s/u.test(character)).join("") !== sourceContent) return null;
+    let sourceIndex = 0;
+    return target.map((character) => {
+      if (/\s/u.test(character)) {
+        if (sourceIndex < sourceCharacters.length && /\s/u.test(sourceCharacters[sourceIndex])) return styles[sourceIndex++];
+        return null;
+      }
+      while (sourceIndex < sourceCharacters.length && /\s/u.test(sourceCharacters[sourceIndex])) sourceIndex += 1;
+      return styles[sourceIndex++] || null;
+    });
+  };
+  const aligned = align(targetCharacters);
+  if (aligned) return aligned;
+  const firstBreak = targetCharacters.indexOf("\n");
+  if (firstBreak >= 0) {
+    const body = align(targetCharacters.slice(firstBreak + 1));
+    if (body) return [...Array(firstBreak + 1).fill(null), ...body];
   }
-
-  const start = richText.indexOf(normalizedExpectedText);
-  if (start >= 0) {
-    return styles.slice(start, start + normalizedExpectedText.length);
-  }
-
-  const normalizedNoteText = String(note.text || "")
-    .replace(/\u00a0/g, " ")
-    .trim();
-  if (richText === normalizedNoteText) {
-    const noteTextStart = normalizedExpectedText.indexOf(normalizedNoteText);
-    if (noteTextStart >= 0) {
-      const paddedStyles = Array.from({ length: normalizedExpectedText.length }, () => null);
-      styles.forEach((style, index) => {
-        if (noteTextStart + index < paddedStyles.length) {
-          paddedStyles[noteTextStart + index] = style;
-        }
-      });
-      return paddedStyles;
-    }
-  }
-
   return [];
 }
 
@@ -15862,8 +15927,13 @@ function canCurrentUserWrite() {
   return Boolean(state.currentUser?.role) && state.currentUser.role !== "consultation";
 }
 
-function canCurrentUserModifySelectedDate() {
-  return canCurrentUserWrite() && (isAdminSession() || state.selectedDate >= startOfDay(new Date()));
+function canEditLinksDestination(names) {
+  return isAdminSession() || !(names || []).includes("Liens");
+}
+
+function canCurrentUserModifySelectedDate(note = currentDetailNote()) {
+  return canCurrentUserWrite() && canEditLinksDestination(note?.simulatorNames)
+    && (isAdminSession() || state.selectedDate >= startOfDay(new Date()));
 }
 
 function canCurrentUserCompleteOnDate(date) {

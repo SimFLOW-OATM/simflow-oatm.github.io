@@ -2815,6 +2815,11 @@ h1:empty + p {
   white-space: normal;
 }
 
+/* Revision cards contain literal line breaks as well as clickable links. */
+.note-text.rich-text-preview.revision-diff {
+  white-space: pre-wrap;
+}
+
 .note-card .note-text,
 .note-card .note-text * {
   font-size: 12px !important;
